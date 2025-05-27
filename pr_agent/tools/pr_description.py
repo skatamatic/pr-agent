@@ -72,7 +72,8 @@ class PRDescription:
             "enable_semantic_files_types": get_settings().pr_description.enable_semantic_files_types,
             "related_tickets": "",
             "include_file_summary_changes": len(self.git_provider.get_diff_files()) <= self.COLLAPSIBLE_FILE_LIST_THRESHOLD,
-            'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
+            "duplicate_prompt_examples": get_settings().config.get("duplicate_prompt_examples", False),
+            "enable_pr_diagram": get_settings().pr_description.get("enable_pr_diagram", False),
         }
 
         self.user_description = self.git_provider.get_user_description()
@@ -199,7 +200,7 @@ class PRDescription:
 
     async def _prepare_prediction(self, model: str) -> None:
         if get_settings().pr_description.use_description_markers and 'pr_agent:' not in self.user_description:
-            get_logger().info("Markers were enabled, but user description does not contain markers. skipping AI prediction")
+            get_logger().info("Markers were enabled, but user description does not contain markers. Skipping AI prediction")
             return None
 
         large_pr_handling = get_settings().pr_description.enable_large_pr_handling and "pr_description_only_files_prompts" in get_settings()
@@ -456,6 +457,12 @@ class PRDescription:
             self.data['labels'] = self.data.pop('labels')
         if 'description' in self.data:
             self.data['description'] = self.data.pop('description')
+        if 'changes_diagram' in self.data:
+            changes_diagram = self.data.pop('changes_diagram').strip()
+            if changes_diagram.startswith('```'):
+                if not changes_diagram.endswith('```'):  # fallback for missing closing
+                    changes_diagram += '\n```'
+                self.data['changes_diagram'] = '\n'+ changes_diagram
         if 'pr_files' in self.data:
             self.data['pr_files'] = self.data.pop('pr_files')
 
@@ -707,7 +714,7 @@ class PRDescription:
             pr_body += """</tr></tbody></table>"""
 
         except Exception as e:
-            get_logger().error(f"Error processing pr files to markdown {self.pr_id}: {str(e)}")
+            get_logger().error(f"Error processing PR files to markdown {self.pr_id}: {str(e)}")
             pass
         return pr_body, pr_comments
 

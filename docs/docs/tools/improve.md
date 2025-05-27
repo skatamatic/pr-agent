@@ -435,7 +435,7 @@ To enable auto-approval based on specific criteria, first, you need to enable th
 enable_auto_approval = true
 ```
 
-There are two criteria that can be set for auto-approval:
+There are several criteria that can be set for auto-approval:
 
 - **Review effort score**
 
@@ -457,7 +457,19 @@ enable_auto_approval = true
 auto_approve_for_no_suggestions = true
 ```
 
-When no [code suggestion](https://www.qodo.ai/images/pr_agent/code_suggestions_as_comment_closed.png) were found for the PR, the PR will be auto-approved.
+When no [code suggestions](https://www.qodo.ai/images/pr_agent/code_suggestions_as_comment_closed.png) were found for the PR, the PR will be auto-approved.
+
+___
+
+- **Ticket Compliance**
+
+```toml
+[config]
+enable_auto_approval = true
+ensure_ticket_compliance = true # Default is false
+```
+
+If `ensure_ticket_compliance` is set to `true`, auto-approval will be disabled if a ticket is linked to the PR and the ticket is not compliant (e.g., the `review` tool did not mark the PR as fully compliant with the ticket). This ensures that PRs are only auto-approved if their associated tickets are properly resolved.
 
 ### How many code suggestions are generated?
 

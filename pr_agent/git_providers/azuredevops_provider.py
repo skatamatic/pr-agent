@@ -618,7 +618,7 @@ class AzureDevopsProvider(GitProvider):
             return pr_id
         except Exception as e:
             if get_settings().config.verbosity_level >= 2:
-                get_logger().info(f"Failed to get pr id, error: {e}")
+                get_logger().info(f"Failed to get PR id, error: {e}")
             return ""
 
     def publish_file_comments(self, file_comments: list) -> bool:

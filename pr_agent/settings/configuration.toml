@@ -64,6 +64,7 @@ reasoning_effort = "medium" # "low", "medium", "high"
 enable_auto_approval=false # Set to true to enable auto-approval of PRs under certain conditions
 auto_approve_for_low_review_effort=-1 # -1 to disable, [1-5] to set the threshold for auto-approval
 auto_approve_for_no_suggestions=false # If true, the PR will be auto-approved if there are no suggestions
+ensure_ticket_compliance=false # Set to true to disable auto-approval of PRs if the ticket is not compliant
 # extended thinking for Claude reasoning models
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
 extended_thinking_budget_tokens = 2048
@@ -81,6 +82,7 @@ require_ticket_analysis_review=false
 # general options
 persistent_comment=true
 extra_instructions = ""
+num_max_findings = 3
 final_update_message = true
 # review labels
 enable_review_labels_security=false
@@ -102,6 +104,7 @@ enable_pr_type=true
 final_update_message = true
 enable_help_text=false
 enable_help_comment=true
+enable_pr_diagram=false # adds a section with a diagram of the PR changes
 # describe as comment
 publish_description_as_comment=false
 publish_description_as_comment_persistent=true
