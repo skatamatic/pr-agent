@@ -125,8 +125,8 @@ enable_pr_diagram = true
         <td>If set to true, the tool will display a help text in the comment. Default is false.</td>
       </tr>
       <tr>
-          <td><b>add_diagram</b></td>
-          <td>If set to true, the tool will generate a <code>Mermaid</code> sequence diagram (in code block format) describing component interactions based on the code changes. Default is false.</td>
+        <td><b>enable_pr_diagram</b></td>
+        <td>If set to true, the tool will generate a horizontal Mermaid flowchart summarizing the main pull request changes. This field remains empty if not applicable. Default is false.</td>
       </tr>
     </table>
 

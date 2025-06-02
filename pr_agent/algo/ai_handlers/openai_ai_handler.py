@@ -42,8 +42,10 @@ class OpenAIHandler(BaseAiHandler):
         retry=retry_if_exception_type(openai.APIError) & retry_if_not_exception_type(openai.RateLimitError),
         stop=stop_after_attempt(OPENAI_RETRIES),
     )
-    async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2):
+    async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
         try:
+            if img_path:
+                get_logger().warning(f"Image path is not supported for OpenAIHandler. Ignoring image path: {img_path}")
             get_logger().info("System: ", system)
             get_logger().info("User: ", user)
             messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]

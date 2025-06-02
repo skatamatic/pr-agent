@@ -288,45 +288,6 @@ We advise users to apply critical analysis and judgment when implementing the pr
 In addition to mistakes (which may happen, but are rare), sometimes the presented code modification may serve more as an _illustrative example_ than a directly applicable solution.
 In such cases, we recommend prioritizing the suggestion's detailed description, using the diff snippet primarily as a supporting reference.
 
-
-### Chat on code suggestions 
-
-> `💎 feature` Platforms supported: GitHub, GitLab
-
-Qodo Merge implements an orchestrator agent that enables interactive code discussions, listening and responding to comments without requiring explicit tool calls.
-The orchestrator intelligently analyzes your responses to determine if you want to implement a suggestion, ask a question, or request help, then delegates to the appropriate specialized tool.
-
-#### Setup and Activation
-
-Enable interactive code discussions by adding the following to your configuration file (default is `True`):
-
-```toml
-[pr_code_suggestions]
-enable_chat_in_code_suggestions = true
-```
-
-!!! info "Activating Dynamic Responses"
-    To obtain dynamic responses, the following steps are required:
-
-    1. Run the `/improve` command (mostly automatic)
-    2. Tick the `/improve` recommendation checkboxes (_Apply this suggestion_) to have Qodo Merge generate a new inline code suggestion discussion
-    3. The orchestrator agent will then automatically listen and reply to comments within the discussion without requiring additional commands
-
-#### Explore the available interaction patterns:
-
-!!! tip "Tip: Direct the agent with keywords"
-    Use "implement" or "apply" for code generation. Use "explain", "why", or "how" for information and help.
-
-=== "Asking for Details"
-    ![Chat on code suggestions ask](https://codium.ai/images/pr_agent/improve_chat_on_code_suggestions_ask.png){width=512}
-
-=== "Implementing Suggestions"
-    ![Chat on code suggestions implement](https://codium.ai/images/pr_agent/improve_chat_on_code_suggestions_implement.png){width=512}
-
-=== "Providing Additional Help"
-    ![Chat on code suggestions help](https://codium.ai/images/pr_agent/improve_chat_on_code_suggestions_help.png){width=512}
-
-
 ### Dual publishing mode
 
 Our recommended approach for presenting code suggestions is through a [table](https://qodo-merge-docs.qodo.ai/tools/improve/#overview) (`--pr_code_suggestions.commitable_code_suggestions=false`).

@@ -144,16 +144,26 @@ extra_instructions = "..."
     Meaning the `review` tool will run automatically on every PR, without any additional configurations.
     Edit this field to enable/disable the tool, or to change the configurations used.
 
-### Auto-generated PR labels from the Review Tool
+### Auto-generated PR labels by the Review Tool
 
 !!! tip ""
 
-    The `review` tool automatically adds two specific labels to your Pull Requests:
+    The `review` can tool automatically add labels to your Pull Requests:
 
-    - **`possible security issue`**: This label is applied if the tool detects a potential [security vulnerability](https://github.com/qodo-ai/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L103) in the PR's code. This feedback is controlled by the 'enable_review_labels_security' flag.
-    - **`review effort [x/5]`**: This label estimates the [effort](https://github.com/qodo-ai/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L90) required to review the PR on a relative scale of 1 to 5, where 'x' represents the assessed effort. This feedback is controlled by the 'enable_review_labels_effort' flag.
+    - **`possible security issue`**: This label is applied if the tool detects a potential [security vulnerability](https://github.com/qodo-ai/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L103) in the PR's code. This feedback is controlled by the 'enable_review_labels_security' flag (default is true).
+    - **`review effort [x/5]`**: This label estimates the [effort](https://github.com/qodo-ai/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L90) required to review the PR on a relative scale of 1 to 5, where 'x' represents the assessed effort. This feedback is controlled by the 'enable_review_labels_effort' flag (default is true).
+    - **`ticket compliance`**: Adds a label indicating code compliance level ("Fully compliant" | "PR Code Verified" | "Partially compliant" | "Not compliant") to any GitHub/Jira/Linea ticket linked in the PR. Controlled by the 'require_ticket_labels' flag (default: false). If 'require_no_ticket_labels' is also enabled, PRs without ticket links will receive a "No ticket found" label.
 
-    Note: The `possible security issue` label highlights potential security risks. You can configure a GitHub Action to [prevent merging](https://medium.com/sequra-tech/quick-tip-block-pull-request-merge-using-labels-6cc326936221) PRs that have this label.
+
+### Blocking PRs from merging based on the generated labels
+
+!!! tip ""
+
+    You can configure a CI/CD Action to prevent merging PRs with specific labels. For example, implement a dedicated [GitHub Action](https://medium.com/sequra-tech/quick-tip-block-pull-request-merge-using-labels-6cc326936221).
+
+    This approach helps ensure PRs with potential security issues or ticket compliance problems will not be merged without further review.
+
+    Since AI may make mistakes or lack complete context, use this feature judiciously. For flexibility, users with appropriate permissions can remove generated labels when necessary. When a label is removed, this action will be automatically documented in the PR discussion, clearly indicating it was a deliberate override by an authorized user to allow the merge.
 
 ### Extra instructions
 
