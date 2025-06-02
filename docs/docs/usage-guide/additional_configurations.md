@@ -50,7 +50,7 @@ glob = ['*.py']
 And to ignore Python files in all PRs using `regex` pattern, set in a configuration file:
 
 ```
-[regex]
+[ignore]
 regex = ['.*\.py$']
 ```
 
