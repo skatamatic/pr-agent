@@ -433,7 +433,6 @@ async def get_pr_context(git_provider: GitProvider):
                 get_logger().error(f"Failed to get C# context from API: {e}", exc_info=True)
                 csharp_minimal_contexts_map = {}
     
-    # If mergedResults is a dict-like key instead of an attribute, use:
     merged_results = csharp_minimal_contexts_map.get("mergedResults", {})
     return json.dumps(merged_results, ensure_ascii=False, separators=(",", ":"), indent=4)
 

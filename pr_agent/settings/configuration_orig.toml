@@ -6,7 +6,7 @@
 
 [config]
 # models
-model="claude-3-7-sonnet-20250219"
+model="o4-mini"
 fallback_models=["gpt-4.1"]
 #model_reasoning="o4-mini" # dedictated reasoning model for self-reflection
 #model_weak="gpt-4o" # optional, a weaker model to use for some easier tasks
@@ -23,14 +23,14 @@ use_wiki_settings_file=true
 use_repo_settings_file=true
 use_global_settings_file=true
 disable_auto_feedback = false
-ai_timeout=180 # 3minutes
+ai_timeout=120 # 2minutes
 skip_keys = []
 custom_reasoning_model = false # when true, disables system messages and temperature controls for models that don't support chat-style inputs
 response_language="en-US" # Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...)
 # token limits
-max_description_tokens = 1000
-max_commits_tokens = 1000
-max_model_tokens = 94000 # Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities.
+max_description_tokens = 500
+max_commits_tokens = 500
+max_model_tokens = 32000 # Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities.
 custom_model_max_tokens=-1 # for models not in the default list
 model_token_count_estimate_factor=0.3 # factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate.
 # patch extension logic
@@ -59,7 +59,7 @@ ignore_repositories = [] # a list of regular expressions of repository full name
 #
 is_auto_command = false # will be auto-set to true if the command is triggered by an automation
 enable_ai_metadata = false # will enable adding ai metadata
-reasoning_effort = "high" # "low", "medium", "high"
+reasoning_effort = "medium" # "low", "medium", "high"
 # auto approval 💎
 enable_auto_approval=false # Set to true to enable auto-approval of PRs under certain conditions
 auto_approve_for_low_review_effort=-1 # -1 to disable, [1-5] to set the threshold for auto-approval
@@ -76,30 +76,14 @@ require_score_review=false
 require_tests_review=true
 require_estimate_effort_to_review=true
 require_can_be_split_review=false
-require_security_review=false
-require_ticket_analysis_review=false
+require_security_review=true
+require_ticket_analysis_review=true
 # general options
 persistent_comment=true
-extra_instructions = """
-We are looking for suggestions in this priority order:
-1 - Critical bugs
-2 - Architectural/design concerns (not adhering to SOLID)
-3 - Readability:
-    - Small methods
-    - Early returns
-    - Good naming of classes/variables/methods
-    - XML Comments
-    - Simplicity
-4 - Modern best practices (especially in async code)
-5 - Test coverage
-6 - Performance
-
-Do not hesitate to be harsh with language if things are outright bad!  We require the utmost quality and scrutiny.  Leave as many nitpicky comments as
-needed to ensure an extremely high quality codebase.
-"""
+extra_instructions = ""
 final_update_message = true
 # review labels
-enable_review_labels_security=false
+enable_review_labels_security=true
 enable_review_labels_effort=true
 # specific configurations for incremental review (/review -i)
 require_all_thresholds_for_incremental_review=false
@@ -141,38 +125,17 @@ use_conversation_history=true
 
 
 [pr_code_suggestions] # /improve #
-max_context_tokens=94000
+max_context_tokens=24000
 #
 commitable_code_suggestions = true
 dual_publishing_score_threshold=-1 # -1 to disable, [0-10] to set the threshold (>=) for publishing a code suggestion both in a table and as commitable
-focus_only_on_problems=false
+focus_only_on_problems=true
 #
-extra_instructions = """
-We are looking for suggestions in this priority order:
-1 - Critical bugs
-2 - Architectural/design concerns (not adhering to SOLID)
-3 - Readability:
-    - Small methods
-    - Early returns
-    - Good naming of classes/variables/methods
-    - XML Comments
-    - Simplicity
-4 - Modern best practices (especially in async code)
-5 - Test coverage
-6 - Performance
-7 - Fit with rest of codebase (style, structure, etc)
-8 - Nitpicks for typos, structure, style, etc.
-
-Do not hesitate to be harsh with language if things are outright bad!  We require the utmost quality and scrutiny.  Leave as many nitpicky comments as
-needed to ensure an extremely high quality codebase.  Do not be worried about offending the author - let them know when their code is bad and help make them better at their jobs.
-Don't beat around the bush!  This is important - do not hesitate to insult the code if it is objectively bad quality.
-
-Feel free to provide many many suggestions for even a small PR if needed.  In fact, it is encouraged to address the code as comprehensively as possible.
-"""
+extra_instructions = ""
 enable_help_text=false
 enable_chat_text=false
 persistent_comment=true
-max_history_len=8
+max_history_len=4
 publish_output_no_suggestions=true
 # enable to apply suggestion 💎
 apply_suggestions_checkbox=true
@@ -183,8 +146,8 @@ new_score_mechanism_th_high=9
 new_score_mechanism_th_medium=7
 # params for '/improve --extended' mode
 auto_extended_mode=true
-num_code_suggestions_per_chunk=24
-max_number_of_calls = 8
+num_code_suggestions_per_chunk=4
+max_number_of_calls = 3
 parallel_calls = true
 
 final_clip_factor = 0.8
@@ -193,10 +156,10 @@ decouple_hunks = false
 demand_code_suggestions_self_review=false # add a checkbox for the author to self-review the code suggestions
 code_suggestions_self_review_text= "**Author self-review**: I have reviewed the PR code suggestions, and addressed the relevant ones."
 approve_pr_on_self_review=false # Pro feature. if true, the PR will be auto-approved after the author clicks on the self-review checkbox
-fold_suggestions_on_self_review=false # Pro feature. if true, the code suggestions will be folded after the author clicks on the self-review checkbox
+fold_suggestions_on_self_review=true # Pro feature. if true, the code suggestions will be folded after the author clicks on the self-review checkbox
 # Suggestion impact 💎
-publish_post_process_suggestion_impact=false
-wiki_page_accepted_suggestions=false
+publish_post_process_suggestion_impact=true
+wiki_page_accepted_suggestions=true
 allow_thumbs_up_down=false
 
 [pr_custom_prompt] # /custom_prompt #

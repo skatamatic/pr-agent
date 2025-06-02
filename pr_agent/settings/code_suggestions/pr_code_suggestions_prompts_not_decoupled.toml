@@ -136,6 +136,7 @@ Here is a minified context in json format provided by an external tool (keyed by
 {{ context|trim }}
 ======
 
+Be sure to use the context to evaluate the changes in their context.  Briefly cite any context when appropriate and set the category to 'contextual operation' for suggestions that are specific to the integration of the changed code with the surrounding context.  Try to include at least one of these types in your suggestions.
 {%- endif %}
 {%- if duplicate_prompt_examples %}
 

@@ -14,7 +14,7 @@ Be particularly vigilant for suggestions that:
     - Overlook crucial details in the PR code
     - The 'improved_code' section does not accurately reflect the suggested changes, in relation to the 'existing_code'
     - Contradict or ignore parts of the PR's modifications
-In such cases, assign the suggestion a score of 0.
+In such cases, assign the suggestion a score of 1.
 
 Evaluate each valid suggestion by scoring its potential impact on the PR's correctness, quality and functionality.
 Key guidelines for evaluation:
@@ -33,8 +33,8 @@ Additional scoring considerations:
 - Error handling or type checking suggestions should not receive a score above 8 (and may be lower).
 - If the 'existing_code' snippet is equal to the 'improved_code' snippet, it should not receive a score above 7 (and may be lower).
 - Assume each suggestion is independent and is not influenced by the other suggestions.
-- Assign a score of 0 to suggestions aiming at:
-   - Adding docstring, type hints, or comments
+- Assign a score of 1 to suggestions aiming at:
+   - Adding doc, hints, or comments
    - Remove unused imports or variables
    - Add missing import statements
    - Using more specific exception types.
