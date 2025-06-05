@@ -1,25 +1,16 @@
-# Use an official Python runtime as a parent image
-FROM python:3.12.10-slim # Match the Python version from your multi-stage file if desired
+FROM python:3.12.10-slim
 
-# Install git, as it's often needed by PR-Agent and was in your base stage
 RUN apt-get update && apt-get install --no-install-recommends -y git curl && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy all your PR-Agent code (from the root of your fork)
 COPY . /app
 
-# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Ensure PYTHONPATH is set if your structure needs it (though /app is WORKDIR)
 ENV PYTHONPATH=/app
 
-# Copy the existing entrypoint script for GitHub Actions into the image and make it executable
-# This assumes your 'github_action/entrypoint.sh' script is in the root of your fork,
-# adjust the COPY source path if it's elsewhere.
 COPY github_action/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Set the entrypoint for the container to be this script
 ENTRYPOINT ["/entrypoint.sh"]
