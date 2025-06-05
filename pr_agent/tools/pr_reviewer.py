@@ -178,7 +178,7 @@ class PRReviewer:
             get_logger().error(f"Failed to review PR: {e}")
 
     async def _prepare_prediction(self, model: str) -> None:
-        self.patches_diff = get_pr_diff(self.git_provider,
+        self.patches_diff = await get_pr_diff(self.git_provider,
                                         self.token_handler,
                                         model,
                                         add_line_numbers_to_hunks=True,
