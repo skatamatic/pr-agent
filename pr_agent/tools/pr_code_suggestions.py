@@ -404,8 +404,6 @@ class PRCodeSuggestions:
         system_prompt = environment.from_string(self.pr_code_suggestions_prompt_system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_code_suggestions_prompt.user).render(variables)
         
-        get_logger().info(f"Rendered user prompt:\n{user_prompt}")
-
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
         if not get_settings().config.publish_output:
@@ -712,7 +710,7 @@ class PRCodeSuggestions:
         if get_settings().csharp_code_context_service.enabled:
             get_logger().info('Fetching context...')
             self.context_data = await get_pr_context(self.git_provider)
-            get_logger().info(f"Got context: {self.context_data}")
+            get_logger().info(f"Got context!")
         else:
             get_logger().info('Context fetch is disabled')
             self.context_data = ""

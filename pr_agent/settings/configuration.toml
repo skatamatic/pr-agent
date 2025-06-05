@@ -6,15 +6,15 @@
 
 [config]
 # models
-model="claude-3-7-sonnet-20250219"
-fallback_models=["gpt-4.1"]
-#model_reasoning="o4-mini" # dedictated reasoning model for self-reflection
-#model_weak="gpt-4o" # optional, a weaker model to use for some easier tasks
+model= "anthropic/claude-opus-4-20250514" #"anthropic/claude-sonnet-4-20250514" # For best (and most expensive!) results: "anthropic/claude-opus-4-20250514"
+fallback_models=["o4-mini"]
+model_reasoning="anthropic/claude-opus-4-20250514" #"anthropic/claude-sonnet-4-20250514" # dedictated reasoning model for self-reflection
+model_weak="o4-mini" # optional, a weaker model to use for some easier tasks
 # CLI
 git_provider="github"
 publish_output=true
 publish_output_progress=true
-verbosity_level=0 # 0,1,2
+verbosity_level=2 # 0,1,2
 use_extra_bad_extensions=false
 # Log
 log_level="DEBUG"
@@ -28,17 +28,17 @@ skip_keys = []
 custom_reasoning_model = false # when true, disables system messages and temperature controls for models that don't support chat-style inputs
 response_language="en-US" # Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...)
 # token limits
-max_description_tokens = 1000
-max_commits_tokens = 1000
+max_description_tokens = 2000
+max_commits_tokens = 20000
 max_model_tokens = 94000 # Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities.
 custom_model_max_tokens=-1 # for models not in the default list
 model_token_count_estimate_factor=0.3 # factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate.
 # patch extension logic
 patch_extension_skip_types =[".md",".txt"]
 allow_dynamic_context=true
-max_extra_lines_before_dynamic_context = 10 # will try to include up to 10 extra lines before the hunk in the patch, until we reach an enclosing function or class
-patch_extra_lines_before = 5 # Number of extra lines (+3 default ones) to include before each hunk in the patch
-patch_extra_lines_after = 1 # Number of extra lines (+3 default ones) to include after each hunk in the patch
+max_extra_lines_before_dynamic_context = 20 # will try to include up to 10 extra lines before the hunk in the patch, until we reach an enclosing function or class
+patch_extra_lines_before = 8 # Number of extra lines (+3 default ones) to include before each hunk in the patch
+patch_extra_lines_after = 8 # Number of extra lines (+3 default ones) to include after each hunk in the patch
 secret_provider=""
 cli_mode=false
 ai_disclaimer_title=""  # Pro feature, title for a collapsible disclaimer to AI outputs
@@ -84,16 +84,20 @@ persistent_comment=true
 extra_instructions = """
 We are looking for suggestions in this priority order:
 1 - Critical bugs
-2 - Architectural/design concerns (not adhering to SOLID)
-3 - Readability:
+2 - Architectural/design concerns (such as not adhering to SOLID, DRY, KISS, principle of least surprise)
+3 - Multithreading/concurrency/deadlock/contention/threadpool exhaustion potential.  Generally prefer modern async code to explicitly multithreaded code unless there's a clear reason to prefer the thread management
+4 - Misused or naively implemented library calls (such as using .Result on async methods, or using suboptimal LINQ etc)
+5 - Readability and testability:
     - Small methods
     - Early returns
     - Good naming of classes/variables/methods
     - XML Comments
     - Simplicity
-4 - Modern best practices (especially in async code)
-5 - Test coverage
-6 - Performance
+6 - Modern best practices (especially in async code)
+7 - Design patterns that could be applied or are misapplied
+8 - Test coverage.  We don't need to test every little thing, but key/complex functionality MUST have tests.
+9 - Performance.  When citing performance, be sure to include the time and space complexity (O notation) of the affected code before and after the suggestion.
+10 - Leaks and lifecycle management (ie dispose methods etc)
 
 Do not hesitate to be harsh with language if things are outright bad!  We require the utmost quality and scrutiny.  Leave as many nitpicky comments as
 needed to ensure an extremely high quality codebase.
@@ -152,21 +156,25 @@ focus_only_on_problems=false
 extra_instructions = """
 We are looking for suggestions in this priority order:
 1 - Critical bugs
-2 - Architectural/design concerns (not adhering to SOLID)
-3 - Readability:
+2 - Architectural/design concerns (such as not adhering to SOLID, DRY, KISS, principle of least surprise)
+3 - Multithreading/concurrency/deadlock/contention/threadpool exhaustion potential.  Generally prefer modern async code to explicitly multithreaded code unless there's a clear reason to prefer the thread management
+4 - Misused or naively implemented library calls (such as using .Result on async methods, or using suboptimal LINQ etc)
+5 - Readability and testability:
+    - Fit with the rest of the codebase.  Refer to the additional context for style/integration clues
     - Small methods
     - Early returns
     - Good naming of classes/variables/methods
-    - XML Comments
     - Simplicity
-4 - Modern best practices (especially in async code)
-5 - Test coverage
-6 - Performance
-7 - Fit with rest of codebase (style, structure, etc)
-8 - Nitpicks for typos, structure, style, etc.
+6 - Modern best practices (especially in async code)
+7 - Design patterns that could be applied or are misapplied
+8 - Test coverage.  We don't need to test every little thing, but key/complex functionality MUST have tests.
+9 - Performance.  When citing performance, be sure to include the time and space complexity (O notation) of the affected code before and after the suggestion.
+10 - Leaks and lifecycle management (ie dispose methods etc)
+11 - Anything else you find pertinent!
 
-Do not hesitate to be harsh with language if things are outright bad!  We require the utmost quality and scrutiny.  Leave as many nitpicky comments as
-needed to ensure an extremely high quality codebase.  Do not be worried about offending the author - let them know when their code is bad and help make them better at their jobs.
+Do not hesitate to be harsh with language if things are outright bad!  But try to remain empathetic (ie This code sucks, but we all make mistakes or I see why you did it this way but it's suboptimal).  
+We require the utmost quality and scrutiny.  Leave as many comments as needed to ensure an extremely high quality codebase.  
+Do not be worried about offending the author - let them know when their code is bad and help make them better at their jobs.
 Don't beat around the bush!  This is important - do not hesitate to insult the code if it is objectively bad quality.
 
 Feel free to provide many many suggestions for even a small PR if needed.  In fact, it is encouraged to address the code as comprehensively as possible.
