@@ -13,4 +13,4 @@ ENV PYTHONPATH=/app
 COPY github_action/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-ENTRYPOINT ["python", "servers/github_action_runner.py"]
+ENTRYPOINT ["python", "pr_agent/servers/github_action_runner.py"]
