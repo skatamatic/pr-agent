@@ -81,27 +81,8 @@ require_security_review=false
 require_ticket_analysis_review=false
 # general options
 persistent_comment=true
-extra_instructions = """
-We are looking for suggestions in this priority order:
-1 - Critical bugs
-2 - Architectural/design concerns (such as not adhering to SOLID, DRY, KISS, principle of least surprise)
-3 - Multithreading/concurrency/deadlock/contention/threadpool exhaustion potential.  Generally prefer modern async code to explicitly multithreaded code unless there's a clear reason to prefer the thread management
-4 - Misused or naively implemented library calls (such as using .Result on async methods, or using suboptimal LINQ etc)
-5 - Readability and testability:
-    - Small methods
-    - Early returns
-    - Good naming of classes/variables/methods
-    - XML Comments
-    - Simplicity
-6 - Modern best practices (especially in async code)
-7 - Design patterns that could be applied or are misapplied
-8 - Test coverage.  We don't need to test every little thing, but key/complex functionality MUST have tests.
-9 - Performance.  When citing performance, be sure to include the time and space complexity (O notation) of the affected code before and after the suggestion.
-10 - Leaks and lifecycle management (ie dispose methods etc)
-
-Do not hesitate to be harsh with language if things are outright bad!  We require the utmost quality and scrutiny.  Leave as many nitpicky comments as
-needed to ensure an extremely high quality codebase.
-"""
+num_max_findings=15
+extra_instructions = ""
 final_update_message = true
 # review labels
 enable_review_labels_security=false
