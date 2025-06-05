@@ -11,9 +11,6 @@ WORKDIR /app
 # 1. Copy only the dependency definition file(s) first.
 # This layer will only be invalidated if requirements.txt itself changes.
 COPY requirements.txt ./
-# If your project also strictly depends on pyproject.toml for dependency resolution via
-# 'pip install -r requirements.txt', you might copy it here too:
-# COPY pyproject.toml ./
 
 # 2. Install Python dependencies.
 # This expensive step will now only re-run if the 'requirements.txt' (and pyproject.toml if copied above)
@@ -25,16 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # but the 'pip install' layer above should remain cached if requirements haven't changed.
 COPY . /app
 
-# Ensure PYTHONPATH is set if your structure needs it (though /app is WORKDIR)
-# Note: If you copied everything to /app, and your modules are in pr_agent within /app,
-# Python should find them. Explicitly setting PYTHONPATH=/app might be redundant
-# if your WORKDIR is /app and your code is structured directly in /app/pr_agent.
-# However, it doesn't hurt if it was working for you.
 ENV PYTHONPATH=/app
-
-# Copy the existing entrypoint script
-COPY github_action/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
 
 # Set the entrypoint
 ENTRYPOINT ["python", "pr_agent/servers/github_action_runner.py"]
