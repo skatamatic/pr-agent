@@ -9,6 +9,13 @@ from loguru import logger
 
 from pr_agent.config_loader import get_settings
 
+try:
+    from pr_agent.log.dashboard_sink import setup_dashboard_sink, get_dashboard_sink
+except ImportError:
+    # Dashboard sink is optional
+    setup_dashboard_sink = None
+    get_dashboard_sink = None
+
 
 class LoggingFormat(str, Enum):
     CONSOLE = "CONSOLE"
@@ -58,6 +65,14 @@ def setup_logger(level: str = "INFO", fmt: LoggingFormat = LoggingFormat.CONSOLE
             colorize=False,
             serialize=True,
         )
+
+    # Setup dashboard sink if configured
+    if (setup_dashboard_sink and 
+        (get_settings().get("DASHBOARD.URL") or get_settings().get("DASHBOARD.ENABLED"))):
+        try:
+            setup_dashboard_sink()
+        except Exception as e:
+            print(f"Failed to setup dashboard sink: {e}")
 
     return logger
 

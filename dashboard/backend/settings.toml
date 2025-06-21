@@ -1,0 +1,42 @@
+# Dashboard Configuration
+# This file contains configuration settings for the PR-Agent Dashboard backend
+
+[default]
+# Application settings
+app_name = "PR-Agent Dashboard"
+debug = false
+log_level = "INFO"
+log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# API server settings
+api_host = "0.0.0.0"
+api_port = 8000
+developer_mode = true
+
+# Database settings
+database_url = "sqlite:///./dashboard.db"
+database_echo = false
+
+# CORS settings
+cors_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001"
+]
+
+# PR-Agent integration
+pr_agent_path = "../../pr_agent"
+
+[development]
+# Development environment overrides
+debug = true
+log_level = "DEBUG"
+developer_mode = true
+
+[production]
+# Production environment overrides
+debug = false
+log_level = "INFO"
+developer_mode = false
+api_host = "127.0.0.1"  # More restrictive in production 
