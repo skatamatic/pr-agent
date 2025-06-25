@@ -3,6 +3,7 @@ import { Play, Database, AlertTriangle, Trash2, Activity, Code, Zap, CheckCircle
 import apiService from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
+import RunningIndicator from './RunningIndicator';
 
 const DeveloperView = ({ onRefresh }) => {
   const [loading, setLoading] = useState({});
@@ -203,15 +204,15 @@ const DeveloperView = ({ onRefresh }) => {
       {currentOperationId && (
         <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-4">
           <div className="flex items-center justify-between">
-            <div className="flex items-center">
-              <Activity className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2 animate-pulse" />
-              <div>
-                <p className="text-sm font-semibold text-blue-800 dark:text-blue-200">Live Activity Running</p>
-                <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
-                  Operation ID: {currentOperationId}
-                </p>
-              </div>
+                      <div className="flex items-center">
+            <RunningIndicator size="md" className="mr-2" />
+            <div>
+              <p className="text-sm font-semibold text-blue-800 dark:text-blue-200">Live Activity Running</p>
+              <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
+                Operation ID: {currentOperationId}
+              </p>
             </div>
+          </div>
             <div className="flex space-x-2">
               <span className="text-xs text-blue-600 dark:text-blue-400">Use Fail/Succeed buttons to complete</span>
             </div>
@@ -224,10 +225,10 @@ const DeveloperView = ({ onRefresh }) => {
         {/* Special layout for fail/succeed buttons when active */}
         {currentOperationId && (
           <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center">
-              <Activity className="h-5 w-5 mr-2 text-blue-600 dark:text-blue-400 animate-pulse" />
-              Active Operation Controls
-            </h3>
+                      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center">
+            <RunningIndicator size="md" className="mr-2" />
+            Active Operation Controls
+          </h3>
             <div className="grid grid-cols-2 gap-4">
               {developerButtons.filter(button => ['failActivity', 'succeedActivity'].includes(button.key)).map((button) => {
                 const Icon = button.icon;

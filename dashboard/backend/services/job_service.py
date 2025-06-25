@@ -229,7 +229,12 @@ class JobService:
                             'suggestions_count': op_db.suggestions_count,
                             'errors_count': op_db.errors_count,
                             'warnings_count': op_db.warnings_count,
-                            'result_data': op_db.result_data
+                            'result_data': op_db.result_data,
+                            # AI/LLM Metrics
+                            'model_used': op_db.model_used,
+                            'input_tokens': op_db.input_tokens,
+                            'output_tokens': op_db.output_tokens,
+                            'estimated_dev_hours_saved': op_db.estimated_dev_hours_saved
                         })
                     job_dict['operations'] = operations
                 
@@ -302,7 +307,12 @@ class JobService:
                         'suggestions_count': op_db.suggestions_count,
                         'errors_count': op_db.errors_count,
                         'warnings_count': op_db.warnings_count,
-                        'result_data': op_db.result_data
+                        'result_data': op_db.result_data,
+                        # AI/LLM Metrics
+                        'model_used': op_db.model_used,
+                        'input_tokens': op_db.input_tokens,
+                        'output_tokens': op_db.output_tokens,
+                        'estimated_dev_hours_saved': op_db.estimated_dev_hours_saved
                     })
                 job_dict['operations'] = operations
             
@@ -340,7 +350,12 @@ class JobService:
                     suggestions_count=op_db.suggestions_count,
                     errors_count=op_db.errors_count,
                     warnings_count=op_db.warnings_count,
-                    result_data=op_db.result_data
+                    result_data=op_db.result_data,
+                    # AI/LLM Metrics
+                    model_used=op_db.model_used,
+                    input_tokens=op_db.input_tokens,
+                    output_tokens=op_db.output_tokens,
+                    estimated_dev_hours_saved=op_db.estimated_dev_hours_saved
                 ))
             
             return operations

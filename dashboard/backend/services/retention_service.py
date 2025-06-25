@@ -739,8 +739,12 @@ class RetentionService:
             
             # Create backup
             if compressed:
-                with gzip.open(backup_path, 'wb') as f:
-                    subprocess.run(['sqlite3', self.db_path, '.dump'], stdout=f, check=True)
+                with gzip.open(backup_path, 'wt') as f:
+                    # Use Python's sqlite3 module instead of subprocess for cross-platform compatibility
+                    conn = sqlite3.connect(self.db_path)
+                    for line in conn.iterdump():
+                        f.write(f'{line}\n')
+                    conn.close()
             else:
                 shutil.copy2(self.db_path, backup_path)
             

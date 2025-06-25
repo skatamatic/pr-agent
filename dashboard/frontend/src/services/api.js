@@ -10,6 +10,15 @@ const api = axios.create({
   },
 });
 
+// Add auth token method
+api.setAuthToken = (token) => {
+  if (token) {
+    api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+  } else {
+    delete api.defaults.headers.common['Authorization'];
+  }
+};
+
 // Request interceptor for adding auth token if needed
 api.interceptors.request.use(
   (config) => {
@@ -30,7 +39,8 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       localStorage.removeItem('auth_token');
-      // Redirect to login if needed
+      delete api.defaults.headers.common['Authorization'];
+      // Redirect to login will be handled by the auth context
     }
     return Promise.reject(error);
   }
@@ -38,6 +48,20 @@ api.interceptors.response.use(
 
 // API endpoints
 const apiService = {
+  // Auth token management
+  setAuthToken: (token) => {
+    if (token) {
+      api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+    } else {
+      delete api.defaults.headers.common['Authorization'];
+    }
+  },
+  
+  // Generic HTTP methods
+  get: (url, config = {}) => api.get(url, config),
+  post: (url, data = {}, config = {}) => api.post(url, data, config),
+  put: (url, data = {}, config = {}) => api.put(url, data, config),
+  delete: (url, config = {}) => api.delete(url, config),
   // Jobs (new primary focus)
   getJobs: (params = {}) => api.get('/api/jobs', { params }),
   getJob: (id) => api.get(`/api/jobs/${id}`),
@@ -74,7 +98,7 @@ const apiService = {
   // Dashboard configuration
   getConfig: () => api.get('/api/config'),
   updateConfig: (config) => api.post('/api/config', { config }),
-  getAvailableModels: () => api.get('/api/config/models'),
+
   
   // Repository management
   getRepositories: (params = {}) => api.get('/api/repositories', { params }),
@@ -83,6 +107,11 @@ const apiService = {
   updateRepository: (id, data) => api.put(`/api/repositories/${id}`, data),
   deleteRepository: (id) => api.delete(`/api/repositories/${id}`),
   getRepositoryNames: (params = {}) => api.get('/api/repositories/names', { params }),
+  getRepositoryHealth: () => api.get('/api/repositories/health'),
+  
+  // Repository health actions
+  checkRepositoryHealth: (id) => api.post(`/api/repositories/${id}/check-health`),
+  checkRepositoryConfig: (id) => api.post(`/api/repositories/${id}/check-config`),
   
   // Developer mode
   getDeveloperMode: () => api.get('/api/developer-mode'),
@@ -126,6 +155,16 @@ const apiService = {
         'Content-Type': 'application/json'
       }
     });
+  },
+
+  // Get detailed repository status
+  getRepositoryDetailedStatus: (repoId) => {
+    return api.get(`/api/repositories/${repoId}/detailed-status`);
+  },
+
+  // Get GitHub token permissions guide
+  getPermissionsGuide: () => {
+    return api.get('/api/repositories/permissions-guide');
   },
 };
 

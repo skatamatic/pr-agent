@@ -319,8 +319,8 @@ const AdminPanel = () => {
     <div className="space-y-6">
       {/* Header */}
       <ViewHeader
-        title="Admin Panel"
-        subtitle="Database retention, backup management, and system administration"
+        title="Retention"
+        subtitle="Database retention, backup management, and storage administration"
         icon={Database}
       />
 
@@ -328,7 +328,7 @@ const AdminPanel = () => {
       <div className="flex space-x-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
         {[
           { id: 'retention', name: 'Retention', icon: Calendar },
-          { id: 'database', name: 'Database', icon: BarChart3 },
+          { id: 'database', name: 'Stats', icon: BarChart3 },
           { id: 'backup', name: 'Backup & Export', icon: Archive }
         ].map((section) => {
           const Icon = section.icon;

@@ -114,6 +114,35 @@ def migrate_database():
                 conn.execute(text("ALTER TABLE operations ADD COLUMN result_data JSON"))
                 conn.commit()
             print("Added result_data column to operations table")
+        
+        # AI/LLM Metrics columns
+        if not check_column_exists(engine, 'operations', 'model_used'):
+            print("Adding model_used column to operations table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE operations ADD COLUMN model_used VARCHAR"))
+                conn.commit()
+            print("Added model_used column to operations table")
+        
+        if not check_column_exists(engine, 'operations', 'input_tokens'):
+            print("Adding input_tokens column to operations table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE operations ADD COLUMN input_tokens INTEGER"))
+                conn.commit()
+            print("Added input_tokens column to operations table")
+        
+        if not check_column_exists(engine, 'operations', 'output_tokens'):
+            print("Adding output_tokens column to operations table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE operations ADD COLUMN output_tokens INTEGER"))
+                conn.commit()
+            print("Added output_tokens column to operations table")
+        
+        if not check_column_exists(engine, 'operations', 'estimated_dev_hours_saved'):
+            print("Adding estimated_dev_hours_saved column to operations table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE operations ADD COLUMN estimated_dev_hours_saved FLOAT"))
+                conn.commit()
+            print("Added estimated_dev_hours_saved column to operations table")
     
     # Check if log_entries table needs job_id and operation_id columns
     if check_table_exists(engine, 'log_entries'):

@@ -94,9 +94,15 @@ def start_frontend():
         print("📦 Installing frontend dependencies...")
         subprocess.run([npm_cmd, "install"], cwd=frontend_dir, check=True)
     
+    # Set environment variables to fix webpack dev server issues
+    env = os.environ.copy()
+    env["DANGEROUSLY_DISABLE_HOST_CHECK"] = "true"
+    env["REACT_APP_API_URL"] = "http://localhost:8000"
+    
     return subprocess.Popen(
         [npm_cmd, "start"],
-        cwd=frontend_dir
+        cwd=frontend_dir,
+        env=env
     )
 
 def main():

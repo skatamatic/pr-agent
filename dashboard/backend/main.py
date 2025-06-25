@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException, WebSocket, Depends
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
@@ -10,7 +11,7 @@ from datetime import datetime, timedelta
 
 # Import configuration and database
 from config import settings
-from models import get_db, APIResponse, ConfigUpdate, Repository, RepositoryCreate, RepositoryUpdate
+from models import get_db, APIResponse, ConfigUpdate, Repository, RepositoryCreate, RepositoryUpdate, RepositoryDB, OperationDB, UserDB, User, UserLogin, ChangePassword
 from websocket_manager import WebSocketManager
 
 # Import services (Dependency Inversion Principle)
@@ -20,7 +21,8 @@ from services.operation_service import OperationService, LogService
 from services.config_service import ConfigService
 from services.repository_service import RepositoryService
 from services.job_service import JobService
-from database import DatabaseManager
+from services.auth_service import AuthService
+from database import DatabaseManager, SessionLocal
 from services.notification_service import NotificationService
 from services.retention_service import RetentionService
 
@@ -62,10 +64,13 @@ class DashboardApplication:
             self.repository_service = RepositoryService()
             self.job_service = JobService(self.database_manager, self.notification_service)
             self.retention_service = RetentionService(self.database_manager)
+            self.auth_service = AuthService()
             self.websocket_manager = WebSocketManager()
+            self.security = HTTPBearer(auto_error=False)
             
             # Setup application
             self._setup_middleware()
+            self._initialize_auth()
             self._setup_routes()
             self._setup_background_tasks()
             
@@ -84,9 +89,121 @@ class DashboardApplication:
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    def _initialize_auth(self):
+        """Initialize authentication and create default admin user"""
+        try:
+            with SessionLocal() as db:
+                self.auth_service.create_default_admin(db)
+                logger.info("Authentication initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize authentication: {e}")
+
+    def get_current_user_dependency(self):
+        """Create a dependency function for getting current user"""
+        async def get_current_user(
+            credentials: HTTPAuthorizationCredentials = Depends(self.security),
+            db: Session = Depends(get_db)
+        ) -> Optional[UserDB]:
+            if not credentials:
+                return None
+            
+            payload = self.auth_service.verify_token(credentials.credentials)
+            if not payload:
+                return None
+                
+            user = self.auth_service.get_user_by_id(db, payload.get("user_id"))
+            if not user or not user.is_active:
+                return None
+                
+            return user
+        return get_current_user
+
+    def require_auth_dependency(self):
+        """Create a dependency function that requires authentication"""
+        get_current_user = self.get_current_user_dependency()
+        
+        async def require_auth(current_user: UserDB = Depends(get_current_user)):
+            if not current_user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Authentication required",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            return current_user
+        return require_auth
     
     def _setup_routes(self):
         """Setup all API routes using service methods"""
+        
+        # Create dependency functions
+        get_current_user = self.get_current_user_dependency()
+        require_auth = self.require_auth_dependency()
+        
+        # Authentication endpoints (no auth required)
+        @self.app.post("/api/auth/login")
+        async def login(user_credentials: UserLogin, db: Session = Depends(get_db)):
+            user = self.auth_service.authenticate_user(db, user_credentials.username, user_credentials.password)
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid username or password"
+                )
+            
+            token = self.auth_service.create_access_token(user.id, user.username)
+            user_data = User(
+                id=user.id,
+                username=user.username,
+                is_active=user.is_active,
+                created_at=user.created_at,
+                last_login=user.last_login
+            )
+            
+            return APIResponse(data={"token": token, "user": user_data}, message="Login successful")
+
+        @self.app.get("/api/auth/verify")
+        async def verify_token(current_user: UserDB = Depends(get_current_user)):
+            if not current_user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid or expired token"
+                )
+            
+            user_data = User(
+                id=current_user.id,
+                username=current_user.username,
+                is_active=current_user.is_active,
+                created_at=current_user.created_at,
+                last_login=current_user.last_login
+            )
+            
+            return APIResponse(data={"user": user_data}, message="Token valid")
+
+        @self.app.post("/api/auth/change-password")
+        async def change_password(
+            password_data: ChangePassword, 
+            current_user: UserDB = Depends(get_current_user),
+            db: Session = Depends(get_db)
+        ):
+            if not current_user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Authentication required"
+                )
+            
+            success = self.auth_service.change_password(
+                db, current_user.id, 
+                password_data.current_password, 
+                password_data.new_password
+            )
+            
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Current password is incorrect"
+                )
+            
+            return APIResponse(data={}, message="Password changed successfully")
         
         # Health endpoints
         @self.app.get("/api/health")
@@ -119,7 +236,7 @@ class DashboardApplication:
         
         @self.app.get("/api/health/context")
         async def health_check_context():
-            health_status = await self.health_service.get_system_health()
+            health_status = await self.health_service.get_system_health(use_cache=False)  # Force fresh check
             context_health = health_status.get('context_service', {'status': 'unknown', 'message': 'Context service health unavailable'})
             return {"service": "context_service", "health": context_health}
         
@@ -144,13 +261,14 @@ class DashboardApplication:
                 "dashboard_dir": str(Path(__file__).parent)
             }
         
-        # Operations endpoints
+        # Operations endpoints (protected)
         @self.app.get("/api/operations")
         async def get_operations(
             limit: int = 100,
             status: Optional[str] = None,
             repo: Optional[str] = None,
-            db: Session = Depends(get_db)
+            db: Session = Depends(get_db),
+            current_user: UserDB = Depends(require_auth)
         ):
             return await self.operation_service.get_operations(db, limit, status, repo)
         
@@ -230,6 +348,10 @@ class DashboardApplication:
                 if log_data.get('status'):
                     await self.operation_service.update_operation_status(db, log_data)
                 
+                # Extract and update metrics if present
+                if any(key in log_data for key in ['model_used', 'input_tokens', 'output_tokens', 'estimated_dev_hours_saved']):
+                    await self.metrics_service.update_metrics_from_operation(db, log_data)
+                
                 # Broadcast to WebSocket clients
                 await self.websocket_manager.broadcast({
                     "type": "log",
@@ -268,6 +390,10 @@ class DashboardApplication:
                 for log_data in logs:
                     if log_data.get('status'):
                         await self.operation_service.update_operation_status(db, log_data)
+                    
+                    # Extract and update metrics if present
+                    if any(key in log_data for key in ['model_used', 'input_tokens', 'output_tokens', 'estimated_dev_hours_saved']):
+                        await self.metrics_service.update_metrics_from_operation(db, log_data)
                 
                 # Broadcast to WebSocket clients
                 await self.websocket_manager.broadcast({
@@ -281,20 +407,142 @@ class DashboardApplication:
                 logger.error(f"Failed to process batch logs: {e}")
                 raise HTTPException(status_code=500, detail="Failed to process logs")
         
-        # Metrics endpoints
+        # System status endpoints
         @self.app.get("/api/status/realtime")
         async def get_realtime_status(db: Session = Depends(get_db)):
-            return await self.metrics_service.get_realtime_status(db)
+            """Get real-time system status"""
+            try:
+                # Get system health status
+                health_status = await self.health_service.get_system_health(use_cache=True)
+                
+                # Get basic operation counts
+                from models import OperationDB, JobDB
+                total_ops = db.query(OperationDB).count()
+                active_ops = db.query(OperationDB).filter(
+                    OperationDB.status.in_(["processing", "fetching_context", "preparing", "self_reflecting", "publishing"])
+                ).count()
+                completed_ops = db.query(OperationDB).filter(OperationDB.status == "completed").count()
+                failed_ops = db.query(OperationDB).filter(OperationDB.status == "failed").count()
+                
+                # Get recent operations for activity feed
+                recent_ops = db.query(OperationDB).order_by(OperationDB.started_at.desc()).limit(5).all()
+                recent_operations = []
+                for op in recent_ops:
+                    recent_operations.append({
+                        "id": op.operation_id,
+                        "command": op.command,
+                        "repo": op.repo,
+                        "status": op.status,
+                        "started_at": op.started_at.isoformat() if op.started_at else None,
+                        "duration": op.duration
+                    })
+                
+                # Calculate success rate
+                success_rate = 0
+                if total_ops > 0:
+                    success_rate = (completed_ops / total_ops) * 100
+                
+                # Determine overall system health
+                overall_health = health_status.get('overall', {}).get('status', 'unknown')
+                
+                return APIResponse(data={
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "system_health": overall_health,
+                    "health_details": health_status,
+                    "operations": {
+                        "total": total_ops,
+                        "active": active_ops,
+                        "completed": completed_ops,
+                        "failed": failed_ops,
+                        "success_rate": round(success_rate, 1)
+                    },
+                    "recent_operations": recent_operations
+                }, message="Real-time status retrieved")
+                
+            except Exception as e:
+                logger.error(f"Error getting realtime status: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.get("/api/system/alerts")
         async def get_system_alerts(db: Session = Depends(get_db)):
-            alerts = await self.metrics_service.get_system_alerts(db)
-            return APIResponse(data=alerts)
+            """Get system alerts and warnings"""
+            try:
+                alerts = []
+                
+                # Check for stuck operations
+                from datetime import timedelta
+                stuck_cutoff = datetime.utcnow() - timedelta(minutes=30)
+                stuck_ops = db.query(OperationDB).filter(
+                    OperationDB.status.in_(["processing", "fetching_context", "preparing"]),
+                    OperationDB.started_at < stuck_cutoff
+                ).count()
+                
+                if stuck_ops > 0:
+                    alerts.append({
+                        "type": "warning",
+                        "message": f"{stuck_ops} operations may be stuck (running > 30 minutes)",
+                        "severity": "medium",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                
+                # Check health status for errors
+                health_status = await self.health_service.get_system_health(use_cache=True)
+                for service_name, service_health in health_status.items():
+                    if service_name != 'overall' and isinstance(service_health, dict):
+                        status = service_health.get('status', 'unknown')
+                        if status in ['error', 'unreachable']:
+                            alerts.append({
+                                "type": "error",
+                                "message": f"{service_name.title()} service is {status}: {service_health.get('message', 'No details')}",
+                                "severity": "high",
+                                "timestamp": datetime.utcnow().isoformat()
+                            })
+                
+                return APIResponse(data={"alerts": alerts, "total": len(alerts)}, message="System alerts retrieved")
+                
+            except Exception as e:
+                logger.error(f"Error getting system alerts: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.get("/api/system/performance")
         async def get_system_performance(db: Session = Depends(get_db)):
-            performance = await self.metrics_service.get_performance_metrics(db)
-            return APIResponse(data=performance)
+            """Get system performance metrics"""
+            try:
+                from datetime import timedelta
+                
+                # Get performance data for last 24 hours
+                day_ago = datetime.utcnow() - timedelta(hours=24)
+                recent_ops = db.query(OperationDB).filter(OperationDB.started_at >= day_ago).all()
+                
+                # Calculate performance metrics
+                total_ops = len(recent_ops)
+                completed_ops = len([op for op in recent_ops if op.status == "completed"])
+                failed_ops = len([op for op in recent_ops if op.status == "failed"])
+                
+                # Calculate average response time
+                completed_with_duration = [op for op in recent_ops if op.status == "completed" and op.duration]
+                avg_response_time = 0
+                if completed_with_duration:
+                    avg_response_time = sum(op.duration for op in completed_with_duration) / len(completed_with_duration)
+                
+                # Calculate success rate
+                success_rate = (completed_ops / total_ops * 100) if total_ops > 0 else 0
+                
+                return APIResponse(data={
+                    "summary": {
+                        "total_operations": total_ops,
+                        "completed_operations": completed_ops,
+                        "failed_operations": failed_ops,
+                        "success_rate": round(success_rate, 1),
+                        "avg_response_time": round(avg_response_time, 2)
+                    },
+                    "period": "24h",
+                    "timestamp": datetime.utcnow().isoformat()
+                }, message="System performance metrics retrieved")
+                
+            except Exception as e:
+                logger.error(f"Error getting system performance: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
         
         # Configuration endpoints
         @self.app.get("/api/config")
@@ -306,6 +554,8 @@ class DashboardApplication:
         async def update_config(config_update: ConfigUpdate):
             result = await self.config_service.update_config(config_update.config)
             return result
+
+
         
         # Repository endpoints
         @self.app.get("/api/repositories")
@@ -325,6 +575,108 @@ class DashboardApplication:
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
         
+        @self.app.get("/api/repositories/names")
+        async def get_repository_names(active_only: bool = True, db: Session = Depends(get_db)):
+            names = await self.repository_service.get_repository_names(db, active_only)
+            return APIResponse(data=names, message=f"Found {len(names)} repository names")
+        
+        @self.app.get("/api/repositories/health")
+        async def get_repositories_health(db: Session = Depends(get_db)):
+            """Get health status of all repositories"""
+            try:
+                # Get basic repository counts
+                repositories = db.query(RepositoryDB).filter(RepositoryDB.is_active == True).all()
+                
+                total = len(repositories)
+                healthy = len([r for r in repositories if r.runner_status == "running"])
+                unhealthy = total - healthy
+                
+                # Build response matching expected format
+                response_data = {
+                    "data": {
+                        "total_repos": total,
+                        "healthy_repos": healthy,
+                        "unhealthy_repos": unhealthy,
+                        "overall_status": "running" if unhealthy == 0 else "error",
+                        "last_updated": datetime.utcnow().isoformat()
+                    },
+                    "message": "Repository health retrieved successfully"
+                }
+                
+                return response_data
+                    
+            except Exception as e:
+                logger.error(f"Error getting repository health: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/api/repositories/update-configs")
+        async def update_all_repository_configs(db: Session = Depends(get_db)):
+            """Update configuration status for all repositories"""
+            try:
+                from services.runner_health_service import RunnerHealthService
+                
+                runner_service = RunnerHealthService()
+                try:
+                    results = await runner_service.update_all_repository_configs(db)
+                    return APIResponse(data=results, message="Repository configurations updated")
+                finally:
+                    await runner_service.close_session()
+                    
+            except Exception as e:
+                logger.error(f"Error updating repository configs: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.get("/api/repositories/token-permissions")
+        async def get_token_permission_requirements():
+            """Get information about required GitHub token permissions"""
+            return APIResponse(data={
+                "github": {
+                    "fine_grained_token_permissions": {
+                        "required": [
+                            {
+                                "permission": "Metadata",
+                                "access": "Read",
+                                "description": "Required for basic repository access and information"
+                            }
+                        ],
+                        "optional": [
+                            {
+                                "permission": "Actions", 
+                                "access": "Read",
+                                "description": "Required for monitoring self-hosted runners (optional)"
+                            },
+                            {
+                                "permission": "Contents",
+                                "access": "Read", 
+                                "description": "Required for reading .pr_agent.toml configuration files"
+                            }
+                        ]
+                    },
+                    "classic_token_scopes": [
+                        "repo (full repository access)"
+                    ],
+                    "setup_instructions": {
+                        "fine_grained_token": [
+                            "1. Go to GitHub Settings > Developer settings > Personal access tokens > Fine-grained tokens",
+                            "2. Click 'Generate new token'",
+                            "3. Select your repository or organization",
+                            "4. Under 'Repository permissions', set:",
+                            "   - Metadata: Read (required)",
+                            "   - Actions: Read (optional, for runner monitoring)",
+                            "   - Contents: Read (optional, for config file reading)",
+                            "5. Generate and copy the token"
+                        ],
+                        "classic_token": [
+                            "1. Go to GitHub Settings > Developer settings > Personal access tokens > Tokens (classic)",
+                            "2. Click 'Generate new token (classic)'",
+                            "3. Select 'repo' scope",
+                            "4. Generate and copy the token"
+                        ]
+                    }
+                }
+            }, message="Token permission requirements retrieved")
+        
+        # Parameterized routes come after specific routes
         @self.app.get("/api/repositories/{repo_id}")
         async def get_repository(repo_id: int, db: Session = Depends(get_db)):
             repository = await self.repository_service.get_repository(db, repo_id)
@@ -335,10 +687,58 @@ class DashboardApplication:
         @self.app.put("/api/repositories/{repo_id}")
         async def update_repository(repo_id: int, repo_update: RepositoryUpdate, db: Session = Depends(get_db)):
             try:
+                # Check if tokens are being updated
+                token_updated = hasattr(repo_update, 'github_token') and repo_update.github_token is not None
+                token_updated = token_updated or (hasattr(repo_update, 'azure_pat') and repo_update.azure_pat is not None)
+                
                 repository = await self.repository_service.update_repository(db, repo_id, repo_update)
                 if not repository:
                     raise HTTPException(status_code=404, detail="Repository not found")
+                
+                # If token was updated, validate it by performing basic health check
+                if token_updated:
+                    try:
+                        from services.runner_health_service import RunnerHealthService
+                        from models import RepositoryDB
+                        
+                        # Get the updated repository from database
+                        repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                        if repo:
+                            runner_service = RunnerHealthService()
+                            try:
+                                # Validate token by checking repository access
+                                validation_result = await runner_service.validate_repository_token(db, repo)
+                                
+                                if not validation_result.get("valid", False):
+                                    # Token validation failed - update status and raise error
+                                    repo.runner_status = "error"
+                                    repo.runner_error = validation_result.get("error", "Token validation failed")
+                                    db.commit()
+                                    raise HTTPException(status_code=400, detail=f"Token validation failed: {validation_result.get('error', 'Invalid token')}")
+                                
+                                # Token is valid, update health status
+                                repo.runner_status = validation_result.get("status", "healthy")
+                                repo.runner_error = None
+                                if validation_result.get("last_seen"):
+                                    repo.runner_last_seen = validation_result["last_seen"]
+                                db.commit()
+                                
+                            finally:
+                                await runner_service.close_session()
+                    except HTTPException:
+                        raise  # Re-raise HTTP exceptions
+                    except Exception as e:
+                        logger.warning(f"Token validation failed for repository {repo_id}: {e}")
+                        # Don't fail the update, but mark token as potentially invalid
+                        repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                        if repo:
+                            repo.runner_status = "warning" 
+                            repo.runner_error = f"Token validation inconclusive: {str(e)}"
+                            db.commit()
+                
                 return APIResponse(data=repository, message="Repository updated successfully")
+            except HTTPException:
+                raise  # Re-raise HTTP exceptions
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
         
@@ -351,28 +751,6 @@ class DashboardApplication:
                 return APIResponse(data={"deleted": True}, message="Repository deleted successfully")
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
-        
-        @self.app.get("/api/repositories/names")
-        async def get_repository_names(active_only: bool = True, db: Session = Depends(get_db)):
-            names = await self.repository_service.get_repository_names(db, active_only)
-            return APIResponse(data=names, message=f"Found {len(names)} repository names")
-        
-        @self.app.get("/api/repositories/health")
-        async def get_repositories_health(db: Session = Depends(get_db)):
-            """Get health status of all repositories"""
-            try:
-                from services.runner_health_service import RunnerHealthService
-                
-                runner_service = RunnerHealthService()
-                try:
-                    summary = await runner_service.get_repository_health_summary(db)
-                    return APIResponse(data=summary, message="Repository health retrieved successfully")
-                finally:
-                    await runner_service.close_session()
-                    
-            except Exception as e:
-                logger.error(f"Error getting repository health: {e}")
-                raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.post("/api/repositories/{repo_id}/check-health")
         async def check_repository_health(repo_id: int, db: Session = Depends(get_db)):
@@ -425,7 +803,8 @@ class DashboardApplication:
                     config_result = await runner_service.check_repository_config(db, repo)
                     
                     # Update repository with config status
-                    repo.has_pr_agent_config = config_result["has_config"]
+                    repo.has_pr_agent_config = config_result.get("has_pr_agent_toml", False)
+                    repo.has_workflow_config = config_result.get("has_workflow_config", False)
                     repo.config_last_checked = datetime.utcnow()
                     repo.effective_config = config_result.get("effective_config")
                     db.commit()
@@ -464,8 +843,11 @@ class DashboardApplication:
                 if repo.effective_config:
                     return APIResponse(data={
                         "repository": repo.name,
-                        "has_config": repo.has_pr_agent_config,
+                        "has_config": repo.has_pr_agent_config or repo.has_workflow_config,
+                        "has_pr_agent_config": repo.has_pr_agent_config,
+                        "has_workflow_config": repo.has_workflow_config,
                         "config_last_checked": repo.config_last_checked,
+                        "config_details": repo.effective_config.get("config_details") if isinstance(repo.effective_config, dict) else None,
                         "effective_config": repo.effective_config
                     }, message="Effective configuration retrieved")
                 else:
@@ -475,16 +857,20 @@ class DashboardApplication:
                         config_result = await runner_service.check_repository_config(db, repo)
                         
                         # Update repository with config status
-                        repo.has_pr_agent_config = config_result["has_config"]
+                        repo.has_pr_agent_config = config_result.get("has_pr_agent_toml", False)
+                        repo.has_workflow_config = config_result.get("has_workflow_config", False)
                         repo.config_last_checked = datetime.utcnow()
-                        repo.effective_config = config_result.get("effective_config")
+                        repo.effective_config = config_result.get("effective_config", {})
                         db.commit()
                         
                         return APIResponse(data={
                             "repository": repo.name,
-                            "has_config": config_result["has_config"],
+                            "has_config": config_result.get("has_config", False),
+                            "has_pr_agent_config": config_result.get("has_pr_agent_toml", False),
+                            "has_workflow_config": config_result.get("has_workflow_config", False),
                             "config_last_checked": repo.config_last_checked,
                             "error": config_result.get("error"),
+                            "config_details": config_result.get("config_details"),
                             "effective_config": config_result.get("effective_config")
                         }, message="Effective configuration retrieved")
                     finally:
@@ -494,23 +880,6 @@ class DashboardApplication:
                 raise
             except Exception as e:
                 logger.error(f"Error getting repository effective config: {e}")
-                raise HTTPException(status_code=500, detail=str(e))
-        
-        @self.app.post("/api/repositories/update-configs")
-        async def update_all_repository_configs(db: Session = Depends(get_db)):
-            """Update configuration status for all repositories"""
-            try:
-                from services.runner_health_service import RunnerHealthService
-                
-                runner_service = RunnerHealthService()
-                try:
-                    results = await runner_service.update_all_repository_configs(db)
-                    return APIResponse(data=results, message="Repository configurations updated")
-                finally:
-                    await runner_service.close_session()
-                    
-            except Exception as e:
-                logger.error(f"Error updating repository configs: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
         
         # Notification endpoints
@@ -678,6 +1047,48 @@ class DashboardApplication:
                 logger.error(f"Failed to get notification events: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
         
+        # Metrics endpoints
+        @self.app.get("/api/metrics/summary")
+        async def get_metrics_summary(db: Session = Depends(get_db)):
+            """Get complete metrics summary with cost calculations"""
+            try:
+                summary = await self.metrics_service.get_metrics_summary(db)
+                return APIResponse(data=summary, message="Metrics summary retrieved")
+            except Exception as e:
+                logger.error(f"Error getting metrics summary: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.get("/api/metrics/config")
+        async def get_metrics_config(db: Session = Depends(get_db)):
+            """Get metrics configuration"""
+            try:
+                config = await self.metrics_service.get_or_create_config(db)
+                return APIResponse(data=config, message="Metrics configuration retrieved")
+            except Exception as e:
+                logger.error(f"Error getting metrics config: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/api/metrics/config")
+        async def update_metrics_config(config_data: dict, db: Session = Depends(get_db)):
+            """Update metrics configuration"""
+            try:
+                config = await self.metrics_service.update_config(db, config_data)
+                return APIResponse(data=config, message="Metrics configuration updated")
+            except Exception as e:
+                logger.error(f"Error updating metrics config: {e}")
+                raise HTTPException(status_code=400, detail=str(e))
+        
+        @self.app.post("/api/metrics/recalculate")
+        async def recalculate_metrics(db: Session = Depends(get_db)):
+            """Recalculate metrics from existing operations"""
+            try:
+                await self.metrics_service.recalculate_metrics_from_operations(db)
+                summary = await self.metrics_service.get_metrics_summary(db)
+                return APIResponse(data=summary, message="Metrics recalculated successfully")
+            except Exception as e:
+                logger.error(f"Error recalculating metrics: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
         # Admin endpoints
         @self.app.get("/api/admin/retention/config")
         async def get_retention_config():
@@ -840,6 +1251,80 @@ class DashboardApplication:
                 logger.error(f"Failed to restore backup: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
 
+        @self.app.get("/api/repositories/{repo_id}/detailed-status")
+        async def get_repository_detailed_status(repo_id: int, db: Session = Depends(get_db)):
+            """Get detailed repository status including runner info and workflow analysis"""
+            try:
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                from services.runner_health_service import RunnerHealthService
+                
+                runner_service = RunnerHealthService()
+                try:
+                    # Get detailed runner health including runner info
+                    runner_health = await runner_service.check_repository_runner_health(db, repo)
+                    
+                    # Get detailed configuration analysis
+                    config_analysis = await runner_service.check_repository_config(db, repo)
+                    
+                    detailed_status = {
+                        "repository": {
+                            "id": repo.id,
+                            "name": repo.name,
+                            "provider": repo.provider,
+                            "url": repo.url
+                        },
+                        "runner_health": runner_health,
+                        "config_analysis": config_analysis,
+                        "last_updated": datetime.utcnow().isoformat()
+                    }
+                    
+                    return APIResponse(data=detailed_status, message="Detailed repository status retrieved")
+                finally:
+                    await runner_service.close_session()
+                    
+            except Exception as e:
+                logger.error(f"Error getting detailed status for repository {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.get("/api/repositories/permissions-guide")
+        async def get_permissions_guide():
+            """Get guidance on required GitHub token permissions for fine-grained tokens"""
+            return APIResponse(data={
+                "fine_grained_permissions": {
+                    "required": [
+                        {
+                            "permission": "Metadata",
+                            "access": "Read",
+                            "description": "Required for basic repository access and information"
+                        },
+                        {
+                            "permission": "Actions", 
+                            "access": "Read",
+                            "description": "Required to check self-hosted runners status"
+                        }
+                    ],
+                    "optional": [
+                        {
+                            "permission": "Contents",
+                            "access": "Read", 
+                            "description": "Required to read .pr_agent.toml and workflow files for configuration analysis"
+                        },
+                        {
+                            "permission": "Pull requests",
+                            "access": "Write",
+                            "description": "Required if using PR-Agent for pull request automation"
+                        }
+                    ]
+                },
+                "classic_permissions": [
+                    "repo (Full control of private repositories)",
+                    "read:org (Read org and team membership, read org projects)"
+                ]
+            }, message="GitHub token permissions guide")
+
         # Developer endpoints (Open/Closed Principle - easily extensible)
         if settings.developer_mode:
             self._setup_developer_routes()
@@ -851,10 +1336,21 @@ class DashboardApplication:
             try:
                 while True:
                     await asyncio.sleep(30)
-                    await websocket.send_json({
-                        "type": "ping", 
-                        "timestamp": datetime.utcnow().isoformat()
-                    })
+                    # Check if connection is still active before sending ping
+                    if websocket.client_state.value == 1:  # CONNECTED state
+                        try:
+                            await websocket.send_json({
+                                "type": "ping", 
+                                "timestamp": datetime.utcnow().isoformat()
+                            })
+                        except Exception as ping_error:
+                            logger.debug(f"Failed to send ping, connection likely closed: {ping_error}")
+                            break
+                    else:
+                        logger.debug("WebSocket connection not in connected state, ending ping loop")
+                        break
+            except WebSocketDisconnect:
+                logger.debug("WebSocket disconnected normally")
             except Exception as e:
                 logger.error(f"WebSocket error: {e}")
             finally:
@@ -864,12 +1360,18 @@ class DashboardApplication:
         """Setup developer-only routes (Interface Segregation Principle)"""
         
         @self.app.post("/api/dev/generate-test-data")
-        async def generate_test_data():
+        async def generate_test_data(db: Session = Depends(get_db)):
             from test_data import generate_test_data
             result = await generate_test_data()
             
             if result["status"] == "success":
-                return APIResponse(data=result["data"], message=result["message"])
+                # Recalculate metrics from the new test data
+                try:
+                    await self.metrics_service.recalculate_metrics_from_operations(db)
+                    return APIResponse(data=result["data"], message=result["message"] + " (with metrics)")
+                except Exception as e:
+                    logger.warning(f"Failed to recalculate metrics after test data generation: {e}")
+                    return APIResponse(data=result["data"], message=result["message"] + " (metrics calculation failed)")
             else:
                 raise HTTPException(status_code=500, detail=result["message"])
         
@@ -963,6 +1465,25 @@ class DashboardApplication:
             except Exception as e:
                 logger.error(f"Failed to trigger system log tests: {e}")
                 return APIResponse(data={"success": False, "error": str(e)}, message="System log tests failed")
+        
+        @self.app.post("/api/dev/generate-ai-metrics")
+        async def generate_ai_metrics():
+            """Generate sample AI metrics data for testing"""
+            try:
+                from test_data import generate_ai_metrics_data
+                result = await generate_ai_metrics_data()
+                
+                # Trigger metrics recalculation after generating data
+                if result.get("status") == "success":
+                    try:
+                        await self.metrics_service.recalculate_metrics_from_operations(SessionLocal())
+                    except Exception as e:
+                        logger.warning(f"Failed to recalculate metrics after generating data: {e}")
+                
+                return APIResponse(data=result, message=result.get("message", "AI metrics generation completed"))
+            except Exception as e:
+                logger.error(f"Failed to generate AI metrics data: {e}")
+                return APIResponse(data={"status": "error", "error": str(e)}, message="AI metrics generation failed")
     
     def _setup_background_tasks(self):
         """Setup background monitoring tasks using modern lifespan events"""
@@ -1066,6 +1587,9 @@ class DashboardApplication:
         self.app.router.lifespan_context = lifespan
         try:
             self._startup_time = asyncio.get_event_loop().time()
+        except RuntimeError:
+            # No event loop running yet
+            self._startup_time = None
         except Exception:
             self._startup_time = None
     

@@ -1,10 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Settings, Sun, Moon, Monitor, ChevronDown } from 'lucide-react';
+import { Settings, Sun, Moon, Monitor, ChevronDown, Lock, LogOut, User } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
+import { useAuth } from '../contexts/AuthContext';
+import ChangePasswordModal from './ChangePasswordModal';
 
 const SettingsDropdown = () => {
   const [isOpen, setIsOpen] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
   const { theme, toggleTheme } = useTheme();
+  const { user, logout } = useAuth();
   const dropdownRef = useRef(null);
 
   useEffect(() => {
@@ -66,15 +70,50 @@ const SettingsDropdown = () => {
               </span>
             </button>
 
-            {/* Future settings can be added here */}
+            {/* User Account Section */}
             <div className="border-t border-gray-200 dark:border-gray-700 mt-1 pt-1">
-              <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
-                More settings coming soon...
+              <div className="px-3 py-2 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                Account
               </div>
+              
+              <div className="px-3 py-2 flex items-center space-x-3">
+                <User className="h-4 w-4 text-gray-400" />
+                <div className="flex-1">
+                  <div className="text-sm text-gray-700 dark:text-gray-300">{user?.username}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">Administrator</div>
+                </div>
+              </div>
+              
+              <button
+                onClick={() => {
+                  setShowChangePassword(true);
+                  setIsOpen(false);
+                }}
+                className="w-full flex items-center space-x-3 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+              >
+                <Lock className="h-4 w-4" />
+                <span>Change Password</span>
+              </button>
+              
+              <button
+                onClick={() => {
+                  logout();
+                  setIsOpen(false);
+                }}
+                className="w-full flex items-center space-x-3 px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+              >
+                <LogOut className="h-4 w-4" />
+                <span>Sign Out</span>
+              </button>
             </div>
           </div>
         </div>
       )}
+      
+      <ChangePasswordModal 
+        isOpen={showChangePassword} 
+        onClose={() => setShowChangePassword(false)} 
+      />
     </div>
   );
 };

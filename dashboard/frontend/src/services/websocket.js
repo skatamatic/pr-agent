@@ -2,10 +2,14 @@ class WebSocketService {
   constructor() {
     this.ws = null;
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 5;
+    this.maxReconnectAttempts = 10;
     this.reconnectDelay = 1000;
     this.listeners = new Map();
     this.isConnecting = false;
+    this.reconnectTimeout = null;
+    this.shouldReconnect = true;
+    this.heartbeatInterval = null;
+    this.lastPingTime = null;
   }
 
   connect(url = 'ws://localhost:8000/ws') {
@@ -27,6 +31,8 @@ class WebSocketService {
           console.log('WebSocket connected');
           this.reconnectAttempts = 0;
           this.isConnecting = false;
+          this.shouldReconnect = true;
+          this.startHeartbeat();
           this.emit('connected');
           resolve();
         };
@@ -43,11 +49,15 @@ class WebSocketService {
         this.ws.onclose = (event) => {
           console.log('WebSocket disconnected:', event.code, event.reason);
           this.isConnecting = false;
+          this.stopHeartbeat();
           this.emit('disconnected');
           
-          // Attempt reconnection if not a normal close
-          if (event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
+          // Attempt reconnection if not a normal close and we should reconnect
+          if (this.shouldReconnect && event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
             this.scheduleReconnect();
+          } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            console.warn('Max reconnection attempts reached, giving up');
+            this.emit('max_reconnect_attempts_reached');
           }
         };
 
@@ -66,18 +76,31 @@ class WebSocketService {
   }
 
   scheduleReconnect() {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.log('Max reconnection attempts reached');
+    if (this.reconnectAttempts >= this.maxReconnectAttempts || !this.shouldReconnect) {
+      console.log('Max reconnection attempts reached or reconnection disabled');
       return;
     }
 
+    // Clear any existing reconnect timeout
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+    }
+
     this.reconnectAttempts++;
-    const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
+    const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), 30000); // Cap at 30 seconds
     
     console.log(`Attempting to reconnect in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
     
-    setTimeout(() => {
-      this.connect();
+    this.reconnectTimeout = setTimeout(() => {
+      if (this.shouldReconnect) {
+        this.connect().catch(error => {
+          console.error('Reconnection failed:', error);
+          // If connection fails, schedule another attempt
+          if (this.reconnectAttempts < this.maxReconnectAttempts) {
+            this.scheduleReconnect();
+          }
+        });
+      }
     }, delay);
   }
 
@@ -89,7 +112,8 @@ class WebSocketService {
         console.log('WebSocket welcome:', message.message);
         break;
       case 'ping':
-        // Handle keepalive ping
+        // Handle keepalive ping and update last ping time
+        this.lastPingTime = Date.now();
         break;
       case 'log':
         this.emit('log', data);
@@ -145,13 +169,35 @@ class WebSocketService {
 
   send(message) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(message));
+      try {
+        this.ws.send(JSON.stringify(message));
+      } catch (error) {
+        console.error('Failed to send WebSocket message:', error);
+        // Connection might be broken, trigger reconnection
+        if (this.shouldReconnect) {
+          this.forceReconnect();
+        }
+      }
     } else {
       console.warn('WebSocket not connected, cannot send message:', message);
+      // Try to reconnect if we should
+      if (this.shouldReconnect && !this.isConnecting) {
+        this.forceReconnect();
+      }
     }
   }
 
   disconnect() {
+    this.shouldReconnect = false;
+    
+    // Clear reconnect timeout
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+    
+    this.stopHeartbeat();
+    
     if (this.ws) {
       this.ws.close(1000, 'Manual disconnect');
       this.ws = null;
@@ -161,6 +207,39 @@ class WebSocketService {
 
   isConnected() {
     return this.ws && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  startHeartbeat() {
+    this.stopHeartbeat();
+    this.lastPingTime = Date.now();
+    
+    // Check for missed pings every 45 seconds (server sends pings every 30 seconds)
+    this.heartbeatInterval = setInterval(() => {
+      if (this.isConnected()) {
+        const timeSinceLastPing = Date.now() - (this.lastPingTime || Date.now());
+        if (timeSinceLastPing > 45000) { // 45 seconds
+          console.warn('No ping received for 45 seconds, assuming connection is dead');
+          this.ws.close(1006, 'Connection timeout');
+        }
+      }
+    }, 15000); // Check every 15 seconds
+  }
+
+  stopHeartbeat() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+  }
+
+  forceReconnect() {
+    console.log('Forcing reconnection...');
+    if (this.ws) {
+      this.ws.close(1000, 'Force reconnect');
+    }
+    this.reconnectAttempts = 0;
+    this.shouldReconnect = true;
+    this.connect();
   }
 }
 

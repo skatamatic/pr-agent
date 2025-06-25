@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useContext } from 'react';
-import { Activity, AlertCircle, CheckCircle, GitPullRequest, Settings, Code, FileText, BarChart3, GitBranch, Bell, Shield, Database } from 'lucide-react';
+import { Activity, AlertCircle, CheckCircle, GitPullRequest, Settings, Code, FileText, BarChart3, GitBranch, Bell, Shield, Database, TrendingUp, RefreshCw } from 'lucide-react';
 import StatusOverview from './components/StatusOverview';
 import JobsList from './components/JobsList';
 import LogsViewer from './components/LogsViewer';
@@ -8,13 +8,37 @@ import DeveloperView from './components/DeveloperView';
 import RepositoryManager from './components/RepositoryManager';
 import Notifications from './components/Notifications';
 import AdminPanel from './components/AdminPanel';
+import MetricsView from './components/MetricsView';
 import SettingsDropdown from './components/SettingsDropdown';
+import Login from './components/Login';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider, ToastContext } from './contexts/ToastContext';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
 import apiService from './services/api';
 import webSocketService from './services/websocket';
 
 function AppContent() {
+  const { isAuthenticated, loading: authLoading } = useAuth();
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+        <div className="flex items-center space-x-3">
+          <RefreshCw className="h-6 w-6 animate-spin text-blue-600 dark:text-blue-400" />
+          <span className="text-gray-600 dark:text-gray-400">Loading...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Login />;
+  }
+
+  return <Dashboard />;
+}
+
+function Dashboard() {
   const [activeTab, setActiveTab] = useState(() => {
     // Get tab from URL on initial load
     const urlParams = new URLSearchParams(window.location.search);
@@ -319,16 +343,18 @@ function AppContent() {
     return () => clearInterval(healthInterval);
   }, [connectionState.api]); // Removed contextService dependency to prevent re-runs
 
-  const tabs = [
+  const mainTabs = [
     { id: 'overview', name: 'Overview', icon: Activity },
+    { id: 'metrics', name: 'Metrics', icon: TrendingUp },
     { id: 'jobs', name: 'Jobs', icon: BarChart3 },
     { id: 'logs', name: 'Logs', icon: FileText },
     { id: 'repositories', name: 'Repositories', icon: GitBranch },
     { id: 'notifications', name: 'Notifications', icon: Bell },
     { id: 'config', name: 'AI Config', icon: Settings },
-    { id: 'admin', name: 'Retention', icon: Database },
-    ...(developerMode ? [{ id: 'developer', name: 'Developer', icon: Code }] : [])
+    { id: 'admin', name: 'Retention', icon: Database }
   ];
+
+  const developerTab = developerMode ? { id: 'developer', name: 'Developer', icon: Code } : null;
 
   const refreshData = () => {
     fetchData(false);
@@ -507,6 +533,8 @@ function AppContent() {
         />;
       case 'repositories':
         return <RepositoryManager />;
+      case 'metrics':
+        return <MetricsView />;
       case 'notifications':
         return <Notifications />;
       case 'admin':
@@ -563,24 +591,44 @@ function AppContent() {
       {/* Navigation */}
       <nav className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex space-x-8">
-            {tabs.map((tab) => {
-              const Icon = tab.icon;
-              return (
+          <div className="flex justify-between">
+            {/* Main Navigation Tabs */}
+            <div className="flex space-x-8">
+              {mainTabs.map((tab) => {
+                const Icon = tab.icon;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => handleTabChange(tab.id)}
+                    className={`flex items-center px-1 py-4 border-b-2 font-medium text-sm transition-colors duration-200 ${
+                      activeTab === tab.id
+                        ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
+                    }`}
+                  >
+                    <Icon className="h-4 w-4 mr-2" />
+                    {tab.name}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Developer Tab (Right Aligned) */}
+            {developerTab && (
+              <div className="flex">
                 <button
-                  key={tab.id}
-                  onClick={() => handleTabChange(tab.id)}
-                  className={`flex items-center px-1 py-4 border-b-2 font-medium text-sm transition-colors duration-200 ${
-                    activeTab === tab.id
-                      ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
+                  onClick={() => handleTabChange(developerTab.id)}
+                  className={`flex items-center px-3 py-4 border-b-2 font-medium text-sm transition-colors duration-200 ${
+                    activeTab === developerTab.id
+                      ? 'border-emerald-500 text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20'
+                      : 'border-transparent text-emerald-600 hover:text-emerald-700 hover:border-emerald-300 dark:text-emerald-400 dark:hover:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-900/10'
                   }`}
                 >
-                  <Icon className="h-4 w-4 mr-2" />
-                  {tab.name}
+                  <developerTab.icon className="h-4 w-4 mr-2" />
+                  {developerTab.name}
                 </button>
-              );
-            })}
+              </div>
+            )}
           </div>
         </div>
       </nav>
@@ -597,7 +645,9 @@ function App() {
   return (
     <ThemeProvider>
       <ToastProvider>
-        <AppContent />
+        <AuthProvider>
+          <AppContent />
+        </AuthProvider>
       </ToastProvider>
     </ThemeProvider>
   );

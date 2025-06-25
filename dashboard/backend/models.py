@@ -76,6 +76,12 @@ class OperationDB(Base):
     context_fetch_time = Column(Float, nullable=True)
     ai_processing_time = Column(Float, nullable=True)
     
+    # NEW: AI/LLM Metrics
+    model_used = Column(String, nullable=True)  # e.g., "gpt-4", "claude-3-sonnet"
+    input_tokens = Column(Integer, nullable=True)
+    output_tokens = Column(Integer, nullable=True)
+    estimated_dev_hours_saved = Column(Float, nullable=True)  # Hours saved estimate
+    
     # Results
     suggestions_count = Column(Integer, nullable=True)
     errors_count = Column(Integer, nullable=True)
@@ -108,6 +114,7 @@ class RepositoryDB(Base):
     
     # Repository configuration detection
     has_pr_agent_config = Column(Boolean, default=False)  # .pr_agent.toml exists
+    has_workflow_config = Column(Boolean, default=False)  # GitHub Actions workflow with PR-Agent env vars exists
     config_last_checked = Column(DateTime, nullable=True)
     effective_config = Column(JSON, nullable=True)  # Merged config with overrides
     
@@ -165,6 +172,72 @@ class LogEntryDB(Base):
     # Relationships
     job = relationship("JobDB", backref="logs")
     operation = relationship("OperationDB", backref="logs")
+
+class HealthCacheDB(Base):
+    __tablename__ = "health_cache"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    service_name = Column(String, unique=True, index=True)  # "database", "context_service", etc.
+    status = Column(String)  # "connected", "error", "warning", "disabled"
+    message = Column(String, nullable=True)
+    error_details = Column(String, nullable=True)
+    endpoint = Column(String, nullable=True)
+    
+    # Cache metadata
+    last_checked = Column(DateTime, default=datetime.utcnow)
+    is_checking = Column(Boolean, default=False)
+    check_count = Column(Integer, default=0)
+    
+    # Additional data
+    details = Column(JSON, nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class MetricsAggregateDB(Base):
+    __tablename__ = "metrics_aggregate"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Aggregate metrics (no history, just current totals)
+    total_jobs = Column(Integer, default=0)
+    total_operations = Column(Integer, default=0)
+    total_input_tokens = Column(Integer, default=0)
+    total_output_tokens = Column(Integer, default=0)
+    total_estimated_dev_hours = Column(Float, default=0.0)
+    
+    # Model breakdown (JSON with model -> {input_tokens, output_tokens, operations_count})
+    model_usage = Column(JSON, default=dict)
+    
+    # Timestamps
+    last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class MetricsConfigDB(Base):
+    __tablename__ = "metrics_config"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Token pricing (per 1K tokens)
+    model_costs = Column(JSON, default=dict)  # {"gpt-4": {"input": 0.03, "output": 0.06}}
+    
+    # Developer cost calculation
+    developer_hourly_rate = Column(Float, default=75.0)  # USD per hour
+    hours_multiplier = Column(Float, default=1.0)  # Fudge factor for LLM estimates
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class UserDB(Base):
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_login = Column(DateTime, nullable=True)
 
 # Initialize database with proper schema handling
 # This is called when the module is imported
@@ -276,6 +349,8 @@ class Job(BaseModel):
         from_attributes = True
 
 class Operation(BaseModel):
+    model_config = {'protected_namespaces': (), 'from_attributes': True}
+    
     id: Optional[int] = None
     operation_id: str
     job_id: Optional[str] = None
@@ -304,14 +379,17 @@ class Operation(BaseModel):
     context_fetch_time: Optional[float] = None
     ai_processing_time: Optional[float] = None
     
+    # NEW: AI/LLM Metrics
+    model_used: Optional[str] = None
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    estimated_dev_hours_saved: Optional[float] = None
+    
     # Results
     suggestions_count: Optional[int] = None
     errors_count: Optional[int] = None
     warnings_count: Optional[int] = None
     result_data: Optional[Dict[str, Any]] = None
-
-    class Config:
-        from_attributes = True
 
 class LogEntry(BaseModel):
     id: Optional[int] = None
@@ -434,6 +512,10 @@ class Repository(BaseModel):
     github_token: Optional[str] = Field(default=None, description="GitHub access token")
     azure_pat: Optional[str] = Field(default=None, description="Azure DevOps PAT")
     
+    # Token status indicators (safe to expose)
+    has_github_token: Optional[bool] = Field(default=None, description="Whether GitHub token is configured")
+    has_azure_pat: Optional[bool] = Field(default=None, description="Whether Azure PAT is configured")
+    
     # Runner/Agent health tracking
     runner_status: Optional[str] = Field(default=None, description="Runner health status")
     runner_last_seen: Optional[str] = None
@@ -441,6 +523,7 @@ class Repository(BaseModel):
     
     # Repository configuration detection
     has_pr_agent_config: bool = Field(default=False, description="Has .pr_agent.toml file")
+    has_workflow_config: bool = Field(default=False, description="Has GitHub Actions workflow with PR-Agent configuration")
     config_last_checked: Optional[str] = None
     effective_config: Optional[Dict[str, Any]] = Field(default=None, description="Merged configuration")
     
@@ -638,4 +721,100 @@ class NotificationEvent(BaseModel):
     processed: bool = False
 
     class Config:
-        from_attributes = True 
+        from_attributes = True
+
+class HealthCache(BaseModel):
+    model_config = {'from_attributes': True}
+    
+    id: Optional[int] = None
+    service_name: str
+    status: str
+    message: Optional[str] = None
+    error_details: Optional[str] = None
+    endpoint: Optional[str] = None
+    
+    # Cache metadata
+    last_checked: str
+    is_checking: bool = False
+    check_count: int = 0
+    
+    # Additional data
+    details: Optional[Dict[str, Any]] = None
+    
+    # Timestamps
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+class MetricsAggregate(BaseModel):
+    model_config = {'protected_namespaces': (), 'from_attributes': True}
+    
+    id: Optional[int] = None
+    
+    # Aggregate metrics
+    total_jobs: int = 0
+    total_operations: int = 0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_estimated_dev_hours: float = 0.0
+    
+    # Model breakdown
+    model_usage: Dict[str, Any] = Field(default_factory=dict)
+    
+    # Timestamps
+    last_updated: Optional[str] = None
+
+class MetricsConfig(BaseModel):
+    model_config = {'protected_namespaces': (), 'from_attributes': True}
+    
+    id: Optional[int] = None
+    
+    # Token pricing (per 1K tokens)
+    model_costs: Dict[str, Dict[str, float]] = Field(default_factory=dict)
+    
+    # Developer cost calculation
+    developer_hourly_rate: float = 75.0
+    hours_multiplier: float = 1.0
+    
+    # Timestamps
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+class MetricsConfigUpdate(BaseModel):
+    model_config = {'protected_namespaces': ()}
+    
+    model_costs: Optional[Dict[str, Dict[str, float]]] = None
+    developer_hourly_rate: Optional[float] = None
+    hours_multiplier: Optional[float] = None
+
+class MetricsSummary(BaseModel):
+    model_config = {'protected_namespaces': ()}
+    
+    # Computed metrics
+    total_jobs: int
+    total_operations: int
+    total_token_cost: float
+    total_dev_hours_saved: float
+    total_dev_cost_saved: float
+    total_savings: float  # dev_cost_saved - token_cost
+    
+    # Breakdown
+    model_breakdown: Dict[str, Dict[str, Any]]
+    
+    # Configuration
+    config: MetricsConfig 
+
+# Pydantic models for API
+class User(BaseModel):
+    id: int
+    username: str
+    is_active: bool
+    created_at: datetime
+    last_login: Optional[datetime] = None
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+class ChangePassword(BaseModel):
+    current_password: str
+    new_password: str 

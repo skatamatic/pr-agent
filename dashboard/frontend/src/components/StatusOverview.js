@@ -103,48 +103,35 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
         let result;
         if (service === 'repositories') {
           // Use the new repositories health API
-          result = await apiService.get('/repositories/health');
+          result = await apiService.getRepositoryHealth();
           result = { data: { health: result.data } }; // Normalize structure
         } else {
           result = await apiService.getHealthCheck(service);
         }
-        console.log(`SUCCESS: ${service} health check:`, JSON.stringify(result.data.health, null, 2));
-        setIndividualServiceHealth(prev => {
-          console.log(`BEFORE UPDATE ${service}:`, JSON.stringify(prev[service], null, 2));
-          const newState = {
-            ...prev,
-            [service]: {
-              ...result.data.health,
-              timestamp: new Date().toISOString(),
-              isChecking: false
-            }
-          };
-          console.log(`AFTER UPDATE ${service}:`, JSON.stringify(newState[service], null, 2));
-          return newState;
-        });
+        setIndividualServiceHealth(prev => ({
+          ...prev,
+          [service]: {
+            ...result.data.health,
+            timestamp: new Date().toISOString(),
+            isChecking: false
+          }
+        }));
       } catch (error) {
         console.error(`ERROR: ${service} health check failed:`, error);
-        console.error(`ERROR details for ${service}:`, error.response?.data, error.response?.status);
         setIndividualServiceHealth(prev => {
-          console.log(`ERROR - BEFORE UPDATE ${service}:`, prev[service]);
-          // Always set to error when health check fails - don't preserve old errors
-          const newStatus = 'error';
-          
           // Auto-expand if this is an error status
           setHealthExpanded(true);
           
-          const newState = {
+          return {
             ...prev,
             [service]: {
               error: `Health check failed: ${error.message}`,
               timestamp: new Date().toISOString(),
               isChecking: false,
-              status: newStatus,
+              status: 'error',
               message: `Health check failed: ${error.message}`
             }
           };
-          console.log(`ERROR - AFTER UPDATE ${service}:`, newState[service]);
-          return newState;
         });
       }
     });
@@ -295,15 +282,19 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
   };
 
   const analyzeTokenIssues = () => {
+    // Only analyze ACTIVE repositories for token issues
+    const activeRepositories = repositoryDetails.filter(repo => repo.is_active);
+    
     const tokenIssues = {
       missingTokens: [],
       invalidTokens: [],
-      totalRepos: repositoryDetails.length,
+      totalRepos: activeRepositories.length,
       healthyRepos: 0
     };
 
-    repositoryDetails.forEach(repo => {
-      const hasRequiredToken = repo.provider === 'github' ? repo.github_token : repo.azure_pat;
+    activeRepositories.forEach(repo => {
+      // Use the new token status indicators from backend
+      const hasRequiredToken = repo.provider === 'github' ? repo.has_github_token : repo.has_azure_pat;
       const hasAuthError = repo.runner_error && (
         repo.runner_error.includes('token') || 
         repo.runner_error.includes('authentication') || 
@@ -338,8 +329,7 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
   const renderRepositoryStatus = (serviceName, IconComponent, description) => {
     const repoHealth = individualServiceHealth['repositories'];
     const tokenIssues = analyzeTokenIssues();
-    console.log('REPO HEALTH:', JSON.stringify(repoHealth, null, 2));
-    console.log('TOKEN ISSUES:', JSON.stringify(tokenIssues, null, 2));
+
     
     // Default state if no data
     if (!repoHealth || !repoHealth.data) {
@@ -543,7 +533,6 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
     
     // Prioritize individual health check data over backend health data
     const service = individualServiceHealth[serviceKey] || systemHealth?.services?.[serviceKey];
-    console.log(`RENDER ${serviceKey}:`, JSON.stringify(service, null, 2));
     
     if (!service) {
       return (

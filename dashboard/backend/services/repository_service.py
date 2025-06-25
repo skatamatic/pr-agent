@@ -11,6 +11,38 @@ logger = logging.getLogger(__name__)
 class RepositoryService:
     """Service for managing repository monitoring configuration"""
     
+    def _to_repository_response(self, repo: RepositoryDB) -> Repository:
+        """Convert RepositoryDB to Repository model, safely handling tokens"""
+        return Repository(
+            id=repo.id,
+            name=repo.name,
+            provider=repo.provider,
+            url=repo.url,
+            is_active=repo.is_active,
+            config=repo.config,
+            # Don't include actual tokens for security
+            github_token=None,
+            azure_pat=None,
+            # But include indicators of whether tokens are configured
+            has_github_token=bool(repo.github_token and repo.github_token.strip()),
+            has_azure_pat=bool(repo.azure_pat and repo.azure_pat.strip()),
+            runner_status=repo.runner_status,
+            runner_last_seen=repo.runner_last_seen.isoformat() if repo.runner_last_seen else None,
+            runner_error=repo.runner_error,
+            has_pr_agent_config=repo.has_pr_agent_config,
+            has_workflow_config=repo.has_workflow_config,
+            config_last_checked=repo.config_last_checked.isoformat() if repo.config_last_checked else None,
+            effective_config=repo.effective_config,
+            monitor_prs=repo.monitor_prs,
+            monitor_issues=repo.monitor_issues,
+            auto_review=repo.auto_review,
+            auto_describe=repo.auto_describe,
+            auto_improve=repo.auto_improve,
+            created_at=repo.created_at.isoformat() if repo.created_at else None,
+            updated_at=repo.updated_at.isoformat() if repo.updated_at else None,
+            last_activity=repo.last_activity.isoformat() if repo.last_activity else None
+        )
+    
     async def get_repositories(self, db: Session, limit: int = 100, provider: Optional[str] = None, active_only: bool = False) -> APIResponse:
         """Get all repositories with optional filtering"""
         try:
@@ -30,32 +62,7 @@ class RepositoryService:
             repositories = query.limit(limit).all()
             
             # Convert to Pydantic models
-            repo_list = []
-            for repo in repositories:
-                repo_dict = {
-                    "id": repo.id,
-                    "name": repo.name,
-                    "provider": repo.provider,
-                    "url": repo.url,
-                    "is_active": repo.is_active,
-                    "config": repo.config,
-                    # Access tokens are never exposed in API responses for security
-                    "runner_status": repo.runner_status,
-                    "runner_last_seen": repo.runner_last_seen.isoformat() if repo.runner_last_seen else None,
-                    "runner_error": repo.runner_error,
-                    "has_pr_agent_config": repo.has_pr_agent_config,
-                    "config_last_checked": repo.config_last_checked.isoformat() if repo.config_last_checked else None,
-                    "effective_config": repo.effective_config,
-                    "monitor_prs": repo.monitor_prs,
-                    "monitor_issues": repo.monitor_issues,
-                    "auto_review": repo.auto_review,
-                    "auto_describe": repo.auto_describe,
-                    "auto_improve": repo.auto_improve,
-                    "created_at": repo.created_at.isoformat() if repo.created_at else None,
-                    "updated_at": repo.updated_at.isoformat() if repo.updated_at else None,
-                    "last_activity": repo.last_activity.isoformat() if repo.last_activity else None
-                }
-                repo_list.append(Repository(**repo_dict))
+            repo_list = [self._to_repository_response(repo) for repo in repositories]
             
             return APIResponse(
                 data=repo_list,
@@ -74,28 +81,7 @@ class RepositoryService:
             if not repo:
                 return None
             
-            return Repository(
-                id=repo.id,
-                name=repo.name,
-                provider=repo.provider,
-                url=repo.url,
-                is_active=repo.is_active,
-                config=repo.config,
-                runner_status=repo.runner_status,
-                runner_last_seen=repo.runner_last_seen.isoformat() if repo.runner_last_seen else None,
-                runner_error=repo.runner_error,
-                has_pr_agent_config=repo.has_pr_agent_config,
-                config_last_checked=repo.config_last_checked.isoformat() if repo.config_last_checked else None,
-                effective_config=repo.effective_config,
-                monitor_prs=repo.monitor_prs,
-                monitor_issues=repo.monitor_issues,
-                auto_review=repo.auto_review,
-                auto_describe=repo.auto_describe,
-                auto_improve=repo.auto_improve,
-                created_at=repo.created_at.isoformat() if repo.created_at else None,
-                updated_at=repo.updated_at.isoformat() if repo.updated_at else None,
-                last_activity=repo.last_activity.isoformat() if repo.last_activity else None
-            )
+            return self._to_repository_response(repo)
             
         except Exception as e:
             logger.error(f"Error fetching repository {repo_id}: {e}")
@@ -132,28 +118,7 @@ class RepositoryService:
             db.commit()
             db.refresh(db_repo)
             
-            return Repository(
-                id=db_repo.id,
-                name=db_repo.name,
-                provider=db_repo.provider,
-                url=db_repo.url,
-                is_active=db_repo.is_active,
-                config=db_repo.config,
-                runner_status=db_repo.runner_status,
-                runner_last_seen=db_repo.runner_last_seen.isoformat() if db_repo.runner_last_seen else None,
-                runner_error=db_repo.runner_error,
-                has_pr_agent_config=db_repo.has_pr_agent_config,
-                config_last_checked=db_repo.config_last_checked.isoformat() if db_repo.config_last_checked else None,
-                effective_config=db_repo.effective_config,
-                monitor_prs=db_repo.monitor_prs,
-                monitor_issues=db_repo.monitor_issues,
-                auto_review=db_repo.auto_review,
-                auto_describe=db_repo.auto_describe,
-                auto_improve=db_repo.auto_improve,
-                created_at=db_repo.created_at.isoformat(),
-                updated_at=db_repo.updated_at.isoformat(),
-                last_activity=db_repo.last_activity.isoformat() if db_repo.last_activity else None
-            )
+            return self._to_repository_response(db_repo)
             
         except Exception as e:
             db.rollback()
@@ -181,28 +146,7 @@ class RepositoryService:
             db.commit()
             db.refresh(repo)
             
-            return Repository(
-                id=repo.id,
-                name=repo.name,
-                provider=repo.provider,
-                url=repo.url,
-                is_active=repo.is_active,
-                config=repo.config,
-                runner_status=repo.runner_status,
-                runner_last_seen=repo.runner_last_seen.isoformat() if repo.runner_last_seen else None,
-                runner_error=repo.runner_error,
-                has_pr_agent_config=repo.has_pr_agent_config,
-                config_last_checked=repo.config_last_checked.isoformat() if repo.config_last_checked else None,
-                effective_config=repo.effective_config,
-                monitor_prs=repo.monitor_prs,
-                monitor_issues=repo.monitor_issues,
-                auto_review=repo.auto_review,
-                auto_describe=repo.auto_describe,
-                auto_improve=repo.auto_improve,
-                created_at=repo.created_at.isoformat() if repo.created_at else None,
-                updated_at=repo.updated_at.isoformat() if repo.updated_at else None,
-                last_activity=repo.last_activity.isoformat() if repo.last_activity else None
-            )
+            return self._to_repository_response(repo)
             
         except Exception as e:
             db.rollback()

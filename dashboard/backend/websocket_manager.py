@@ -43,9 +43,14 @@ class WebSocketManager:
     async def send_personal_message(self, message: Dict[str, Any], websocket: WebSocket):
         """Send a message to a specific WebSocket connection"""
         try:
-            await websocket.send_json(message)
+            # Check if websocket is still connected before sending
+            if websocket.client_state.value == 1:  # CONNECTED state
+                await websocket.send_json(message)
+            else:
+                logger.debug(f"Skipping message to disconnected WebSocket: {websocket.client}")
+                self.disconnect(websocket)
         except Exception as e:
-            logger.error(f"Error sending personal message: {e}")
+            logger.debug(f"Error sending personal message to {websocket.client}: {e}")
             self.disconnect(websocket)
     
     async def broadcast(self, message: Dict[str, Any]):
@@ -61,11 +66,16 @@ class WebSocketManager:
         
         for connection in self.active_connections:
             try:
-                await connection.send_json(message)
+                # Check if connection is still active before sending
+                if connection.client_state.value == 1:  # CONNECTED state
+                    await connection.send_json(message)
+                else:
+                    logger.debug(f"Skipping broadcast to disconnected WebSocket: {connection.client}")
+                    disconnected.append(connection)
             except WebSocketDisconnect:
                 disconnected.append(connection)
             except Exception as e:
-                logger.error(f"Error broadcasting to {connection.client}: {e}")
+                logger.debug(f"Error broadcasting to {connection.client}: {e}")
                 disconnected.append(connection)
         
         # Remove disconnected clients

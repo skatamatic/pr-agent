@@ -1,228 +1,296 @@
 """
-Metrics Service - Responsible for collecting and calculating system metrics
-Follows Single Responsibility Principle
+Metrics Service - Manages AI/LLM metrics aggregation and cost calculation
 """
-from datetime import datetime, timedelta
-from typing import Dict, Any
+from datetime import datetime
+from typing import Dict, Any, Optional
 from sqlalchemy.orm import Session
-from models import OperationDB, LogEntryDB
+from models import MetricsAggregateDB, MetricsConfigDB, MetricsAggregate, MetricsConfig, MetricsSummary, OperationDB
+import logging
 
+logger = logging.getLogger(__name__)
 
 class MetricsService:
-    """Service for collecting and calculating system performance metrics"""
+    """Service for managing AI/LLM metrics and cost calculation"""
     
     def __init__(self):
-        self.cache_duration = timedelta(minutes=5)
-        self.cached_metrics = {}
-        self.last_calculation = None
-    
-    async def get_system_metrics(self, db: Session) -> Dict[str, Any]:
-        """Get real system metrics from database"""
-        try:
-            # Get operation counts
-            total_ops = db.query(OperationDB).count()
-            active_ops = db.query(OperationDB).filter(
-                OperationDB.status.in_(["processing", "fetching_context", "preparing"])
-            ).count()
-            completed_ops = db.query(OperationDB).filter(OperationDB.status == "completed").count()
-            failed_ops = db.query(OperationDB).filter(OperationDB.status == "failed").count()
+        self.default_model_costs = {
+            # OpenAI Models (per 1K tokens)
+            "gpt-4": {"input": 0.03, "output": 0.06},
+            "gpt-4-turbo": {"input": 0.01, "output": 0.03},
+            "gpt-4o": {"input": 0.005, "output": 0.015},
+            "gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
+            "gpt-3.5-turbo": {"input": 0.0015, "output": 0.002},
             
-            # Get recent operations for success rate calculation
-            recent_ops = db.query(OperationDB).filter(
-                OperationDB.started_at >= datetime.utcnow() - timedelta(hours=24)
-            ).all()
+            # Anthropic Models (per 1K tokens)
+            "claude-3-opus": {"input": 0.015, "output": 0.075},
+            "claude-3-sonnet": {"input": 0.003, "output": 0.015},
+            "claude-3-haiku": {"input": 0.00025, "output": 0.00125},
+            "claude-3-5-sonnet": {"input": 0.003, "output": 0.015},
+            "claude-3-5-sonnet-20241022": {"input": 0.003, "output": 0.015},
             
-            success_rate = 0
-            if recent_ops:
-                successful = len([op for op in recent_ops if op.status == "completed"])
-                success_rate = (successful / len(recent_ops)) * 100
-            
-            # Get average response time
-            completed_with_duration = db.query(OperationDB).filter(
-                OperationDB.status == "completed",
-                OperationDB.duration.isnot(None)
-            ).limit(100).all()
-            
-            avg_response_time = 0
-            if completed_with_duration:
-                total_time = sum(op.duration for op in completed_with_duration if op.duration)
-                avg_response_time = total_time / len(completed_with_duration)
-            
-            return {
-                "total_operations": total_ops,
-                "active_operations": active_ops,
-                "completed_operations": completed_ops,
-                "failed_operations": failed_ops,
-                "success_rate": round(success_rate, 1),
-                "avg_response_time": round(avg_response_time, 2),
-                "operations_last_24h": len(recent_ops)
-            }
-        except Exception as e:
-            return {
-                "total_operations": 0,
-                "active_operations": 0,
-                "completed_operations": 0,
-                "failed_operations": 0,
-                "success_rate": 0,
-                "avg_response_time": 0,
-                "operations_last_24h": 0,
-                "error": str(e)
-            }
-    
-    async def get_realtime_status(self, db: Session) -> Dict[str, Any]:
-        """Get real-time system status with comprehensive health checks"""
-        metrics = await self.get_system_metrics(db)
-        
-        # Get recent operations for activity feed (limit to 5)
-        recent_ops = db.query(OperationDB).order_by(OperationDB.started_at.desc()).limit(5).all()
-        recent_operations = []
-        for op in recent_ops:
-            recent_operations.append({
-                "id": op.operation_id,
-                "command": op.command,
-                "repo": op.repo,
-                "status": op.status,
-                "started_at": op.started_at.isoformat() if op.started_at else None,
-                "duration": op.duration
-            })
-        
-        # Determine overall system health based on metrics
-        system_health = "healthy"
-        if metrics["failed_operations"] > metrics["completed_operations"] * 0.2:  # >20% failure rate
-            system_health = "degraded"
-        elif metrics["active_operations"] == 0 and metrics["total_operations"] == 0:
-            system_health = "idle"
-        
-        # Get last activity
-        last_op = db.query(OperationDB).order_by(OperationDB.started_at.desc()).first()
-        last_activity = last_op.started_at.isoformat() if last_op else None
-        
-        return {
-            "timestamp": datetime.utcnow().isoformat(),
-            "system_health": system_health,
-            "last_activity": last_activity,
-            "operations": {
-                "total": metrics["total_operations"],
-                "active": metrics["active_operations"],
-                "completed": metrics["completed_operations"],
-                "failed": metrics["failed_operations"],
-                "success_rate": metrics["success_rate"],
-                "avg_response_time": metrics["avg_response_time"],
-                "last_24h": metrics["operations_last_24h"]
-            },
-            "services": {
-                "database": "online",  # This would come from health service
-                "api": "online",
-                "context_service": "unknown"  # This would come from health service
-            },
-            "recent_operations": recent_operations,
-            "queue_size": 0  # We don't have a queue system yet
+            # Google Models (per 1K tokens)
+            "gemini-pro": {"input": 0.0005, "output": 0.0015},
+            "gemini-1.5-pro": {"input": 0.0035, "output": 0.0105},
+            "gemini-1.5-flash": {"input": 0.000075, "output": 0.0003},
         }
     
-    async def get_performance_metrics(self, db: Session) -> Dict[str, Any]:
-        """Get system performance metrics for the last 24 hours"""
+    async def get_or_create_config(self, db: Session) -> MetricsConfig:
+        """Get or create metrics configuration"""
         try:
-            # Get performance data for last 24 hours
-            day_ago = datetime.utcnow() - timedelta(hours=24)
-            recent_ops = db.query(OperationDB).filter(OperationDB.started_at >= day_ago).all()
+            config = db.query(MetricsConfigDB).first()
+            if not config:
+                config = MetricsConfigDB(
+                    model_costs=self.default_model_costs,
+                    developer_hourly_rate=75.0,
+                    hours_multiplier=1.0
+                )
+                db.add(config)
+                db.commit()
+                db.refresh(config)
             
-            # Calculate performance metrics
-            total_ops = len(recent_ops)
-            completed_ops = len([op for op in recent_ops if op.status == "completed"])
-            failed_ops = len([op for op in recent_ops if op.status == "failed"])
-            active_ops = len([op for op in recent_ops if op.status in ["processing", "fetching_context", "preparing"]])
+            return MetricsConfig(
+                id=config.id,
+                model_costs=config.model_costs or {},
+                developer_hourly_rate=config.developer_hourly_rate,
+                hours_multiplier=config.hours_multiplier,
+                created_at=config.created_at.isoformat() if config.created_at else None,
+                updated_at=config.updated_at.isoformat() if config.updated_at else None
+            )
+        except Exception as e:
+            logger.error(f"Error getting metrics config: {e}")
+            raise
+    
+    async def update_config(self, db: Session, config_data: Dict[str, Any]) -> MetricsConfig:
+        """Update metrics configuration"""
+        try:
+            config = db.query(MetricsConfigDB).first()
+            if not config:
+                config = MetricsConfigDB()
+                db.add(config)
             
-            # Calculate average response time
-            completed_with_duration = [op for op in recent_ops if op.status == "completed" and op.duration]
-            avg_response_time = 0
-            if completed_with_duration:
-                avg_response_time = sum(op.duration for op in completed_with_duration) / len(completed_with_duration)
+            if 'model_costs' in config_data:
+                config.model_costs = config_data['model_costs']
+            if 'developer_hourly_rate' in config_data:
+                config.developer_hourly_rate = config_data['developer_hourly_rate']
+            if 'hours_multiplier' in config_data:
+                config.hours_multiplier = config_data['hours_multiplier']
             
-            # Calculate success rate
-            success_rate = (completed_ops / total_ops * 100) if total_ops > 0 else 0
+            config.updated_at = datetime.utcnow()
+            db.commit()
+            db.refresh(config)
             
-            # Get hourly breakdown
-            hourly_stats = {}
-            for i in range(24):
-                hour_start = datetime.utcnow() - timedelta(hours=i+1)
-                hour_end = datetime.utcnow() - timedelta(hours=i)
-                hour_ops = [op for op in recent_ops if hour_start <= op.started_at < hour_end]
+            return MetricsConfig(
+                id=config.id,
+                model_costs=config.model_costs or {},
+                developer_hourly_rate=config.developer_hourly_rate,
+                hours_multiplier=config.hours_multiplier,
+                created_at=config.created_at.isoformat() if config.created_at else None,
+                updated_at=config.updated_at.isoformat() if config.updated_at else None
+            )
+        except Exception as e:
+            logger.error(f"Error updating metrics config: {e}")
+            db.rollback()
+            raise
+    
+    async def get_or_create_aggregate(self, db: Session) -> MetricsAggregate:
+        """Get or create metrics aggregate"""
+        try:
+            aggregate = db.query(MetricsAggregateDB).first()
+            if not aggregate:
+                aggregate = MetricsAggregateDB()
+                db.add(aggregate)
+                db.commit()
+                db.refresh(aggregate)
+            
+            return MetricsAggregate(
+                id=aggregate.id,
+                total_jobs=aggregate.total_jobs,
+                total_operations=aggregate.total_operations,
+                total_input_tokens=aggregate.total_input_tokens,
+                total_output_tokens=aggregate.total_output_tokens,
+                total_estimated_dev_hours=aggregate.total_estimated_dev_hours,
+                model_usage=aggregate.model_usage or {},
+                last_updated=aggregate.last_updated.isoformat() if aggregate.last_updated else None
+            )
+        except Exception as e:
+            logger.error(f"Error getting metrics aggregate: {e}")
+            raise
+    
+    async def update_metrics_from_operation(self, db: Session, operation_data: Dict[str, Any]):
+        """Update metrics aggregate from operation data"""
+        try:
+            # Extract metrics from operation
+            model_used = operation_data.get('model_used')
+            input_tokens = operation_data.get('input_tokens', 0)
+            output_tokens = operation_data.get('output_tokens', 0)
+            estimated_dev_hours = operation_data.get('estimated_dev_hours_saved', 0.0)
+            
+            # Skip if no metrics data
+            if not any([model_used, input_tokens, output_tokens, estimated_dev_hours]):
+                return
+            
+            # Get or create aggregate
+            aggregate = db.query(MetricsAggregateDB).first()
+            if not aggregate:
+                aggregate = MetricsAggregateDB()
+                db.add(aggregate)
+            
+            # Update totals
+            aggregate.total_operations += 1
+            if input_tokens:
+                aggregate.total_input_tokens += input_tokens
+            if output_tokens:
+                aggregate.total_output_tokens += output_tokens
+            if estimated_dev_hours:
+                aggregate.total_estimated_dev_hours += estimated_dev_hours
+            
+            # Update model usage breakdown
+            if model_used:
+                model_usage = aggregate.model_usage or {}
+                if model_used not in model_usage:
+                    model_usage[model_used] = {
+                        'operations_count': 0,
+                        'input_tokens': 0,
+                        'output_tokens': 0,
+                        'estimated_dev_hours': 0.0
+                    }
                 
-                hourly_stats[f"hour_{i}"] = {
-                    "total": len(hour_ops),
-                    "completed": len([op for op in hour_ops if op.status == "completed"]),
-                    "failed": len([op for op in hour_ops if op.status == "failed"]),
-                    "timestamp": hour_start.isoformat()
+                model_usage[model_used]['operations_count'] += 1
+                model_usage[model_used]['input_tokens'] += input_tokens or 0
+                model_usage[model_used]['output_tokens'] += output_tokens or 0
+                model_usage[model_used]['estimated_dev_hours'] += estimated_dev_hours or 0.0
+                
+                aggregate.model_usage = model_usage
+            
+            aggregate.last_updated = datetime.utcnow()
+            db.commit()
+            
+        except Exception as e:
+            logger.error(f"Error updating metrics from operation: {e}")
+            db.rollback()
+            raise
+    
+    async def recalculate_metrics_from_operations(self, db: Session):
+        """Recalculate all metrics from existing operations (for data migration/correction)"""
+        try:
+            # Get all operations with metrics data
+            operations = db.query(OperationDB).filter(
+                (OperationDB.model_used.is_not(None)) |
+                (OperationDB.input_tokens.is_not(None)) |
+                (OperationDB.output_tokens.is_not(None)) |
+                (OperationDB.estimated_dev_hours_saved.is_not(None))
+            ).all()
+            
+            # Reset aggregate
+            aggregate = db.query(MetricsAggregateDB).first()
+            if not aggregate:
+                aggregate = MetricsAggregateDB()
+                db.add(aggregate)
+            
+            # Reset values
+            aggregate.total_operations = 0
+            aggregate.total_input_tokens = 0
+            aggregate.total_output_tokens = 0
+            aggregate.total_estimated_dev_hours = 0.0
+            aggregate.model_usage = {}
+            
+            # Process each operation
+            for operation in operations:
+                model_used = operation.model_used
+                input_tokens = operation.input_tokens or 0
+                output_tokens = operation.output_tokens or 0
+                estimated_dev_hours = operation.estimated_dev_hours_saved or 0.0
+                
+                # Update totals
+                aggregate.total_operations += 1
+                aggregate.total_input_tokens += input_tokens
+                aggregate.total_output_tokens += output_tokens
+                aggregate.total_estimated_dev_hours += estimated_dev_hours
+                
+                # Update model usage
+                if model_used:
+                    model_usage = aggregate.model_usage or {}
+                    if model_used not in model_usage:
+                        model_usage[model_used] = {
+                            'operations_count': 0,
+                            'input_tokens': 0,
+                            'output_tokens': 0,
+                            'estimated_dev_hours': 0.0
+                        }
+                    
+                    model_usage[model_used]['operations_count'] += 1
+                    model_usage[model_used]['input_tokens'] += input_tokens
+                    model_usage[model_used]['output_tokens'] += output_tokens
+                    model_usage[model_used]['estimated_dev_hours'] += estimated_dev_hours
+                    
+                    aggregate.model_usage = model_usage
+            
+            # Count total jobs
+            total_jobs = db.query(OperationDB.job_id).distinct().count()
+            aggregate.total_jobs = total_jobs
+            
+            aggregate.last_updated = datetime.utcnow()
+            db.commit()
+            
+            logger.info(f"Recalculated metrics: {aggregate.total_operations} operations, {total_jobs} jobs")
+            
+        except Exception as e:
+            logger.error(f"Error recalculating metrics: {e}")
+            db.rollback()
+            raise
+    
+    async def get_metrics_summary(self, db: Session) -> MetricsSummary:
+        """Get complete metrics summary with cost calculations"""
+        try:
+            # Get config and aggregate
+            config = await self.get_or_create_config(db)
+            aggregate = await self.get_or_create_aggregate(db)
+            
+            # Calculate costs
+            total_token_cost = 0.0
+            model_breakdown = {}
+            
+            for model_name, usage in (aggregate.model_usage or {}).items():
+                input_tokens = usage.get('input_tokens', 0)
+                output_tokens = usage.get('output_tokens', 0)
+                
+                # Get model costs (use defaults if not configured)
+                model_costs = config.model_costs.get(model_name, self.default_model_costs.get(model_name, {'input': 0.01, 'output': 0.03}))
+                
+                # Calculate cost (per 1K tokens)
+                input_cost = (input_tokens / 1000) * model_costs.get('input', 0.01)
+                output_cost = (output_tokens / 1000) * model_costs.get('output', 0.03)
+                model_cost = input_cost + output_cost
+                
+                total_token_cost += model_cost
+                
+                model_breakdown[model_name] = {
+                    'operations_count': usage.get('operations_count', 0),
+                    'input_tokens': input_tokens,
+                    'output_tokens': output_tokens,
+                    'estimated_dev_hours': usage.get('estimated_dev_hours', 0.0),
+                    'input_cost': round(input_cost, 4),
+                    'output_cost': round(output_cost, 4),
+                    'total_cost': round(model_cost, 4),
+                    'cost_per_operation': round(model_cost / max(usage.get('operations_count', 1), 1), 4)
                 }
             
-            return {
-                "summary": {
-                    "total_operations": total_ops,
-                    "completed_operations": completed_ops,
-                    "failed_operations": failed_ops,
-                    "active_operations": active_ops,
-                    "success_rate": round(success_rate, 1),
-                    "avg_response_time": round(avg_response_time, 2)
-                },
-                "hourly_breakdown": hourly_stats,
-                "period": "24h",
-                "timestamp": datetime.utcnow().isoformat()
-            }
+            # Calculate developer savings
+            adjusted_dev_hours = aggregate.total_estimated_dev_hours * config.hours_multiplier
+            total_dev_cost_saved = adjusted_dev_hours * config.developer_hourly_rate
+            total_savings = total_dev_cost_saved - total_token_cost
+            
+            return MetricsSummary(
+                total_jobs=aggregate.total_jobs,
+                total_operations=aggregate.total_operations,
+                total_token_cost=round(total_token_cost, 2),
+                total_dev_hours_saved=round(adjusted_dev_hours, 2),
+                total_dev_cost_saved=round(total_dev_cost_saved, 2),
+                total_savings=round(total_savings, 2),
+                model_breakdown=model_breakdown,
+                config=config
+            )
             
         except Exception as e:
-            raise Exception(f"Failed to get performance metrics: {str(e)}")
-    
-    async def get_system_alerts(self, db: Session) -> Dict[str, Any]:
-        """Get current system alerts and warnings"""
-        alerts = []
-        
-        try:
-            # Check for stuck operations
-            stuck_cutoff = datetime.utcnow() - timedelta(minutes=30)
-            stuck_ops = db.query(OperationDB).filter(
-                OperationDB.status.in_(["processing", "fetching_context", "preparing"]),
-                OperationDB.started_at < stuck_cutoff
-            ).count()
-            
-            if stuck_ops > 0:
-                alerts.append({
-                    "type": "warning",
-                    "message": f"{stuck_ops} operations may be stuck (running > 30 minutes)",
-                    "severity": "medium",
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-            
-            # Check error rate
-            hour_ago = datetime.utcnow() - timedelta(hours=1)
-            recent_ops = db.query(OperationDB).filter(OperationDB.started_at >= hour_ago).all()
-            
-            if recent_ops:
-                failed_ops = [op for op in recent_ops if op.status == "failed"]
-                error_rate = len(failed_ops) / len(recent_ops) * 100
-                
-                if error_rate > 20:
-                    alerts.append({
-                        "type": "error",
-                        "message": f"High error rate: {error_rate:.1f}% ({len(failed_ops)}/{len(recent_ops)} operations failed)",
-                        "severity": "high",
-                        "timestamp": datetime.utcnow().isoformat()
-                    })
-            
-            # Check recent error logs
-            error_logs = db.query(LogEntryDB).filter(
-                LogEntryDB.level == "ERROR",
-                LogEntryDB.timestamp >= hour_ago
-            ).count()
-            
-            if error_logs > 50:
-                alerts.append({
-                    "type": "error",
-                    "message": f"High error frequency: {error_logs} error logs in last hour",
-                    "severity": "high",
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-            
-            return {"alerts": alerts, "total": len(alerts)}
-            
-        except Exception as e:
-            return {"alerts": [], "total": 0, "error": str(e)} 
+            logger.error(f"Error getting metrics summary: {e}")
+            raise 

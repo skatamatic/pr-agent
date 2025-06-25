@@ -18,11 +18,15 @@ import {
   FileText,
   RefreshCw,
   Filter,
-  X
+  X,
+  Brain,
+  DollarSign,
+  TrendingUp
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
+import RunningIndicator from './RunningIndicator';
 
 const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOperationId }) => {
   const [jobs, setJobs] = useState([]);
@@ -167,7 +171,7 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
   const getJobStatusIcon = (status) => {
     switch (status) {
       case 'running':
-        return <Activity className="h-4 w-4 text-blue-500 animate-pulse" />;
+        return <RunningIndicator size="sm" />;
       case 'completed':
         return <CheckCircle className="h-4 w-4 text-green-500" />;
       case 'failed':
@@ -187,7 +191,7 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
       case 'preparing':
       case 'self_reflecting':
       case 'publishing':
-        return <Activity className="h-3 w-3 text-blue-500 animate-pulse" />;
+        return <RunningIndicator size="xs" />;
       case 'completed':
       case 'context_completed':
         return <CheckCircle className="h-3 w-3 text-green-500" />;
@@ -229,6 +233,26 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
   const formatTimestamp = (timestamp) => {
     if (!timestamp) return 'N/A';
     return new Date(timestamp).toLocaleString();
+  };
+
+  const formatCurrency = (amount) => {
+    if (!amount) return null;
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 4
+    }).format(amount);
+  };
+
+  const formatTokens = (tokens) => {
+    if (!tokens) return null;
+    return new Intl.NumberFormat('en-US').format(tokens);
+  };
+
+  const formatHours = (hours) => {
+    if (!hours) return null;
+    return `${hours.toFixed(1)}h`;
   };
 
   const getUniqueValues = (field) => {
@@ -645,38 +669,76 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
                       Operations ({job.operations.length})
                     </h4>
                     <div className="space-y-2">
-                      {job.operations.map((operation) => (
-                        <div
-                          key={operation.operation_id}
-                          ref={highlightedOperationId === operation.operation_id ? highlightedOperationRef : null}
-                          className={`flex items-center justify-between p-3 bg-white dark:bg-gray-800 rounded-md border border-gray-200 dark:border-gray-700 ${
-                            highlightedOperationId === operation.operation_id ? 'animate-highlight-operation ring-2 ring-green-500 ring-opacity-75' : ''
-                          }`}
-                        >
-                          <div className="flex items-center space-x-3">
-                            {getOperationStatusIcon(operation.status)}
-                            <div>
-                              <p className="text-sm font-medium text-gray-900 dark:text-white">
-                                {operation.operation_type || operation.command || 'Unknown Operation'}
-                              </p>
-                              <p className="text-xs text-gray-500 dark:text-gray-400">
-                                {formatTimestamp(operation.started_at)}
-                                {operation.duration && ` • ${formatDuration(operation.duration)}`}
-                              </p>
+                      {job.operations.map((operation) => {
+                        // Check if operation has AI metrics
+                        const hasAiMetrics = operation.model_used || operation.input_tokens || operation.output_tokens || operation.estimated_dev_hours_saved;
+                        
+                        return (
+                          <div
+                            key={operation.operation_id}
+                            ref={highlightedOperationId === operation.operation_id ? highlightedOperationRef : null}
+                            className={`p-3 bg-white dark:bg-gray-800 rounded-md border border-gray-200 dark:border-gray-700 ${
+                              highlightedOperationId === operation.operation_id ? 'animate-highlight-operation ring-2 ring-green-500 ring-opacity-75' : ''
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center space-x-3">
+                                {getOperationStatusIcon(operation.status)}
+                                <div>
+                                  <p className="text-sm font-medium text-gray-900 dark:text-white">
+                                    {operation.operation_type || operation.command || 'Unknown Operation'}
+                                  </p>
+                                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                                    {formatTimestamp(operation.started_at)}
+                                    {operation.duration && ` • ${formatDuration(operation.duration)}`}
+                                  </p>
+                                </div>
+                              </div>
+                              
+                              <div className="flex items-center space-x-2">
+                                <button
+                                  onClick={() => onShowLogs(operation.operation_id, 'operation')}
+                                  className="inline-flex items-center px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                                >
+                                  <FileText className="h-3 w-3 mr-1" />
+                                  Logs
+                                </button>
+                              </div>
                             </div>
+
+                            {/* AI Metrics Display */}
+                            {hasAiMetrics && (
+                              <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-600">
+                                <div className="flex items-center space-x-4 text-xs">
+                                  {operation.model_used && (
+                                    <div className="flex items-center space-x-1 text-blue-600 dark:text-blue-400">
+                                      <Brain className="h-3 w-3" />
+                                      <span>{operation.model_used}</span>
+                                    </div>
+                                  )}
+                                  
+                                  {(operation.input_tokens || operation.output_tokens) && (
+                                    <div className="flex items-center space-x-1 text-purple-600 dark:text-purple-400">
+                                      <Zap className="h-3 w-3" />
+                                      <span>
+                                        {formatTokens(operation.input_tokens || 0)}
+                                        {operation.output_tokens && `+${formatTokens(operation.output_tokens)}`} tokens
+                                      </span>
+                                    </div>
+                                  )}
+                                  
+                                  {operation.estimated_dev_hours_saved && (
+                                    <div className="flex items-center space-x-1 text-green-600 dark:text-green-400">
+                                      <TrendingUp className="h-3 w-3" />
+                                      <span>{formatHours(operation.estimated_dev_hours_saved)} saved</span>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
                           </div>
-                          
-                          <div className="flex items-center space-x-2">
-                            <button
-                              onClick={() => onShowLogs(operation.operation_id, 'operation')}
-                              className="inline-flex items-center px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-                            >
-                              <FileText className="h-3 w-3 mr-1" />
-                              Logs
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 </div>

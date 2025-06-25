@@ -305,6 +305,47 @@ async def generate_test_data() -> Dict[str, Any]:
                         weights=[9, 1]  # 90% completed, 10% failed (but job still completed overall)
                     )[0]
                 
+                # Generate AI/LLM metrics for completed operations
+                ai_models = [
+                    "gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo",
+                    "claude-3-opus", "claude-3-sonnet", "claude-3-haiku", "claude-3-5-sonnet", "claude-3-5-sonnet-20241022",
+                    "gemini-pro", "gemini-1.5-pro", "gemini-1.5-flash"
+                ]
+                
+                model_used = None
+                input_tokens = None
+                output_tokens = None
+                estimated_dev_hours = None
+                
+                if op_status in ["completed", "failed"] and random.random() < 0.8:  # 80% of completed/failed ops have metrics
+                    model_used = random.choice(ai_models)
+                    
+                    # Generate realistic token counts based on operation type
+                    if command == "review":
+                        input_tokens = random.randint(2000, 15000)
+                        output_tokens = random.randint(500, 3000)
+                        estimated_dev_hours = random.uniform(0.5, 4.0)
+                    elif command == "describe":
+                        input_tokens = random.randint(1000, 8000)
+                        output_tokens = random.randint(200, 1000)
+                        estimated_dev_hours = random.uniform(0.2, 1.5)
+                    elif command == "improve":
+                        input_tokens = random.randint(1500, 12000)
+                        output_tokens = random.randint(300, 2000)
+                        estimated_dev_hours = random.uniform(0.3, 3.0)
+                    elif command == "test":
+                        input_tokens = random.randint(2000, 10000)
+                        output_tokens = random.randint(800, 4000)
+                        estimated_dev_hours = random.uniform(1.0, 6.0)
+                    elif command == "add_docs":
+                        input_tokens = random.randint(1000, 6000)
+                        output_tokens = random.randint(400, 2000)
+                        estimated_dev_hours = random.uniform(0.5, 2.0)
+                    else:  # update_changelog
+                        input_tokens = random.randint(500, 3000)
+                        output_tokens = random.randint(100, 800)
+                        estimated_dev_hours = random.uniform(0.1, 0.8)
+
                 operation = OperationDB(
                     operation_id=operation_id,
                     job_id=job_id,
@@ -324,6 +365,11 @@ async def generate_test_data() -> Dict[str, Any]:
                     response_time=random.uniform(0.3, 8.0) if op_status in ["completed", "failed"] else None,
                     context_fetch_time=random.uniform(0.1, 3.0) if op_status in ["completed", "failed"] else None,
                     ai_processing_time=random.uniform(3.0, 45.0) if op_status in ["completed", "failed"] else None,
+                    # NEW: AI/LLM Metrics
+                    model_used=model_used,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    estimated_dev_hours_saved=estimated_dev_hours,
                     suggestions_count=random.randint(2, 15) if op_status == "completed" and command in ["review", "improve"] else None,
                     errors_count=random.randint(0, 2),
                     warnings_count=random.randint(0, 4),
@@ -679,24 +725,142 @@ async def succeed_live_activity(operation_id: str) -> Dict[str, Any]:
 async def clear_all_data() -> Dict[str, Any]:
     """Clear all test and development data"""
     try:
+        from models import NotificationEventDB, HealthCacheDB, MetricsAggregateDB
+        
         db = SessionLocal()
         
+        # Count records before deletion
         jobs_count = db.query(JobDB).count()
-        operations_count = db.query(OperationDB).count()
+        operations_count = db.query(OperationDB).count()  
         logs_count = db.query(LogEntryDB).count()
+        notification_events_count = db.query(NotificationEventDB).count()
+        health_cache_count = db.query(HealthCacheDB).count()
+        metrics_aggregate_count = db.query(MetricsAggregateDB).count()
         
         # Delete in order due to foreign key constraints
         db.query(LogEntryDB).delete()
         db.query(OperationDB).delete()
         db.query(JobDB).delete()
+        db.query(NotificationEventDB).delete()
+        db.query(HealthCacheDB).delete()
+        db.query(MetricsAggregateDB).delete()
+        
+        db.commit()
+        db.close()
+        
+        total_cleared = jobs_count + operations_count + logs_count + notification_events_count + health_cache_count + metrics_aggregate_count
+        
+        return {
+            "status": "success",
+            "message": f"Cleared {jobs_count} jobs, {operations_count} operations, {logs_count} logs, {notification_events_count} notification events, {health_cache_count} health cache entries, and {metrics_aggregate_count} metrics aggregates ({total_cleared} total records)"
+        }
+        
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to clear data: {str(e)}"}
+
+
+async def generate_ai_metrics_data() -> Dict[str, Any]:
+    """Generate sample operations with AI metrics data for testing"""
+    try:
+        db = SessionLocal()
+        
+        # AI models with realistic usage patterns
+        ai_models = [
+            {"name": "gpt-4", "weight": 3, "input_range": (2000, 8000), "output_range": (500, 2000), "dev_hours": (0.5, 3.0)},
+            {"name": "gpt-4-turbo", "weight": 4, "input_range": (3000, 12000), "output_range": (800, 3000), "dev_hours": (0.8, 4.0)},
+            {"name": "gpt-4o", "weight": 5, "input_range": (2500, 10000), "output_range": (600, 2500), "dev_hours": (0.6, 3.5)},
+            {"name": "claude-3-sonnet", "weight": 3, "input_range": (2200, 9000), "output_range": (550, 2200), "dev_hours": (0.7, 3.2)},
+            {"name": "claude-3-5-sonnet", "weight": 4, "input_range": (2800, 11000), "output_range": (700, 2800), "dev_hours": (0.9, 4.2)},
+            {"name": "claude-3-haiku", "weight": 2, "input_range": (1500, 6000), "output_range": (300, 1500), "dev_hours": (0.3, 2.0)},
+        ]
+        
+        commands = ["review", "describe", "improve", "test", "add_docs", "update_changelog"]
+        repos = ["microsoft/vscode", "facebook/react", "google/tensorflow", "vercel/next.js", "nodejs/node"]
+        
+        operations_created = 0
+        
+        # Generate 50 operations with AI metrics
+        for i in range(50):
+            # Select model based on weights
+            model_choices = []
+            for model in ai_models:
+                model_choices.extend([model] * model["weight"])
+            selected_model = random.choice(model_choices)
+            
+            # Generate realistic metrics
+            input_tokens = random.randint(*selected_model["input_range"])
+            output_tokens = random.randint(*selected_model["output_range"])
+            dev_hours = round(random.uniform(*selected_model["dev_hours"]), 2)
+            
+            # Create job
+            job_id = f"ai-job-{uuid.uuid4().hex[:8]}"
+            operation_id = f"ai-op-{uuid.uuid4().hex[:8]}"
+            
+            start_time = datetime.utcnow() - timedelta(days=random.randint(0, 30), hours=random.randint(0, 23))
+            duration = random.uniform(30, 300)  # 30 seconds to 5 minutes
+            
+            job = JobDB(
+                job_id=job_id,
+                job_type=random.choice(["webhook", "api", "cli"]),
+                source="github",
+                status="completed",
+                repository=random.choice(repos),
+                pr_url=f"https://github.com/{random.choice(repos)}/pull/{random.randint(1, 500)}",
+                trigger_user=f"user-{random.randint(1, 20)}",
+                trigger_event="pull_request",
+                started_at=start_time,
+                completed_at=start_time + timedelta(seconds=duration),
+                duration=duration,
+                operations_count=1,
+                completed_operations=1,
+                request_id=f"req_{uuid.uuid4().hex[:12]}"
+            )
+            
+            db.add(job)
+            
+            # Create operation with AI metrics
+            operation = OperationDB(
+                operation_id=operation_id,
+                job_id=job_id,
+                operation_type=random.choice(commands),
+                command=random.choice(commands),
+                status="completed",
+                repo=job.repository,
+                pr_url=job.pr_url,
+                installation_id=f"inst_{random.randint(10000, 99999)}",
+                sender=job.trigger_user,
+                request_id=job.request_id,
+                started_at=start_time,
+                last_updated=start_time + timedelta(seconds=duration),
+                completed_at=start_time + timedelta(seconds=duration),
+                duration=duration,
+                response_time=random.uniform(2.0, 15.0),
+                context_fetch_time=random.uniform(0.5, 3.0),
+                ai_processing_time=random.uniform(10.0, 60.0),
+                
+                # AI/LLM Metrics
+                model_used=selected_model["name"],
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                estimated_dev_hours_saved=dev_hours,
+                
+                # Results
+                suggestions_count=random.randint(1, 8) if random.choice(commands) in ["review", "improve"] else None,
+                errors_count=random.randint(0, 2) if random.random() < 0.3 else 0,
+                warnings_count=random.randint(0, 3) if random.random() < 0.4 else 0,
+            )
+            
+            db.add(operation)
+            operations_created += 1
         
         db.commit()
         db.close()
         
         return {
             "status": "success",
-            "message": f"Cleared {jobs_count} jobs, {operations_count} operations and {logs_count} logs"
+            "message": f"Generated {operations_created} operations with AI metrics data",
+            "operations_created": operations_created
         }
         
     except Exception as e:
-        return {"status": "error", "message": f"Failed to clear data: {str(e)}"} 
+        return {"status": "error", "message": f"Failed to generate AI metrics data: {str(e)}"}
