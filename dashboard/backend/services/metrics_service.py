@@ -283,6 +283,8 @@ class MetricsService:
             return MetricsSummary(
                 total_jobs=aggregate.total_jobs,
                 total_operations=aggregate.total_operations,
+                total_input_tokens=aggregate.total_input_tokens,
+                total_output_tokens=aggregate.total_output_tokens,
                 total_token_cost=round(total_token_cost, 2),
                 total_dev_hours_saved=round(adjusted_dev_hours, 2),
                 total_dev_cost_saved=round(total_dev_cost_saved, 2),

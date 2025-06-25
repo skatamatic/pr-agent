@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Search, Download, Filter, AlertCircle, Info, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, RefreshCw, Clock, ExternalLink, X, Eye, CheckCircle, XCircle, Calendar } from 'lucide-react';
+import { Search, Download, Filter, AlertCircle, Info, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, RefreshCw, Clock, ExternalLink, X, Eye, CheckCircle, XCircle, Calendar, FileText } from 'lucide-react';
 import api from '../services/api';
 import ViewHeader from './ViewHeader';
 
@@ -18,7 +18,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
   const [showExportDropdown, setShowExportDropdown] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const exportDropdownRef = useRef(null);
-  const itemsPerPage = 50;
+  const itemsPerPage = 30;
 
   // Handle external filtering (from JobsList component)
   useEffect(() => {
@@ -402,7 +402,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       <ViewHeader 
         title={`Logs (${filteredLogs.length} entries)`}
         subtitle="View and filter system logs from PR operations"
-        icon={Eye}
+        icon={FileText}
         onRefresh={onRefresh}
         rightComponent={
           <div className="flex items-center space-x-3">
@@ -525,76 +525,83 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       )}
 
       {/* Filters */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/10 dark:to-indigo-900/10 rounded-xl border border-blue-200 dark:border-blue-700 shadow-sm max-w-none mx-auto" style={{width: '90%'}}>
         {/* Filter Header */}
         <div
-          className="p-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+          className="p-5 cursor-pointer hover:bg-blue-100/50 dark:hover:bg-blue-900/20 transition-colors rounded-t-xl"
           onClick={() => setShowFilters(!showFilters)}
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
-              <div className="flex items-center space-x-2">
-                <Filter className="h-5 w-5 text-gray-600 dark:text-gray-300" />
-                <h3 className="text-lg font-medium text-gray-900 dark:text-white">Filters</h3>
+              <div className="p-2 bg-blue-100 dark:bg-blue-900/30 rounded-lg">
+                <Filter className="h-5 w-5 text-blue-600 dark:text-blue-400" />
               </div>
-              {showFilters ? (
-                <ChevronUp className="h-5 w-5 text-gray-600 dark:text-gray-300" />
-              ) : (
-                <ChevronDown className="h-5 w-5 text-gray-600 dark:text-gray-300" />
-              )}
+              <div>
+                <h3 className="text-lg font-semibold text-blue-900 dark:text-blue-100">Filter Logs</h3>
+                <p className="text-sm text-blue-700 dark:text-blue-300">Filter by level, date, repository, or operation type</p>
+              </div>
             </div>
             
-            {/* Active filter summary */}
-            <div className="flex-1 mx-4">
-              {(() => {
-                const activeFilters = getActiveFilterSummary();
-                if (activeFilters.length === 0) {
+            <div className="flex items-center space-x-4">
+              {/* Active filter summary */}
+              <div className="flex-1">
+                {(() => {
+                  const activeFilters = getActiveFilterSummary();
+                  if (activeFilters.length === 0) {
+                    return (
+                      <span className="text-sm text-blue-600 dark:text-blue-400 font-medium">
+                        No active filters
+                      </span>
+                    );
+                  }
                   return (
-                    <span className="text-sm text-gray-500 dark:text-gray-400">
-                      No active filters
-                    </span>
+                    <div className="flex flex-wrap gap-2 justify-end">
+                      {activeFilters.slice(0, 2).map((filter, index) => (
+                        <span
+                          key={index}
+                          className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-blue-200 text-blue-800 dark:bg-blue-800/40 dark:text-blue-200 border border-blue-300 dark:border-blue-600"
+                        >
+                          {filter}
+                        </span>
+                      ))}
+                      {activeFilters.length > 2 && (
+                        <span className="text-sm text-blue-700 dark:text-blue-300 font-medium">
+                          +{activeFilters.length - 2} more
+                        </span>
+                      )}
+                    </div>
                   );
-                }
-                return (
-                  <div className="flex flex-wrap gap-1">
-                    {activeFilters.slice(0, 3).map((filter, index) => (
-                      <span
-                        key={index}
-                        className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-400"
-                      >
-                        {filter}
-                      </span>
-                    ))}
-                    {activeFilters.length > 3 && (
-                      <span className="text-xs text-gray-500 dark:text-gray-400">
-                        +{activeFilters.length - 3} more
-                      </span>
-                    )}
-                  </div>
-                );
-              })()}
-            </div>
+                })()}
+              </div>
 
-            {/* Clear All Filters Button */}
-            {hasActiveFilters() && (
-              <button
-                onClick={clearAllFilters}
-                className="ml-3 px-3 py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-md transition-colors flex items-center space-x-1"
-                title="Clear all filters"
-              >
-                <X className="h-4 w-4" />
-                <span>Clear All</span>
-              </button>
-            )}
+              {/* Clear All Filters Button */}
+              {hasActiveFilters() && (
+                <button
+                  onClick={clearAllFilters}
+                  className="px-4 py-2 text-sm text-blue-700 dark:text-blue-300 hover:text-blue-900 dark:hover:text-blue-100 hover:bg-blue-200 dark:hover:bg-blue-800/30 rounded-lg transition-colors flex items-center space-x-2 font-medium border border-blue-300 dark:border-blue-600"
+                  title="Clear all filters"
+                >
+                  <X className="h-4 w-4" />
+                  <span>Clear All</span>
+                </button>
+              )}
+
+              {/* Chevron */}
+              {showFilters ? (
+                <ChevronUp className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+              ) : (
+                <ChevronDown className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+              )}
+            </div>
           </div>
         </div>
 
         {/* Expandable Filter Content */}
         {showFilters && (
-          <div className="border-t border-gray-200 dark:border-gray-700 p-4 space-y-4 animate-slideDown">
+          <div className="border-t border-blue-200 dark:border-blue-700 bg-white/50 dark:bg-gray-800/50 p-6 space-y-6 animate-slideDown rounded-b-xl">
             {/* Level Filter Toggles */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200 mb-3">
                 Log Levels
               </label>
               <div className="flex flex-wrap gap-2">
@@ -602,10 +609,10 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                   <button
                     key={level.key}
                     onClick={() => toggleLevel(level.key)}
-                    className={`px-3 py-1 rounded-full text-xs font-medium transition-all duration-200 ${
+                                          className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
                       selectedLevels.includes(level.key.toUpperCase())
-                        ? level.color + ' ring-2 ring-offset-1 ring-blue-500 dark:ring-offset-gray-800'
-                        : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-gray-600'
+                        ? level.color + ' shadow-md scale-105'
+                        : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600 hover:border-blue-300 dark:hover:border-blue-500'
                     }`}
                   >
                     {level.label}
@@ -631,7 +638,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                     className="mr-2 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500"
                   />
                   <span className="text-sm text-gray-700 dark:text-gray-300">Show system logs</span>
-                  <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/20 dark:text-purple-400 ml-2">
+                  <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-400 ml-2">
                     <svg className="h-3 w-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
                       <path d="M10 2L15.09 8.26L22 9L16 14.74L17.18 21.02L10 17.77L2.82 21.02L4 14.74L-2 9L4.91 8.26L10 2Z"/>
                     </svg>
@@ -689,7 +696,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
             {/* Repository Filter */}
             {allRepoNames.length > 0 && (
               <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200 mb-3">
                   Repository
                 </label>
                 <div className="flex flex-wrap gap-2">
@@ -700,10 +707,10 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                         setSelectedRepository(repo);
                         setCurrentPage(1);
                       }}
-                      className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
                         selectedRepository === repo
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                          ? 'bg-blue-600 text-white shadow-md scale-105'
+                          : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600 hover:border-blue-300 dark:hover:border-blue-500'
                       }`}
                     >
                       {repo === 'all' ? 'All Repositories' : repo.split('/').pop()}
@@ -716,7 +723,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
             {/* Operation Type Filter */}
             {uniqueOperationTypes.length > 0 && (
               <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200 mb-3">
                   Operation Type
                 </label>
                 <div className="flex flex-wrap gap-2">
@@ -727,10 +734,10 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                         setSelectedOperationType(opType);
                         setCurrentPage(1);
                       }}
-                      className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
                         selectedOperationType === opType
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                          ? 'bg-blue-600 text-white shadow-md scale-105'
+                          : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600 hover:border-blue-300 dark:hover:border-blue-500'
                       }`}
                     >
                       {opType === 'all' ? 'All Operations' : opType.charAt(0).toUpperCase() + opType.slice(1)}
@@ -763,12 +770,10 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                   <th className="flex-1 px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Message
                   </th>
-                  <th className="w-56 px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  <th className="w-72 px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Source
                   </th>
-                  <th className="w-28 px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                    Actions
-                  </th>
+                  <th className="w-12 px-4 py-3 text-right"></th>
                 </tr>
               </thead>
               <tbody className="bg-white dark:bg-gray-800">
@@ -805,32 +810,28 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                             {log.message}
                           </div>
                         </td>
-                        <td className="w-56 px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                        <td className="w-72 px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                           <div className="truncate">
                             {log.module && <div className="font-medium truncate" title={log.module}>{log.module}</div>}
                             {log.function && <div className="text-xs text-gray-400 dark:text-gray-500 truncate" title={log.function}>{log.function}()</div>}
                           </div>
                         </td>
-                        <td className="w-28 px-4 py-4 whitespace-nowrap text-sm">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleExpanded(logId);
-                            }}
-                            className="flex items-center text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 transition-colors duration-200"
-                          >
-                            {isExpanded ? (
-                              <>
-                                <ChevronUp className="h-4 w-4 mr-1" />
-                                Collapse
-                              </>
-                            ) : (
-                              <>
-                                <ChevronDown className="h-4 w-4 mr-1" />
-                                Expand
-                              </>
-                            )}
-                          </button>
+                        <td className="w-12 px-4 py-4 whitespace-nowrap text-sm">
+                          <div className="flex justify-end">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleExpanded(logId);
+                              }}
+                              className="flex items-center justify-center text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 transition-colors duration-200 p-1 rounded hover:bg-blue-50 dark:hover:bg-blue-900/20"
+                            >
+                              {isExpanded ? (
+                                <ChevronUp className="h-4 w-4" />
+                              ) : (
+                                <ChevronDown className="h-4 w-4" />
+                              )}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                       
@@ -1007,7 +1008,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                                             log.message?.includes('[HEALTH]') ||
                                             log.message?.includes('[SYSTEM]')) ? (
                                             <>
-                                              <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/20 dark:text-purple-400 mr-2">
+                                              <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-400 mr-2">
                                                 <svg className="h-3 w-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
                                                   <path d="M10 2L15.09 8.26L22 9L16 14.74L17.18 21.02L10 17.77L2.82 21.02L4 14.74L-2 9L4.91 8.26L10 2Z"/>
                                                 </svg>

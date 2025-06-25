@@ -81,21 +81,157 @@ code {
 }
 
 /* Custom highlight animations */
-@keyframes highlightPulse {
-  0%, 100% {
-    transform: scale(1);
-    opacity: 1;
+@keyframes highlightBorderPulse {
+  0% {
+    border-color: transparent;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  25% {
+    border-color: rgb(59 130 246);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
   }
   50% {
-    transform: scale(1.02);
-    opacity: 0.8;
+    border-color: rgb(34 197 94);
+    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.4);
+  }
+  75% {
+    border-color: rgb(59 130 246);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+  }
+  100% {
+    border-color: transparent;
+    box-shadow: 0 0 0 0 transparent;
   }
 }
 
 .animate-highlight-job {
-  animation: highlightPulse 1s ease-in-out 3;
+  animation: highlightBorderPulse 2s ease-in-out 1;
 }
 
 .animate-highlight-operation {
-  animation: highlightPulse 0.8s ease-in-out 4;
-} 
+  animation: highlightBorderPulse 2s ease-in-out 1;
+}
+
+/* Subtle wiggle animation for interactive elements */
+@keyframes wiggle {
+  0%, 100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(0.5deg);
+  }
+  75% {
+    transform: rotate(-0.5deg);
+  }
+}
+
+.animate-wiggle {
+  animation: wiggle 2s ease-in-out infinite;
+}
+
+/* Slide and fade animations for tab transitions */
+@keyframes slide-in-from-right {
+  from {
+    transform: translateX(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slide-out-to-left {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(-20px);
+    opacity: 0;
+  }
+}
+
+/* View transition animations */
+@keyframes view-fade-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-in {
+  animation-fill-mode: both;
+}
+
+.slide-in-from-right-4 {
+  animation: slide-in-from-right 0.3s ease-out;
+}
+
+.fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+.view-fade-enter {
+  animation: view-fade-enter 0.2s ease-out;
+}
+
+.duration-300 {
+  animation-duration: 0.3s;
+}
+
+/* Simple pulse animation for running status indicators */
+@keyframes simple-pulse {
+  0%, 100% {
+    transform: scale(0.75);
+  }
+  50% {
+    transform: scale(1.25);
+  }
+}
+
+.animate-simple-pulse {
+  animation: simple-pulse 2s ease-in-out infinite;
+}
+
+/* Tab content transition animations */
+@keyframes tab-enter {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes tab-exit {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+}
+
+.tab-enter {
+  animation: tab-enter 0.3s ease-out;
+}
+
+.tab-exit {
+  animation: tab-exit 0.2s ease-in;
+}

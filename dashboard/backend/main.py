@@ -828,53 +828,113 @@ class DashboardApplication:
         
         @self.app.get("/api/repositories/{repo_id}/effective-config")
         async def get_repository_effective_config(repo_id: int, db: Session = Depends(get_db)):
-            """Get the effective configuration for a repository"""
+            """Get the comprehensive effective configuration for a repository"""
             try:
                 from services.runner_health_service import RunnerHealthService
                 from models import RepositoryDB
                 from datetime import datetime
+                import toml
+                import os
                 
                 # Get repository
                 repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
                 if not repo:
                     raise HTTPException(status_code=404, detail="Repository not found")
                 
-                # Return stored effective config or trigger a fresh check
-                if repo.effective_config:
-                    return APIResponse(data={
-                        "repository": repo.name,
-                        "has_config": repo.has_pr_agent_config or repo.has_workflow_config,
-                        "has_pr_agent_config": repo.has_pr_agent_config,
-                        "has_workflow_config": repo.has_workflow_config,
-                        "config_last_checked": repo.config_last_checked,
-                        "config_details": repo.effective_config.get("config_details") if isinstance(repo.effective_config, dict) else None,
-                        "effective_config": repo.effective_config
-                    }, message="Effective configuration retrieved")
-                else:
-                    # No stored config, trigger a fresh check
-                    runner_service = RunnerHealthService()
+                # Always trigger a fresh check to get the most comprehensive data
+                runner_service = RunnerHealthService()
+                try:
+                    config_result = await runner_service.check_repository_config(db, repo)
+                    
+                    # Update repository with config status
+                    repo.has_pr_agent_config = config_result.get("has_pr_agent_toml", False)
+                    repo.has_workflow_config = config_result.get("has_workflow_config", False)
+                    repo.config_last_checked = datetime.utcnow()
+                    repo.effective_config = config_result.get("effective_config", {})
+                    db.commit()
+                    
+                    # Load system default configuration
+                    system_config = {}
                     try:
-                        config_result = await runner_service.check_repository_config(db, repo)
+                        # Try to load the system configuration file
+                        config_path = os.path.join(os.path.dirname(__file__), '..', '..', 'pr_agent', 'settings', 'configuration.toml')
+                        if os.path.exists(config_path):
+                            with open(config_path, 'r') as f:
+                                system_config = toml.load(f)
+                    except Exception as e:
+                        logger.warning(f"Could not load system configuration: {e}")
+                    
+                    # Build comprehensive response (only show overridden values)
+                    response_data = {
+                        "repository": repo.name,
+                        "has_config": config_result.get("has_config", False),
+                        "has_pr_agent_config": config_result.get("has_pr_agent_toml", False),
+                        "has_workflow_config": config_result.get("has_workflow_config", False),
+                        "config_last_checked": repo.config_last_checked,
+                        "error": config_result.get("error"),
                         
-                        # Update repository with config status
-                        repo.has_pr_agent_config = config_result.get("has_pr_agent_toml", False)
-                        repo.has_workflow_config = config_result.get("has_workflow_config", False)
-                        repo.config_last_checked = datetime.utcnow()
-                        repo.effective_config = config_result.get("effective_config", {})
-                        db.commit()
+                        # Priority order: System Default -> Repository Config -> Workflow Env
+                        # Only show overridden values, not system defaults
                         
-                        return APIResponse(data={
-                            "repository": repo.name,
-                            "has_config": config_result.get("has_config", False),
-                            "has_pr_agent_config": config_result.get("has_pr_agent_toml", False),
-                            "has_workflow_config": config_result.get("has_workflow_config", False),
-                            "config_last_checked": repo.config_last_checked,
-                            "error": config_result.get("error"),
-                            "config_details": config_result.get("config_details"),
-                            "effective_config": config_result.get("effective_config")
-                        }, message="Effective configuration retrieved")
-                    finally:
-                        await runner_service.close_session()
+                        # Repository configuration (priority 2 - overrides system defaults)
+                        "repository_config": None,
+                        
+                        # Workflow configuration (priority 3 - highest, overrides everything)
+                        "workflow_config": None,
+                        
+                        # Override keys for easy display
+                        "override_keys": []
+                    }
+                    
+                    # Extract workflow configuration details
+                    config_details = config_result.get("config_details", {})
+                    if config_details and config_details.get("workflow_config"):
+                        workflow_info = config_details["workflow_config"]
+                        
+                        # Extract runner configuration
+                        runner_config = {}
+                        if workflow_info.get("found_workflows"):
+                            for workflow in workflow_info["found_workflows"]:
+                                analysis = workflow.get("analysis", {})
+                                if analysis.get("runner_config"):
+                                    runner_config = analysis["runner_config"]
+                                    break
+                        
+                        response_data["workflow_config"] = {
+                            "configuration_overrides": workflow_info.get("configuration_overrides", {}),
+                            "env_variables": workflow_info.get("env_variables", {}),
+                            "secrets_used": workflow_info.get("secrets_used", []),
+                            "found_workflows": workflow_info.get("found_workflows", []),
+                            "runner_config": runner_config
+                        }
+                    
+                    # Extract repository configuration details
+                    if config_details and config_details.get("pr_agent_toml"):
+                        try:
+                            repo_config = toml.loads(config_details["pr_agent_toml"])
+                            response_data["repository_config"] = repo_config
+                            
+                            # Extract override keys (flatten the config structure to show what's being overridden)
+                            def extract_keys(d, prefix=""):
+                                keys = []
+                                for k, v in d.items():
+                                    key_path = f"{prefix}.{k}" if prefix else k
+                                    if isinstance(v, dict):
+                                        keys.extend(extract_keys(v, key_path))
+                                    else:
+                                        keys.append(key_path)
+                                return keys
+                            
+                            response_data["override_keys"] = extract_keys(repo_config)
+                        except Exception as e:
+                            logger.warning(f"Failed to parse repository TOML config: {e}")
+                    
+                    # No final effective configuration needed - we only show overrides
+                    
+                    return APIResponse(data=response_data, message="Configuration overrides retrieved")
+                    
+                finally:
+                    await runner_service.close_session()
                         
             except HTTPException:
                 raise

@@ -20,6 +20,15 @@ class RetentionService:
         self.database_manager = database_manager
         self.db_path = db_path
         
+        # Initialize last backup time from database
+        self.last_backup_time = None
+        try:
+            last_backup = self.database_manager.get_system_setting("last_backup_time")
+            if last_backup:
+                self.last_backup_time = datetime.fromisoformat(last_backup.replace('Z', '+00:00')).replace(tzinfo=None)
+        except Exception as e:
+            logger.warning(f"Could not load last backup time: {e}")
+        
         # Get configurable backup directory
         backup_dir = self.database_manager.get_system_setting("backup_directory")
         if backup_dir:
@@ -378,6 +387,7 @@ class RetentionService:
             
             # Update last backup time
             self.last_backup_time = datetime.utcnow()
+            self.database_manager.set_system_setting("last_backup_time", self.last_backup_time.isoformat())
             
             # Log automatic backup completion
             self._log_to_system('INFO', 

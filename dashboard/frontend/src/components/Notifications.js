@@ -25,6 +25,7 @@ import ViewHeader from './ViewHeader';
 const Notifications = () => {
   const [configs, setConfigs] = useState([]);
   const [events, setEvents] = useState([]);
+  const [repositories, setRepositories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
   const [expandedConfig, setExpandedConfig] = useState(null);
@@ -52,7 +53,6 @@ const Notifications = () => {
   const [originalFormData, setOriginalFormData] = useState(null);
   const [errors, setErrors] = useState({});
   const [newEmail, setNewEmail] = useState('');
-  const [newRepository, setNewRepository] = useState('');
   const [showPasswords, setShowPasswords] = useState({});
 
   // Pagination state for events
@@ -73,6 +73,7 @@ const Notifications = () => {
   useEffect(() => {
     loadConfigs();
     loadEvents();
+    loadRepositories();
   }, []);
 
   // Reload events when filters change
@@ -89,6 +90,16 @@ const Notifications = () => {
     } catch (error) {
       showToast('Failed to load notification configurations', 'error');
       console.error('Error loading configs:', error);
+    }
+  };
+
+  const loadRepositories = async () => {
+    try {
+      const response = await api.get('/api/repositories');
+      setRepositories(response.data.data || []);
+    } catch (error) {
+      console.error('Error loading repositories:', error);
+      // Don't show error toast for this as it's not critical
     }
   };
 
@@ -197,7 +208,6 @@ const Notifications = () => {
     setShowAddForm(false);
     setErrors({});
     setNewEmail('');
-    setNewRepository('');
   };
 
   const toggleExpanded = (configId) => {
@@ -277,22 +287,7 @@ const Notifications = () => {
     }));
   };
 
-  const addRepository = () => {
-    if (newRepository && !formData.repository_filter.includes(newRepository)) {
-      setFormData(prev => ({
-        ...prev,
-        repository_filter: [...prev.repository_filter, newRepository]
-      }));
-      setNewRepository('');
-    }
-  };
 
-  const removeRepository = (repo) => {
-    setFormData(prev => ({
-      ...prev,
-      repository_filter: prev.repository_filter.filter(r => r !== repo)
-    }));
-  };
 
   const handleEventTypeChange = (eventType) => {
     setFormData(prev => ({
@@ -300,6 +295,22 @@ const Notifications = () => {
       event_types: prev.event_types.includes(eventType)
         ? prev.event_types.filter(type => type !== eventType)
         : [...prev.event_types, eventType]
+    }));
+  };
+
+  const handleRepositoryFilterChange = (repoName) => {
+    setFormData(prev => ({
+      ...prev,
+      repository_filter: prev.repository_filter.includes(repoName)
+        ? prev.repository_filter.filter(repo => repo !== repoName)
+        : [...prev.repository_filter, repoName]
+    }));
+  };
+
+  const handleAllRepositoriesToggle = () => {
+    setFormData(prev => ({
+      ...prev,
+      repository_filter: prev.repository_filter.length === repositories.length ? [] : repositories.map(r => r.name)
     }));
   };
 
@@ -617,42 +628,52 @@ const Notifications = () => {
                     Repository Filter (optional)
                   </label>
                   <p className="text-sm text-gray-600 mb-3">
-                    Leave empty to receive notifications for all repositories, or specify repositories to monitor.
+                    Select specific repositories to monitor, or leave all unchecked to receive notifications for all repositories.
                   </p>
-                  <div className="flex gap-2 mb-2">
-                    <input
-                      type="text"
-                      value={newRepository}
-                      onChange={(e) => setNewRepository(e.target.value)}
-                      className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      placeholder="owner/repository"
-                      onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), addRepository())}
-                    />
-                    <button
-                      type="button"
-                      onClick={addRepository}
-                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-200"
-                    >
-                      Add
-                    </button>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {formData.repository_filter.map((repo, index) => (
-                      <span
-                        key={index}
-                        className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm flex items-center gap-2"
-                      >
-                        {repo}
-                        <button
-                          type="button"
-                          onClick={() => removeRepository(repo)}
-                          className="text-green-600 hover:text-green-800"
-                        >
-                          ×
-                        </button>
-                      </span>
-                    ))}
-                  </div>
+                  
+                  {repositories.length > 0 ? (
+                    <div className="space-y-3">
+                      {/* All Repositories Toggle */}
+                      <label className="flex items-center gap-3 p-3 border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={formData.repository_filter.length === repositories.length}
+                          onChange={handleAllRepositoriesToggle}
+                          className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                        />
+                        <div>
+                          <div className="font-medium text-gray-900">All Repositories</div>
+                          <div className="text-sm text-gray-600">Monitor all {repositories.length} repositories</div>
+                        </div>
+                      </label>
+                      
+                      {/* Individual Repository Toggles */}
+                      <div className="space-y-2 max-h-48 overflow-y-auto">
+                        {repositories.map((repo) => (
+                          <label key={repo.id} className="flex items-center gap-3 p-3 border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={formData.repository_filter.includes(repo.name)}
+                              onChange={() => handleRepositoryFilterChange(repo.name)}
+                              className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                            />
+                            <div className="flex-1">
+                              <div className="font-medium text-gray-900">{repo.name}</div>
+                              <div className="text-sm text-gray-600 flex items-center gap-2">
+                                <span className="capitalize">{repo.provider.replace('_', ' ')}</span>
+                                {repo.is_active && <span className="text-green-600">• Active</span>}
+                              </div>
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-gray-500">
+                      <p>No repositories configured yet.</p>
+                      <p className="text-sm mt-1">Add repositories in the Repository Manager first.</p>
+                    </div>
+                  )}
                 </div>
 
                 {/* Enable/Disable */}
@@ -693,7 +714,7 @@ const Notifications = () => {
 
       {/* Content Tabs */}
       {activeTab === 'configs' && (
-        <div className="space-y-4">
+        <div className="space-y-4 tab-enter">
           {configs.length === 0 ? (
             <div className="text-center py-12 bg-gray-50 dark:bg-gray-900 rounded-lg">
               <div className="text-4xl mb-4">🔔</div>
@@ -809,7 +830,7 @@ const Notifications = () => {
                               <>
                                 <button
                                   onClick={cancelEdit}
-                                  className="flex items-center px-4 py-2 text-sm font-medium text-gray-600 bg-gray-50 dark:bg-gray-700 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors duration-200"
+                                  className="flex items-center px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-600 border border-gray-300 dark:border-gray-500 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-500 hover:border-gray-400 dark:hover:border-gray-400 transition-colors duration-200 shadow-sm"
                                 >
                                   <X className="h-4 w-4 mr-2" />
                                   Cancel
@@ -1073,42 +1094,52 @@ const Notifications = () => {
                           {editingConfig === config.id ? (
                             <div>
                               <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
-                                Leave empty to receive notifications for all repositories, or specify repositories to monitor.
+                                Select specific repositories to monitor, or leave all unchecked to receive notifications for all repositories.
                               </p>
-                              <div className="flex gap-2 mb-3">
-                                <input
-                                  type="text"
-                                  value={newRepository}
-                                  onChange={(e) => setNewRepository(e.target.value)}
-                                  className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                                  placeholder="owner/repository"
-                                  onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), addRepository())}
-                                />
-                                <button
-                                  type="button"
-                                  onClick={addRepository}
-                                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-200"
-                                >
-                                  Add
-                                </button>
-                              </div>
-                              <div className="flex flex-wrap gap-2">
-                                {formData.repository_filter.map((repo, index) => (
-                                  <span
-                                    key={index}
-                                    className="bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300 px-3 py-1 rounded-full text-sm flex items-center gap-2"
-                                  >
-                                    {repo}
-                                    <button
-                                      type="button"
-                                      onClick={() => removeRepository(repo)}
-                                      className="text-green-600 dark:text-green-400 hover:text-green-800 dark:hover:text-green-200"
-                                    >
-                                      ×
-                                    </button>
-                                  </span>
-                                ))}
-                              </div>
+                              
+                              {repositories.length > 0 ? (
+                                <div className="space-y-3">
+                                  {/* All Repositories Toggle */}
+                                  <label className="flex items-center gap-3 p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={formData.repository_filter.length === repositories.length}
+                                      onChange={handleAllRepositoriesToggle}
+                                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 dark:border-gray-600 rounded"
+                                    />
+                                    <div>
+                                      <div className="font-medium text-gray-900 dark:text-white">All Repositories</div>
+                                      <div className="text-sm text-gray-600 dark:text-gray-400">Monitor all {repositories.length} repositories</div>
+                                    </div>
+                                  </label>
+                                  
+                                  {/* Individual Repository Toggles */}
+                                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                                    {repositories.map((repo) => (
+                                      <label key={repo.id} className="flex items-center gap-3 p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer">
+                                        <input
+                                          type="checkbox"
+                                          checked={formData.repository_filter.includes(repo.name)}
+                                          onChange={() => handleRepositoryFilterChange(repo.name)}
+                                          className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 dark:border-gray-600 rounded"
+                                        />
+                                        <div className="flex-1">
+                                          <div className="font-medium text-gray-900 dark:text-white">{repo.name}</div>
+                                          <div className="text-sm text-gray-600 dark:text-gray-400 flex items-center gap-2">
+                                            <span className="capitalize">{repo.provider.replace('_', ' ')}</span>
+                                            {repo.is_active && <span className="text-green-600 dark:text-green-400">• Active</span>}
+                                          </div>
+                                        </div>
+                                      </label>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                                  <p>No repositories configured yet.</p>
+                                  <p className="text-sm mt-1">Add repositories in the Repository Manager first.</p>
+                                </div>
+                              )}
                             </div>
                           ) : (
                             <div>
@@ -1137,7 +1168,7 @@ const Notifications = () => {
       )}
 
       {activeTab === 'events' && (
-        <div className="space-y-4">
+        <div className="space-y-4 tab-enter">
           {/* Filters */}
           <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
             <div className="flex flex-wrap gap-4">

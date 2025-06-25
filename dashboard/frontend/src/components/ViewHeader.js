@@ -14,16 +14,16 @@ const ViewHeader = ({
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between space-y-4 sm:space-y-0">
         <div className="flex items-center space-x-3">
           {Icon && (
-            <div className="p-2 bg-blue-100 dark:bg-blue-900/20 rounded-lg">
-              <Icon className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+            <div className="p-3 bg-blue-100 dark:bg-blue-900/20 rounded-lg">
+              <Icon className="h-7 w-7 text-blue-600 dark:text-blue-400" />
             </div>
           )}
           <div>
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
               {title}
-            </h2>
+            </h1>
             {subtitle && (
-              <p className="text-sm text-gray-500 dark:text-gray-400">
+              <p className="text-base text-gray-500 dark:text-gray-400 mt-1">
                 {subtitle}
               </p>
             )}

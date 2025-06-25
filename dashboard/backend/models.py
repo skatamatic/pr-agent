@@ -792,6 +792,8 @@ class MetricsSummary(BaseModel):
     # Computed metrics
     total_jobs: int
     total_operations: int
+    total_input_tokens: int
+    total_output_tokens: int
     total_token_cost: float
     total_dev_hours_saved: float
     total_dev_cost_saved: float
@@ -801,7 +803,7 @@ class MetricsSummary(BaseModel):
     model_breakdown: Dict[str, Dict[str, Any]]
     
     # Configuration
-    config: MetricsConfig 
+    config: MetricsConfig
 
 # Pydantic models for API
 class User(BaseModel):

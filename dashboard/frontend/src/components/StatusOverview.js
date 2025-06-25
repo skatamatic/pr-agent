@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Activity, CheckCircle, Clock, AlertCircle, Zap, GitPullRequest, TrendingUp, Server, Wifi, Database, ChevronDown, ChevronUp, Settings, GitBranch, Key, Shield, ExternalLink } from 'lucide-react';
 import apiService from '../services/api';
+import ViewHeader from './ViewHeader';
 
 const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, onNavigateToJobs }) => {
   const [systemHealth, setSystemHealth] = useState(null);
@@ -150,12 +151,12 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
   const completedOperations = operationsData.completed || operations.filter(op => op.status === 'completed').length;
   const failedOperations = operationsData.failed || operations.filter(op => op.status === 'failed').length;
 
-  // Use recent jobs for display (limit to 5 most recent)
-  const displayJobs = recentJobs.length > 0 ? recentJobs.slice(0, 5) : 
+  // Use recent jobs for display (limit to 4 most recent)
+  const displayJobs = recentJobs.length > 0 ? recentJobs.slice(0, 4) : 
     realtimeStatus?.recent_operations || 
     operations
       .sort((a, b) => new Date(b.started_at || b.timestamp) - new Date(a.started_at || a.timestamp))
-      .slice(0, 5);
+      .slice(0, 4);
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -677,8 +678,15 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
 
   return (
     <div className="space-y-6">
+      {/* Header */}
+      <ViewHeader 
+        title="System Overview"
+        subtitle="Monitor PR-Agent system health, performance, and recent activity"
+        icon={Activity}
+      />
+
       {/* Expandable System Health Header */}
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+      <div className="mx-auto bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 overflow-hidden" style={{width: '90%'}}>
         <div 
           className={`${getHealthBgColor(healthStatus.status)} cursor-pointer transition-all duration-300 hover:shadow-lg`}
           onClick={() => setHealthExpanded(!healthExpanded)}
@@ -711,7 +719,7 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
         
         {/* Expandable Content */}
         {healthExpanded && (
-          <div className="p-6 border-t border-gray-200 dark:border-gray-700">
+          <div className="p-6 border-t border-gray-200 dark:border-gray-700 animate-slideDown">
             <div className="space-y-4">
               {renderServiceStatus('database', 'Database', Database, 'SQLite storage')}
               {renderServiceStatus('pr_agent_config', 'PR-Agent Config', Server, 'Configuration file')}
@@ -833,7 +841,7 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
               <Activity className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2" />
               <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Recent Activity</h3>
             </div>
-            <span className="text-xs text-gray-500 dark:text-gray-400">Last 5 jobs</span>
+            <span className="text-xs text-gray-500 dark:text-gray-400">Last 4 jobs</span>
           </div>
         </div>
         <div className="p-6">

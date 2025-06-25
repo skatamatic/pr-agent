@@ -21,7 +21,8 @@ import {
   X,
   Brain,
   DollarSign,
-  TrendingUp
+  TrendingUp,
+  BarChart3
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
@@ -43,6 +44,7 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
   const { showError } = useContext(ToastContext);
   const highlightedJobRef = useRef(null);
   const highlightedOperationRef = useRef(null);
+  const filterJustExpanded = useRef(false);
 
   const jobsPerPage = 10;
 
@@ -169,17 +171,31 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
   };
 
   const getJobStatusIcon = (status) => {
+    const getStatusText = (status) => {
+      switch (status) {
+        case 'running': return 'Job is currently running';
+        case 'completed': return 'Job completed successfully';
+        case 'failed': return 'Job failed to complete';
+        case 'cancelled': return 'Job was cancelled';
+        default: return 'Job status pending';
+      }
+    };
+
     switch (status) {
       case 'running':
-        return <RunningIndicator size="sm" />;
+        return (
+          <div className="flex items-center justify-center h-4 w-4" title={getStatusText(status)}>
+            <div className="h-3 w-3 bg-blue-600 rounded-full animate-simple-pulse"></div>
+          </div>
+        );
       case 'completed':
-        return <CheckCircle className="h-4 w-4 text-green-500" />;
+        return <CheckCircle className="h-4 w-4 text-green-500" title={getStatusText(status)} />;
       case 'failed':
-        return <XCircle className="h-4 w-4 text-red-500" />;
+        return <XCircle className="h-4 w-4 text-red-500" title={getStatusText(status)} />;
       case 'cancelled':
-        return <AlertTriangle className="h-4 w-4 text-yellow-500" />;
+        return <AlertTriangle className="h-4 w-4 text-yellow-500" title={getStatusText(status)} />;
       default:
-        return <Clock className="h-4 w-4 text-gray-500" />;
+        return <Clock className="h-4 w-4 text-gray-500" title={getStatusText(status)} />;
     }
   };
 
@@ -191,7 +207,11 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
       case 'preparing':
       case 'self_reflecting':
       case 'publishing':
-        return <RunningIndicator size="xs" />;
+        return (
+          <div className="flex items-center justify-center h-3 w-3">
+            <div className="h-2 w-2 bg-blue-600 rounded-full animate-simple-pulse"></div>
+          </div>
+        );
       case 'completed':
       case 'context_completed':
         return <CheckCircle className="h-3 w-3 text-green-500" />;
@@ -207,17 +227,27 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
   };
 
   const getJobTypeIcon = (jobType) => {
+    const getJobTypeText = (jobType) => {
+      switch (jobType) {
+        case 'webhook': return 'Triggered by webhook event';
+        case 'cli': return 'Started from command line interface';
+        case 'manual': return 'Manually triggered by user';
+        case 'api': return 'Started via API call';
+        default: return 'Job trigger source unknown';
+      }
+    };
+
     switch (jobType) {
       case 'webhook':
-        return <Zap className="h-4 w-4" />;
+        return <Zap className="h-4 w-4 text-gray-600 dark:text-gray-300" title={getJobTypeText(jobType)} />;
       case 'cli':
-        return <Database className="h-4 w-4" />;
+        return <Database className="h-4 w-4 text-gray-600 dark:text-gray-300" title={getJobTypeText(jobType)} />;
       case 'manual':
-        return <User className="h-4 w-4" />;
+        return <User className="h-4 w-4 text-gray-600 dark:text-gray-300" title={getJobTypeText(jobType)} />;
       case 'api':
-        return <RefreshCw className="h-4 w-4" />;
+        return <RefreshCw className="h-4 w-4 text-gray-600 dark:text-gray-300" title={getJobTypeText(jobType)} />;
       default:
-        return <Activity className="h-4 w-4" />;
+        return <Activity className="h-4 w-4 text-gray-600 dark:text-gray-300" title={getJobTypeText(jobType)} />;
     }
   };
 
@@ -262,6 +292,38 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
       if (value) values.add(value);
     });
     return Array.from(values);
+  };
+
+  // Get all possible values for a field (from all jobs, not just filtered)
+  const getAllPossibleValues = (field) => {
+    const values = new Set();
+    jobs.forEach(job => {
+      const value = job[field];
+      if (value) values.add(value);
+    });
+    return Array.from(values);
+  };
+
+  // Check if a filter value would have results
+  const hasResultsForFilter = (field, value, currentFilters) => {
+    if (value === 'all') return true;
+    
+    return jobs.some(job => {
+      const matchesStatus = currentFilters.status === 'all' || job.status === currentFilters.status;
+      const matchesJobType = currentFilters.jobType === 'all' || job.job_type === currentFilters.jobType;
+      const matchesRepository = currentFilters.repository === 'all' || job.repository === currentFilters.repository;
+      
+      // Override the field we're checking
+      if (field === 'status') {
+        return value === job.status && matchesJobType && matchesRepository;
+      } else if (field === 'job_type') {
+        return value === job.job_type && matchesStatus && matchesRepository;
+      } else if (field === 'repository') {
+        return value === job.repository && matchesStatus && matchesJobType;
+      }
+      
+      return false;
+    });
   };
 
   // Apply client-side filtering
@@ -429,141 +491,183 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
       <ViewHeader
         title="Jobs"
         subtitle="Monitor PR-Agent job execution and operations"
-        icon={Activity}
+        icon={BarChart3}
       />
 
       {/* Filters */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/10 dark:to-indigo-900/10 rounded-xl border border-blue-200 dark:border-blue-700 shadow-sm max-w-none mx-auto" style={{width: '90%'}}>
         {/* Filter Header */}
         <div
-          className="p-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-          onClick={() => setShowFilters(!showFilters)}
+          className="p-5 cursor-pointer hover:bg-blue-100/50 dark:hover:bg-blue-900/20 transition-colors rounded-t-xl"
+          onClick={() => {
+            const wasShowingFilters = showFilters;
+            setShowFilters(!showFilters);
+            // Only set the flag if we're expanding (going from false to true)
+            if (!wasShowingFilters) {
+              filterJustExpanded.current = true;
+              // Reset the flag after animation completes
+              setTimeout(() => {
+                filterJustExpanded.current = false;
+              }, 300);
+            }
+          }}
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
-              <div className="flex items-center space-x-2">
-                <Filter className="h-5 w-5 text-gray-600 dark:text-gray-300" />
-                <h3 className="text-lg font-medium text-gray-900 dark:text-white">Filters</h3>
+              <div className="p-2 bg-blue-100 dark:bg-blue-900/30 rounded-lg">
+                <Filter className="h-5 w-5 text-blue-600 dark:text-blue-400" />
               </div>
-              {showFilters ? (
-                <ChevronUp className="h-5 w-5 text-gray-600 dark:text-gray-300" />
-              ) : (
-                <ChevronDown className="h-5 w-5 text-gray-600 dark:text-gray-300" />
-              )}
+              <div>
+                <h3 className="text-lg font-semibold text-blue-900 dark:text-blue-100">Filter Jobs</h3>
+                <p className="text-sm text-blue-700 dark:text-blue-300">Narrow down results by status, type, or repository</p>
+              </div>
             </div>
             
-            {/* Active filter summary */}
-            <div className="flex-1 mx-4">
-              {(() => {
-                const activeFilters = getActiveFilterSummary();
-                if (activeFilters.length === 0) {
+            <div className="flex items-center space-x-4">
+              {/* Active filter summary */}
+              <div className="flex-1">
+                {(() => {
+                  const activeFilters = getActiveFilterSummary();
+                  if (activeFilters.length === 0) {
+                    return (
+                      <span className="text-sm text-blue-600 dark:text-blue-400 font-medium">
+                        No active filters
+                      </span>
+                    );
+                  }
                   return (
-                    <span className="text-sm text-gray-500 dark:text-gray-400">
-                      No active filters
-                    </span>
+                    <div className="flex flex-wrap gap-2 justify-end">
+                      {activeFilters.slice(0, 2).map((filter, index) => (
+                        <span
+                          key={index}
+                          className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-blue-200 text-blue-800 dark:bg-blue-800/40 dark:text-blue-200 border border-blue-300 dark:border-blue-600"
+                        >
+                          {filter}
+                        </span>
+                      ))}
+                      {activeFilters.length > 2 && (
+                        <span className="text-sm text-blue-700 dark:text-blue-300 font-medium">
+                          +{activeFilters.length - 2} more
+                        </span>
+                      )}
+                    </div>
                   );
-                }
-                return (
-                  <div className="flex flex-wrap gap-1">
-                    {activeFilters.slice(0, 3).map((filter, index) => (
-                      <span
-                        key={index}
-                        className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-400"
-                      >
-                        {filter}
-                      </span>
-                    ))}
-                    {activeFilters.length > 3 && (
-                      <span className="text-xs text-gray-500 dark:text-gray-400">
-                        +{activeFilters.length - 3} more
-                      </span>
-                    )}
-                  </div>
-                );
-              })()}
-            </div>
+                })()}
+              </div>
 
-            {/* Clear All Filters Button */}
-            {hasActiveFilters() && (
-              <button
-                onClick={clearAllFilters}
-                className="ml-3 px-3 py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-md transition-colors flex items-center space-x-1"
-                title="Clear all filters"
-              >
-                <X className="h-4 w-4" />
-                <span>Clear All</span>
-              </button>
-            )}
+              {/* Clear All Filters Button */}
+              {hasActiveFilters() && (
+                <button
+                  onClick={clearAllFilters}
+                  className="px-4 py-2 text-sm text-blue-700 dark:text-blue-300 hover:text-blue-900 dark:hover:text-blue-100 hover:bg-blue-200 dark:hover:bg-blue-800/30 rounded-lg transition-colors flex items-center space-x-2 font-medium border border-blue-300 dark:border-blue-600"
+                  title="Clear all filters"
+                >
+                  <X className="h-4 w-4" />
+                  <span>Clear All</span>
+                </button>
+              )}
+
+              {/* Chevron */}
+              {showFilters ? (
+                <ChevronUp className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+              ) : (
+                <ChevronDown className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+              )}
+            </div>
           </div>
         </div>
 
         {/* Expandable Filter Content */}
         {showFilters && (
-          <div className="border-t border-gray-200 dark:border-gray-700 p-4 space-y-4 animate-slideDown">
+          <div className={`border-t border-blue-200 dark:border-blue-700 bg-white/50 dark:bg-gray-800/50 p-6 space-y-6 rounded-b-xl ${filterJustExpanded.current ? 'animate-slideDown' : ''}`}>
             {/* Status Filter */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200 mb-3">
                 Status
               </label>
               <div className="flex flex-wrap gap-2">
-                {['all', 'running', 'completed', 'failed', 'cancelled'].map((status) => (
-                  <button
-                    key={status}
-                    onClick={() => setSelectedFilters(prev => ({ ...prev, status }))}
-                    className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
-                      selectedFilters.status === status
-                        ? 'bg-primary-600 text-white'
-                        : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
-                    }`}
-                  >
-                    {status.charAt(0).toUpperCase() + status.slice(1)}
-                  </button>
-                ))}
+                {['all', 'running', 'completed', 'failed', 'cancelled'].map((status) => {
+                  const hasResults = hasResultsForFilter('status', status, selectedFilters);
+                  const isSelected = selectedFilters.status === status;
+                  
+                  return (
+                    <button
+                      key={status}
+                      onClick={() => hasResults && setSelectedFilters(prev => ({ ...prev, status }))}
+                      disabled={!hasResults && !isSelected}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+                        isSelected
+                          ? 'bg-blue-600 text-white shadow-md scale-105'
+                          : hasResults
+                          ? 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600 hover:border-blue-300 dark:hover:border-blue-500'
+                          : 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 border border-gray-200 dark:border-gray-700 cursor-not-allowed opacity-60'
+                      }`}
+                    >
+                      {status.charAt(0).toUpperCase() + status.slice(1)}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
             {/* Job Type Filter */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200 mb-3">
                 Job Type
               </label>
               <div className="flex flex-wrap gap-2">
-                {['all', ...getUniqueValues('job_type')].map((type) => (
-                  <button
-                    key={type}
-                    onClick={() => setSelectedFilters(prev => ({ ...prev, jobType: type }))}
-                    className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
-                      selectedFilters.jobType === type
-                        ? 'bg-primary-600 text-white'
-                        : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
-                    }`}
-                  >
-                    {type.charAt(0).toUpperCase() + type.slice(1)}
-                  </button>
-                ))}
+                {['all', ...getAllPossibleValues('job_type')].map((type) => {
+                  const hasResults = hasResultsForFilter('job_type', type, selectedFilters);
+                  const isSelected = selectedFilters.jobType === type;
+                  
+                  return (
+                    <button
+                      key={type}
+                      onClick={() => hasResults && setSelectedFilters(prev => ({ ...prev, jobType: type }))}
+                      disabled={!hasResults && !isSelected}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+                        isSelected
+                          ? 'bg-blue-600 text-white shadow-md scale-105'
+                          : hasResults
+                          ? 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600 hover:border-blue-300 dark:hover:border-blue-500'
+                          : 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 border border-gray-200 dark:border-gray-700 cursor-not-allowed opacity-60'
+                      }`}
+                    >
+                      {type.charAt(0).toUpperCase() + type.slice(1)}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
             {/* Repository Filter */}
-            {getUniqueValues('repository').length > 0 && (
+            {getAllPossibleValues('repository').length > 0 && (
               <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200 mb-3">
                   Repository
                 </label>
                 <div className="flex flex-wrap gap-2">
-                  {['all', ...getUniqueValues('repository')].map((repo) => (
-                    <button
-                      key={repo}
-                      onClick={() => setSelectedFilters(prev => ({ ...prev, repository: repo }))}
-                      className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
-                        selectedFilters.repository === repo
-                          ? 'bg-primary-600 text-white'
-                          : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
-                      }`}
-                    >
-                      {repo === 'all' ? 'All' : repo.split('/').pop()}
-                    </button>
-                  ))}
+                  {['all', ...getAllPossibleValues('repository')].map((repo) => {
+                    const hasResults = hasResultsForFilter('repository', repo, selectedFilters);
+                    const isSelected = selectedFilters.repository === repo;
+                    
+                    return (
+                      <button
+                        key={repo}
+                        onClick={() => hasResults && setSelectedFilters(prev => ({ ...prev, repository: repo }))}
+                        disabled={!hasResults && !isSelected}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+                          isSelected
+                            ? 'bg-blue-600 text-white shadow-md scale-105'
+                            : hasResults
+                            ? 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600 hover:border-blue-300 dark:hover:border-blue-500'
+                            : 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 border border-gray-200 dark:border-gray-700 cursor-not-allowed opacity-60'
+                        }`}
+                      >
+                        {repo === 'all' ? 'All' : repo.split('/').pop()}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -634,7 +738,7 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
                           className="inline-flex items-center px-3 py-1 border border-gray-300 dark:border-gray-600 rounded-md text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
                         >
                           <FileText className="h-3 w-3 mr-1" />
-                          Show Logs
+                          Logs
                         </button>
                         {job.pr_url && (
                           <a
@@ -678,7 +782,7 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
                             key={operation.operation_id}
                             ref={highlightedOperationId === operation.operation_id ? highlightedOperationRef : null}
                             className={`p-3 bg-white dark:bg-gray-800 rounded-md border border-gray-200 dark:border-gray-700 ${
-                              highlightedOperationId === operation.operation_id ? 'animate-highlight-operation ring-2 ring-green-500 ring-opacity-75' : ''
+                              highlightedOperationId === operation.operation_id ? 'animate-highlight-operation ring-2 ring-blue-500 ring-opacity-75' : ''
                             }`}
                           >
                             <div className="flex items-center justify-between">
@@ -695,7 +799,36 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
                                 </div>
                               </div>
                               
-                              <div className="flex items-center space-x-2">
+                              <div className="flex items-center space-x-4">
+                                {/* AI Metrics Display - moved to header */}
+                                {hasAiMetrics && (
+                                  <div className="flex items-center space-x-4 text-xs">
+                                    {operation.model_used && (
+                                      <div className="flex items-center space-x-1 text-blue-600 dark:text-blue-400">
+                                        <Brain className="h-3 w-3" />
+                                        <span>{operation.model_used}</span>
+                                      </div>
+                                    )}
+                                    
+                                    {(operation.input_tokens || operation.output_tokens) && (
+                                      <div className="flex items-center space-x-1 text-purple-600 dark:text-purple-400">
+                                        <Zap className="h-3 w-3" />
+                                        <span>
+                                          {formatTokens(operation.input_tokens || 0)}
+                                          {operation.output_tokens && `+${formatTokens(operation.output_tokens)}`} tokens
+                                        </span>
+                                      </div>
+                                    )}
+                                    
+                                    {operation.estimated_dev_hours_saved && (
+                                      <div className="flex items-center space-x-1 text-green-600 dark:text-green-400">
+                                        <TrendingUp className="h-3 w-3" />
+                                        <span>{formatHours(operation.estimated_dev_hours_saved)} saved</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                                
                                 <button
                                   onClick={() => onShowLogs(operation.operation_id, 'operation')}
                                   className="inline-flex items-center px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
@@ -705,37 +838,6 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
                                 </button>
                               </div>
                             </div>
-
-                            {/* AI Metrics Display */}
-                            {hasAiMetrics && (
-                              <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-600">
-                                <div className="flex items-center space-x-4 text-xs">
-                                  {operation.model_used && (
-                                    <div className="flex items-center space-x-1 text-blue-600 dark:text-blue-400">
-                                      <Brain className="h-3 w-3" />
-                                      <span>{operation.model_used}</span>
-                                    </div>
-                                  )}
-                                  
-                                  {(operation.input_tokens || operation.output_tokens) && (
-                                    <div className="flex items-center space-x-1 text-purple-600 dark:text-purple-400">
-                                      <Zap className="h-3 w-3" />
-                                      <span>
-                                        {formatTokens(operation.input_tokens || 0)}
-                                        {operation.output_tokens && `+${formatTokens(operation.output_tokens)}`} tokens
-                                      </span>
-                                    </div>
-                                  )}
-                                  
-                                  {operation.estimated_dev_hours_saved && (
-                                    <div className="flex items-center space-x-1 text-green-600 dark:text-green-400">
-                                      <TrendingUp className="h-3 w-3" />
-                                      <span>{formatHours(operation.estimated_dev_hours_saved)} saved</span>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            )}
                           </div>
                         );
                       })}

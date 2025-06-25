@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect, useContext, useCallback } from 'react';
 import { 
   Plus, 
   Edit, 
@@ -15,20 +15,16 @@ import {
   ChevronDown,
   ChevronRight,
   Save,
-  RotateCcw,
   Activity,
   RefreshCw,
   Clock,
   CheckCircle,
   FileText,
   Eye,
-  ExternalLink,
   Key,
   EyeOff,
   Shield,
-  Monitor,
-  Server,
-  Cpu
+  Server
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
@@ -62,14 +58,18 @@ const RepositoryManager = () => {
   const { showSuccess, showError } = useContext(ToastContext);
 
   const [repoActiveTabs, setRepoActiveTabs] = useState({});
-  const [effectiveConfig, setEffectiveConfig] = useState(null);
-  const [loadingConfig, setLoadingConfig] = useState(false);
+  const [effectiveConfigModal, setEffectiveConfigModal] = useState({
+    show: false,
+    loading: false,
+    data: null,
+    error: null,
+    repoId: null
+  });
+  const [dismissedInfo, setDismissedInfo] = useState(() => {
+    return localStorage.getItem('dismissedRepositoryInfo') === 'true';
+  });
 
-  useEffect(() => {
-    fetchRepositories();
-  }, []);
-
-  const fetchRepositories = async () => {
+  const fetchRepositories = useCallback(async () => {
     try {
       setLoading(true);
       const response = await api.getRepositories();
@@ -79,7 +79,11 @@ const RepositoryManager = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [showError]);
+
+  useEffect(() => {
+    fetchRepositories();
+  }, [fetchRepositories]);
 
   const handleSubmit = async (e, repoId = null) => {
     e.preventDefault();
@@ -248,7 +252,7 @@ const RepositoryManager = () => {
   const checkRunnerHealth = async (repoId) => {
     setCheckingHealth(prev => new Set(prev).add(repoId));
     try {
-      const response = await api.checkRepositoryHealth(repoId);
+      await api.checkRepositoryHealth(repoId);
       showSuccess('Success', 'Runner health check completed');
       fetchRepositories(); // Refresh to get updated health status
     } catch (error) {
@@ -266,7 +270,7 @@ const RepositoryManager = () => {
   const checkRepositoryConfig = async (repoId) => {
     setCheckingConfig(prev => new Set(prev).add(repoId));
     try {
-      const response = await api.checkRepositoryConfig(repoId);
+      await api.checkRepositoryConfig(repoId);
       showSuccess('Success', 'Configuration check completed');
       fetchRepositories(); // Refresh to get updated config status
     } catch (error) {
@@ -281,23 +285,7 @@ const RepositoryManager = () => {
     }
   };
 
-  const loadEffectiveConfig = async (repoId) => {
-    if (effectiveConfig && effectiveConfig.repository === repositories.find(r => r.id === repoId)?.name) {
-      return; // Already loaded for this repo
-    }
-    
-    setLoadingConfig(true);
-    try {
-      const response = await api.get(`/api/repositories/${repoId}/effective-config`);
-      setEffectiveConfig(response.data.data);
-    } catch (error) {
-      const errorMsg = error.response?.data?.detail || 'Failed to load effective configuration';
-      showError('Error', errorMsg);
-      setEffectiveConfig(null);
-    } finally {
-      setLoadingConfig(false);
-    }
-  };
+
 
 
 
@@ -354,11 +342,7 @@ const RepositoryManager = () => {
     }));
   };
 
-  const maskToken = (token) => {
-    if (!token) return '';
-    if (token.length <= 8) return '•'.repeat(token.length);
-    return token.substring(0, 4) + '•'.repeat(Math.max(token.length - 8, 4)) + token.substring(token.length - 4);
-  };
+
 
   const getTokenVisibilityKey = (repoId, tokenType) => {
     return `${repoId || 'new'}-${tokenType}`;
@@ -397,21 +381,7 @@ const RepositoryManager = () => {
     return tokenStatus === 'missing' || tokenStatus === 'invalid';
   };
 
-  const toggleTokenSection = (repoId) => {
-    setExpandedTokenSections(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(repoId)) {
-        newSet.delete(repoId);
-      } else {
-        newSet.add(repoId);
-      }
-      return newSet;
-    });
-  };
 
-  const isTokenSectionExpanded = (repoId) => {
-    return expandedTokenSections.has(repoId) || shouldExpandTokenSection(repositories.find(r => r.id === repoId));
-  };
 
   const getTokenStatusIcon = (status) => {
     switch (status) {
@@ -528,6 +498,132 @@ const RepositoryManager = () => {
     }));
   };
 
+  const toggleRepositoryActive = async (repoId, currentIsActive) => {
+    try {
+      await api.updateRepository(repoId, { is_active: !currentIsActive });
+      showSuccess('Success', `Repository ${!currentIsActive ? 'activated' : 'deactivated'} successfully`);
+      fetchRepositories(); // Refresh to get updated status
+    } catch (error) {
+      const errorMsg = error.response?.data?.detail || 'Failed to update repository status';
+      showError('Error', errorMsg);
+    }
+  };
+
+  const loadEffectiveConfig = async (repoId) => {
+    try {
+      setEffectiveConfigModal(prev => ({
+        ...prev,
+        show: true,
+        loading: true,
+        error: null,
+        repoId: repoId,
+        data: null
+      }));
+      
+      const response = await api.get(`/api/repositories/${repoId}/effective-config`);
+      setEffectiveConfigModal(prev => ({
+        ...prev,
+        loading: false,
+        data: response.data.data
+      }));
+    } catch (error) {
+      console.error('Failed to load effective config:', error);
+      const errorMsg = error.response?.data?.detail || 'Failed to load effective configuration';
+      setEffectiveConfigModal(prev => ({
+        ...prev,
+        loading: false,
+        error: errorMsg
+      }));
+    }
+  };
+
+  // Get overall repository status for the main badge
+  const getRepositoryStatus = (repo) => {
+    // If repository is not active, show as disabled
+    if (!repo.is_active) {
+      return 'disabled';
+    }
+
+    // Check for errors in runner status or token issues
+    if (repo.runner_status === 'error' || repo.runner_status === 'misconfigured') {
+      return 'error';
+    }
+
+    // Check token status
+    const tokenStatus = getTokenStatus(repo);
+    if (tokenStatus === 'invalid' || tokenStatus === 'missing') {
+      return 'error';
+    }
+
+    // If active and no errors, show as running
+    return 'running';
+  };
+
+  const getRepositoryStatusColor = (status) => {
+    switch (status) {
+      case 'running':
+        return 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300';
+      case 'disabled':
+        return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300';
+      case 'error':
+        return 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300';
+      default:
+        return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300';
+    }
+  };
+
+  const getRepositoryStatusIcon = (status) => {
+    switch (status) {
+      case 'running':
+        return Check;
+      case 'disabled':
+        return X;
+      case 'error':
+        return AlertCircle;
+      default:
+        return Clock;
+    }
+  };
+
+  const formatRepositoryStatus = (status) => {
+    switch (status) {
+      case 'running':
+        return 'Running';
+      case 'disabled':
+        return 'Disabled';
+      case 'error':
+        return 'Error';
+      default:
+        return 'Unknown';
+    }
+  };
+
+  // Sort repositories by status (running first, then disabled, then error) and then by name
+  const sortRepositories = (repos) => {
+    return [...repos].sort((a, b) => {
+      const statusA = getRepositoryStatus(a);
+      const statusB = getRepositoryStatus(b);
+      
+      // Define status priority (lower number = higher priority)
+      const statusPriority = {
+        'running': 1,
+        'disabled': 2,
+        'error': 3
+      };
+      
+      const priorityA = statusPriority[statusA] || 4;
+      const priorityB = statusPriority[statusB] || 4;
+      
+      // First sort by status priority
+      if (priorityA !== priorityB) {
+        return priorityA - priorityB;
+      }
+      
+      // Then sort by repository name alphabetically
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -555,15 +651,26 @@ const RepositoryManager = () => {
       />
 
       {/* Info Card */}
-      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-        <div className="flex items-start">
-          <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3 mt-0.5 flex-shrink-0" />
-          <div className="text-blue-800 dark:text-blue-200 text-sm">
-            <p className="font-medium mb-1">Repository Monitoring</p>
-            <p>Click on any repository to view its configuration. Use the edit button to modify settings. Only active repositories will be monitored for pull requests and issues.</p>
+      {!dismissedInfo && (
+        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+          <div className="flex items-start">
+            <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3 mt-0.5 flex-shrink-0" />
+            <div className="flex-1 text-blue-800 dark:text-blue-200 text-sm">
+              <p className="font-medium mb-1">Repository Monitoring</p>
+              <p>Click on any repository to view its configuration. Use the edit button to modify settings. Only active repositories will be monitored for pull requests and issues.</p>
+            </div>
+            <button
+              onClick={() => {
+                setDismissedInfo(true);
+                localStorage.setItem('dismissedRepositoryInfo', 'true');
+              }}
+              className="ml-3 text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-200 transition-colors"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Add Repository Form */}
       {showAddForm && (
@@ -758,7 +865,7 @@ const RepositoryManager = () => {
                     />
                     <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto Review</span>
                   </label>
-
+                  
                   <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
                     <input
                       type="checkbox"
@@ -821,7 +928,7 @@ const RepositoryManager = () => {
           </div>
         ) : (
           <div className="divide-y divide-gray-200 dark:divide-gray-700">
-            {repositories.map((repo) => (
+            {sortRepositories(repositories).map((repo) => (
               <div key={repo.id} className="transition-all duration-300 ease-in-out">
                 {/* Repository Row */}
                 <div 
@@ -853,16 +960,9 @@ const RepositoryManager = () => {
                             {getProviderIcon(repo.provider)}
                             <span className="ml-1.5 capitalize">{repo.provider.replace('_', ' ')}</span>
                           </span>
-                          <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${
-                            repo.is_active 
-                              ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
-                              : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
-                          }`}>
-                            {repo.is_active ? (
-                              <><Check className="h-3 w-3 mr-1" />Active</>
-                            ) : (
-                              <><X className="h-3 w-3 mr-1" />Inactive</>
-                            )}
+                          <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${getRepositoryStatusColor(getRepositoryStatus(repo))}`}>
+                            {React.createElement(getRepositoryStatusIcon(getRepositoryStatus(repo)), { className: "h-3 w-3 mr-1" })}
+                            {formatRepositoryStatus(getRepositoryStatus(repo))}
                           </span>
                         </div>
                         <div className="mt-2 flex items-center text-sm text-gray-500 dark:text-gray-400">
@@ -881,32 +981,6 @@ const RepositoryManager = () => {
 
                       {/* Status Summary */}
                       <div className="hidden md:flex items-center space-x-4 text-sm">
-                        {/* Runner Status */}
-                        {repo.runner_status && (
-                          <span className={`flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${getRunnerStatusColor(repo.runner_status)}`}>
-                            {React.createElement(getRunnerStatusIcon(repo.runner_status), { className: "h-3 w-3 mr-1" })}
-                            {formatRunnerStatus(repo.runner_status)}
-                          </span>
-                        )}
-
-                        {/* Token Status - Always shown */}
-                        <span className={`flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${
-                          getTokenStatus(repo) === 'configured' 
-                            ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
-                            : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300'
-                        }`}>
-                          {getTokenStatusIcon(getTokenStatus(repo))}
-                          <span className="ml-1">{getTokenStatusText(getTokenStatus(repo), repo.provider)}</span>
-                        </span>
-
-                        {/* Config Status - Only shown if tokens are configured */}
-                        {shouldShowConfigStatus(repo) && (
-                          <span className="flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300">
-                            {getConfigStatusIcon(repo)}
-                            <span className="ml-1">{getConfigStatusText(repo)}</span>
-                          </span>
-                        )}
-                        
                         {/* Monitoring Summary */}
                         <div className="flex items-center space-x-3 text-gray-500 dark:text-gray-400">
                           {repo.monitor_prs && (
@@ -943,6 +1017,23 @@ const RepositoryManager = () => {
                         <div className="flex items-center space-x-3">
                           {editingRepo !== repo.id ? (
                             <>
+                              {/* Active Toggle */}
+                              <button
+                                onClick={() => toggleRepositoryActive(repo.id, repo.is_active)}
+                                className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors duration-200 ${
+                                  repo.is_active
+                                    ? 'text-orange-600 bg-orange-50 dark:bg-orange-900/30 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/50'
+                                    : 'text-green-600 bg-green-50 dark:bg-green-900/30 dark:text-green-400 hover:bg-green-100 dark:hover:bg-green-900/50'
+                                }`}
+                              >
+                                {repo.is_active ? (
+                                  <X className="h-4 w-4 mr-2" />
+                                ) : (
+                                  <Check className="h-4 w-4 mr-2" />
+                                )}
+                                {repo.is_active ? 'Deactivate' : 'Activate'}
+                              </button>
+                              
                               <button
                                 onClick={() => checkRunnerHealth(repo.id)}
                                 disabled={checkingHealth.has(repo.id)}
@@ -1023,74 +1114,60 @@ const RepositoryManager = () => {
                       )}
 
                       {/* Tab Navigation */}
-                      <div className="flex space-x-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
-                        {/* Status & Health Tab - Disabled if no auth token */}
-                        <button
-                          onClick={() => getTokenStatus(repo) === 'configured' && setRepoActiveTab(repo.id, 'status')}
-                          disabled={getTokenStatus(repo) !== 'configured'}
-                          className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                            getTokenStatus(repo) !== 'configured'
-                              ? 'text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-50'
-                              : getRepoActiveTab(repo.id) === 'status'
-                              ? 'bg-white dark:bg-gray-700 text-orange-600 dark:text-orange-400 shadow-sm'
-                              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-                          }`}
-                        >
-                          <Activity className="h-4 w-4 mr-2" />
-                          <span>Status & Health</span>
-                        </button>
-                        
-                        {/* Authentication Tab - Always accessible */}
-                        <button
-                          onClick={() => setRepoActiveTab(repo.id, 'authentication')}
-                          className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                            getRepoActiveTab(repo.id) === 'authentication'
-                              ? 'bg-white dark:bg-gray-700 text-purple-600 dark:text-purple-400 shadow-sm'
-                              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-                          }`}
-                        >
-                          <Key className="h-4 w-4 mr-2" />
-                          <span>Authentication</span>
-                        </button>
-                        
-                        {/* General Tab - Disabled if no auth token */}
-                        <button
-                          onClick={() => getTokenStatus(repo) === 'configured' && setRepoActiveTab(repo.id, 'general')}
-                          disabled={getTokenStatus(repo) !== 'configured'}
-                          className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                            getTokenStatus(repo) !== 'configured'
-                              ? 'text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-50'
-                              : getRepoActiveTab(repo.id) === 'general'
-                              ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
-                              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-                          }`}
-                        >
-                          <Info className="h-4 w-4 mr-2" />
-                          <span>General</span>
-                        </button>
-                        
-                        {/* Features Tab - Disabled if no auth token */}
-                        <button
-                          onClick={() => getTokenStatus(repo) === 'configured' && setRepoActiveTab(repo.id, 'features')}
-                          disabled={getTokenStatus(repo) !== 'configured'}
-                          className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                            getTokenStatus(repo) !== 'configured'
-                              ? 'text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-50'
-                              : getRepoActiveTab(repo.id) === 'features'
-                              ? 'bg-white dark:bg-gray-700 text-green-600 dark:text-green-400 shadow-sm'
-                              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-                          }`}
-                        >
-                          <Settings className="h-4 w-4 mr-2" />
-                          <span>Features</span>
-                        </button>
+                      <div className="bg-gray-50 dark:bg-gray-900 rounded-lg p-1">
+                        <div className="flex space-x-1">
+                          {/* Status & Health Tab - Disabled if no auth token */}
+                          <button
+                            onClick={() => getTokenStatus(repo) === 'configured' && setRepoActiveTab(repo.id, 'status')}
+                            disabled={getTokenStatus(repo) !== 'configured'}
+                            className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                              getTokenStatus(repo) !== 'configured'
+                                ? 'text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-50'
+                                : getRepoActiveTab(repo.id) === 'status'
+                                ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
+                                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                            }`}
+                          >
+                            <Activity className="h-4 w-4 mr-2" />
+                            <span>Status</span>
+                          </button>
+                          
+                          {/* Authentication & General Tab - Always accessible */}
+                          <button
+                            onClick={() => setRepoActiveTab(repo.id, 'authentication')}
+                            className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                              getRepoActiveTab(repo.id) === 'authentication'
+                                ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
+                                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                            }`}
+                          >
+                            <Key className="h-4 w-4 mr-2" />
+                            <span>General</span>
+                          </button>
+                          
+                          {/* Features Tab - Disabled if no auth token */}
+                          <button
+                            onClick={() => getTokenStatus(repo) === 'configured' && setRepoActiveTab(repo.id, 'features')}
+                            disabled={getTokenStatus(repo) !== 'configured'}
+                            className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                              getTokenStatus(repo) !== 'configured'
+                                ? 'text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-50'
+                                : getRepoActiveTab(repo.id) === 'features'
+                                ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
+                                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                            }`}
+                          >
+                            <Settings className="h-4 w-4 mr-2" />
+                            <span>Features</span>
+                          </button>
+                        </div>
                       </div>
 
                       {/* Tab Content */}
                       <div className="space-y-6">
                         {/* Status & Health Tab */}
                         {getRepoActiveTab(repo.id) === 'status' && (
-                          <div className="space-y-6 animate-in slide-in-from-right-4 fade-in duration-300">
+                          <div className="space-y-6 tab-enter">
                             {/* Runner Health Status */}
                             {repo.runner_status && (
                               <div className="bg-gradient-to-r from-green-50 to-blue-50 dark:from-green-900/20 dark:to-blue-900/20 rounded-lg p-6 border border-green-200 dark:border-green-700">
@@ -1132,141 +1209,169 @@ const RepositoryManager = () => {
                                     <FileText className="h-5 w-5 mr-2 text-purple-600 dark:text-purple-400" />
                                     Configuration Status
                                   </h4>
-                                  <div className="flex items-center space-x-2">
-                                    {getConfigStatusIcon(repo)}
-                                    <span className="text-sm font-medium text-gray-900 dark:text-white">
-                                      {getConfigStatusText(repo)}
-                                    </span>
+                                  <div className="flex items-center justify-end">
+                                    <button
+                                      onClick={() => loadEffectiveConfig(repo.id)}
+                                      className="flex items-center px-3 py-2 text-sm font-medium text-purple-600 bg-purple-50 dark:bg-purple-900/30 dark:text-purple-400 rounded-lg hover:bg-purple-100 dark:hover:bg-purple-900/50 transition-colors duration-200 border border-purple-200 dark:border-purple-700"
+                                    >
+                                      <Eye className="h-4 w-4 mr-2" />
+                                      View Effective Config
+                                    </button>
                                   </div>
                                 </div>
                                 
                                 <div className="space-y-4">
+                                  {/* Configuration Summary */}
+                                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    {/* System Default */}
+                                    <div className="bg-green-50 dark:bg-green-900/20 rounded-lg p-4 border border-green-200 dark:border-green-700">
+                                      <div className="flex items-center mb-2">
+                                        <Settings className="h-4 w-4 text-green-600 dark:text-green-400 mr-2" />
+                                        <span className="font-medium text-green-900 dark:text-green-200 text-sm">System Default</span>
+                                      </div>
+                                      <p className="text-xs text-gray-600 dark:text-gray-400">Base PR-Agent configuration from dashboard settings</p>
+                                      <div className="mt-2">
+                                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200">
+                                          <Check className="h-3 w-3 mr-1" />
+                                          Always Active
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    {/* Repository Config */}
+                                    <div className={`rounded-lg p-4 border ${
+                                      repo.has_pr_agent_config 
+                                        ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-700'
+                                        : 'bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600'
+                                    }`}>
+                                      <div className="flex items-center mb-2">
+                                        <FileText className={`h-4 w-4 mr-2 ${
+                                          repo.has_pr_agent_config 
+                                            ? 'text-green-600 dark:text-green-400'
+                                            : 'text-gray-400 dark:text-gray-500'
+                                        }`} />
+                                        <span className={`font-medium text-sm ${
+                                          repo.has_pr_agent_config
+                                            ? 'text-green-900 dark:text-green-200'
+                                            : 'text-gray-600 dark:text-gray-400'
+                                        }`}>Repository Config</span>
+                                      </div>
+                                      <p className="text-xs text-gray-600 dark:text-gray-400">Custom .pr_agent.toml in repository root</p>
+                                      <div className="mt-2">
+                                        <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs ${
+                                          repo.has_pr_agent_config
+                                            ? 'bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200'
+                                            : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-400'
+                                        }`}>
+                                          {repo.has_pr_agent_config ? (
+                                            <>
+                                              <Check className="h-3 w-3 mr-1" />
+                                              {repo.effective_config?.override_keys?.length 
+                                                ? `${repo.effective_config.override_keys.length} overrides`
+                                                : 'Active'
+                                              }
+                                            </>
+                                          ) : (
+                                            <>
+                                              <X className="h-3 w-3 mr-1" />
+                                              Not Found
+                                            </>
+                                          )}
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    {/* Workflow Config */}
+                                    <div className={`rounded-lg p-4 border ${
+                                      repo.has_workflow_config 
+                                        ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700'
+                                        : 'bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600'
+                                    }`}>
+                                      <div className="flex items-center mb-2">
+                                        <Github className={`h-4 w-4 mr-2 ${
+                                          repo.has_workflow_config 
+                                            ? 'text-blue-600 dark:text-blue-400'
+                                            : 'text-gray-400 dark:text-gray-500'
+                                        }`} />
+                                        <span className={`font-medium text-sm ${
+                                          repo.has_workflow_config
+                                            ? 'text-blue-900 dark:text-blue-200'
+                                            : 'text-gray-600 dark:text-gray-400'
+                                        }`}>GitHub Workflow</span>
+                                      </div>
+                                      <p className="text-xs text-gray-600 dark:text-gray-400">Environment variables from .github/workflows/pr_agent.yml</p>
+                                      <div className="mt-2">
+                                        <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs ${
+                                          repo.has_workflow_config
+                                            ? 'bg-blue-200 dark:bg-blue-800 text-blue-800 dark:text-blue-200'
+                                            : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-400'
+                                        }`}>
+                                          {repo.has_workflow_config ? (
+                                            <>
+                                              <Check className="h-3 w-3 mr-1" />
+                                              {repo.effective_config?.workflow_config?.configuration_overrides 
+                                                ? `${Object.keys(repo.effective_config.workflow_config.configuration_overrides).length} env vars`
+                                                : 'Active'
+                                              }
+                                            </>
+                                          ) : (
+                                            <>
+                                              <X className="h-3 w-3 mr-1" />
+                                              Not Found
+                                            </>
+                                          )}
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                  </div>
+
+                                  {/* Configuration Priority Info */}
+                                  <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
+                                    <div className="flex items-start">
+                                      <Info className="h-4 w-4 text-amber-600 dark:text-amber-400 mr-2 mt-0.5 flex-shrink-0" />
+                                      <div className="text-sm">
+                                        <p className="font-medium text-amber-800 dark:text-amber-200 mb-1">Configuration Priority</p>
+                                        <p className="text-amber-700 dark:text-amber-300">
+                                          Settings are applied in this order: <span className="font-mono">System Default</span> → 
+                                          <span className="font-mono"> .pr_agent.toml</span> → 
+                                          <span className="font-mono"> GitHub Workflow Env</span>. 
+                                          Later sources override earlier ones.
+                                        </p>
+                                      </div>
+                                    </div>
+                                  </div>
+
                                   {/* Basic Status */}
-                                  <div className="text-sm text-gray-600 dark:text-gray-400">
+                                  <div className="text-sm text-gray-600 dark:text-gray-400 pt-2 border-t border-gray-200 dark:border-gray-700">
                                     <span className="font-medium">Last checked:</span> {formatLastChecked(repo.config_last_checked)}
                                   </div>
 
-                                  {/* Configuration Sources */}
-                                  <div className="space-y-3">
-                                    {/* Workflow Configuration */}
-                                    {repo.has_workflow_config && repo.effective_config?.workflow_config && (
-                                      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-                                        <div className="flex items-center mb-3">
-                                          <Github className="h-4 w-4 text-blue-600 dark:text-blue-400 mr-2" />
-                                          <span className="font-medium text-blue-800 dark:text-blue-200">GitHub Actions Workflow Configuration</span>
-                                        </div>
-                                        
-                                        {/* Environment Variables */}
-                                        {repo.effective_config.workflow_config.configuration_overrides && Object.keys(repo.effective_config.workflow_config.configuration_overrides).length > 0 && (
-                                          <div className="space-y-2">
-                                            <h6 className="text-sm font-medium text-blue-700 dark:text-blue-300">Environment Variables Applied:</h6>
-                                            <div className="grid grid-cols-1 gap-2">
-                                              {Object.entries(repo.effective_config.workflow_config.configuration_overrides).map(([envKey, envInfo]) => (
-                                                <div key={envKey} className="bg-white dark:bg-gray-800 rounded p-2 border border-blue-100 dark:border-blue-800">
-                                                  <div className="flex items-center justify-between">
-                                                    <span className="font-mono text-xs text-blue-600 dark:text-blue-400">{envKey}</span>
-                                                    {envInfo.is_secret ? (
-                                                      <span className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-200">
-                                                        <Shield className="h-3 w-3 mr-1" />
-                                                        Secret: {envInfo.secret_name}
-                                                      </span>
-                                                    ) : (
-                                                      <span className="font-mono text-xs text-gray-600 dark:text-gray-400">{envInfo.value}</span>
-                                                    )}
-                                                  </div>
-                                                </div>
-                                              ))}
-                                            </div>
-                                          </div>
-                                        )}
-
-                                        {/* Runner Configuration */}
-                                        {repo.effective_config.workflow_config.runner_config && (
-                                          <div className="mt-3 pt-3 border-t border-blue-200 dark:border-blue-700">
-                                            <h6 className="text-sm font-medium text-blue-700 dark:text-blue-300 mb-2">Runner Configuration:</h6>
-                                            <div className="text-sm text-blue-600 dark:text-blue-400">
-                                              <span className="font-medium text-gray-700 dark:text-gray-300">Runs on:</span> {
-                                                Array.isArray(repo.effective_config.workflow_config.runner_config.runs_on) 
-                                                  ? repo.effective_config.workflow_config.runner_config.runs_on.join(', ')
-                                                  : repo.effective_config.workflow_config.runner_config.runs_on
-                                              }
-                                              {repo.effective_config.workflow_config.runner_config.is_self_hosted && (
-                                                <span className="ml-2 inline-flex items-center px-2 py-1 rounded-full text-xs bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200">
-                                                  <Server className="h-3 w-3 mr-1" />
-                                                  Self-hosted
-                                                </span>
-                                              )}
-                                            </div>
-                                          </div>
-                                        )}
-                                      </div>
-                                    )}
-
-                                    {/* .pr_agent.toml Configuration */}
-                                    {repo.has_pr_agent_config && repo.effective_config?.repository_overrides && (
-                                      <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4">
-                                        <div className="flex items-center mb-3">
-                                          <FileText className="h-4 w-4 text-green-600 dark:text-green-400 mr-2" />
-                                          <span className="font-medium text-green-800 dark:text-green-200">.pr_agent.toml Configuration Overrides</span>
-                                        </div>
-                                        
-                                        {repo.effective_config.override_keys && repo.effective_config.override_keys.length > 0 ? (
-                                          <div className="space-y-2">
-                                            <h6 className="text-sm font-medium text-green-700 dark:text-green-300">Settings Overridden:</h6>
-                                            <div className="grid grid-cols-1 gap-2">
-                                              {repo.effective_config.override_keys.map((key, index) => {
-                                                const value = key.split('.').reduce((obj, k) => obj?.[k], repo.effective_config.repository_overrides);
-                                                return (
-                                                  <div key={index} className="bg-white dark:bg-gray-800 rounded p-2 border border-green-100 dark:border-green-800">
-                                                    <div className="flex items-center justify-between">
-                                                      <span className="font-mono text-xs text-green-600 dark:text-green-400">{key}</span>
-                                                      <span className="font-mono text-xs text-gray-600 dark:text-gray-400">
-                                                        {typeof value === 'object' ? JSON.stringify(value) : String(value)}
-                                                      </span>
-                                                    </div>
-                                                  </div>
-                                                );
-                                              })}
-                                            </div>
-                                          </div>
-                                        ) : (
-                                          <div className="text-sm text-green-600 dark:text-green-400">
-                                            Custom .pr_agent.toml found but no specific overrides detected.
-                                          </div>
-                                        )}
-                                      </div>
-                                    )}
-
-                                    {/* No Custom Configuration */}
-                                    {!repo.has_pr_agent_config && !repo.has_workflow_config && repo.config_last_checked && (
-                                      <div className="text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg p-3">
-                                        <span className="font-medium">ℹ</span> Repository uses system default configuration with no custom overrides.
-                                      </div>
-                                    )}
-
-                                    {/* Configuration Not Checked */}
-                                    {!repo.config_last_checked && (
-                                      <div className="text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3">
-                                        <span className="font-medium">⚠</span> Configuration not yet checked. Use "Check Config" button above.
-                                      </div>
-                                    )}
-                                  </div>
+                                  {/* Configuration Not Checked */}
+                                  {!repo.config_last_checked && (
+                                    <div className="text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3">
+                                      <span className="font-medium">⚠</span> Configuration not yet checked. Use "Check Config" button above.
+                                    </div>
+                                  )}
                                 </div>
                               </div>
                             )}
                           </div>
                         )}
 
-                        {/* General Tab (renamed from Details) */}
-                        {getRepoActiveTab(repo.id) === 'general' && (
-                          <div className="space-y-6 animate-in slide-in-from-left-4 fade-in duration-300">
+
+
+                        {/* Authentication & General Tab */}
+                        {getRepoActiveTab(repo.id) === 'authentication' && (
+                          <div className="space-y-6 tab-enter">
                             {/* Repository Information */}
-                            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-lg p-6 border border-blue-200 dark:border-blue-700">
+                            <div className="bg-gradient-to-r from-blue-50 to-cyan-50 dark:from-blue-900/20 dark:to-cyan-900/20 rounded-lg p-6 border border-blue-200 dark:border-blue-700">
                               <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4 flex items-center">
                                 <Info className="h-5 w-5 mr-2 text-blue-600 dark:text-blue-400" />
                                 Repository Information
                               </h4>
-                              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                              
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div>
                                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                                     Repository Name
@@ -1334,12 +1439,8 @@ const RepositoryManager = () => {
                                 )}
                               </div>
                             </div>
-                          </div>
-                        )}
 
-                        {/* Authentication Tab */}
-                        {getRepoActiveTab(repo.id) === 'authentication' && (
-                          <div className="space-y-6 animate-in slide-in-from-right-4 fade-in duration-300">
+                            {/* Access Token Configuration */}
                             <div className="bg-gradient-to-r from-purple-50 to-indigo-50 dark:from-purple-900/20 dark:to-indigo-900/20 rounded-lg p-6 border border-purple-200 dark:border-purple-700">
                               <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4 flex items-center">
                                 <Key className="h-5 w-5 mr-2 text-purple-600 dark:text-purple-400" />
@@ -1472,7 +1573,7 @@ const RepositoryManager = () => {
 
                         {/* Features Tab (renamed from Configuration) */}
                         {getRepoActiveTab(repo.id) === 'features' && (
-                          <div className="space-y-6 animate-in slide-in-from-right-4 fade-in duration-300">
+                          <div className="space-y-6 tab-enter">
                             <div className="bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-lg p-6 border border-green-200 dark:border-green-700">
                               <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4 flex items-center">
                                 <Settings className="h-5 w-5 mr-2 text-green-600 dark:text-green-400" />
@@ -1480,7 +1581,6 @@ const RepositoryManager = () => {
                               </h4>
                               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                                 {[
-                                  { key: 'is_active', label: 'Active', description: 'Enable monitoring for this repository' },
                                   { key: 'monitor_prs', label: 'Monitor PRs', description: 'Watch pull requests' },
                                   { key: 'monitor_issues', label: 'Monitor Issues', description: 'Watch issues' },
                                   { key: 'auto_review', label: 'Auto Review', description: 'Automatically review PRs' },
@@ -1496,35 +1596,22 @@ const RepositoryManager = () => {
                                       onClick={() => isEditing && setFormData({ ...formData, [key]: !formData[key] })}
                                       className={`relative p-4 rounded-lg border-2 transition-all duration-300 ${
                                         isEnabled
-                                          ? 'border-green-300 dark:border-green-600 bg-gradient-to-br from-green-50 to-green-100 dark:from-green-900/30 dark:to-green-800/30'
-                                          : 'border-gray-200 dark:border-gray-700 bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-800/50 dark:to-gray-700/50'
+                                          ? `border-green-300 dark:border-green-600 bg-gradient-to-br from-green-50 to-green-100 dark:from-green-900/30 dark:to-green-800/30 ${
+                                              isEditing ? 'shadow-lg shadow-green-200/40 dark:shadow-green-400/20' : ''
+                                            }`
+                                          : `border-gray-200 dark:border-gray-700 bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-800/50 dark:to-gray-700/50 ${
+                                              isEditing ? 'shadow-lg shadow-gray-200/40 dark:shadow-gray-400/20' : ''
+                                            }`
                                       } ${
                                         isEditing 
                                           ? 'cursor-pointer hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-2xl hover:-translate-y-1 transform shadow-lg' 
                                           : 'cursor-default shadow-sm'
                                       }`}
                                     >
-                                      {/* Status Indicator - More Prominent */}
-                                      <div className="absolute top-3 right-3">
-                                        <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300 ${
-                                          isEnabled
-                                            ? 'bg-green-500 dark:bg-green-400 shadow-lg shadow-green-200/50 dark:shadow-green-400/20'
-                                            : 'bg-gray-300 dark:bg-gray-600 shadow-md shadow-gray-200/50 dark:shadow-gray-400/20'
-                                        } ${
-                                          isEditing ? 'hover:scale-110' : ''
-                                        }`}>
-                                          <div className="flex items-center justify-center w-full h-full">
-                                            {isEnabled ? (
-                                              <Check className="h-5 w-5 text-white font-bold" />
-                                            ) : (
-                                              <X className="h-5 w-5 text-gray-500 dark:text-gray-400 font-bold" />
-                                            )}
-                                          </div>
-                                        </div>
-                                      </div>
+
 
                                       {/* Feature Info */}
-                                      <div className="pr-12">
+                                      <div>
                                         <h4 className={`text-base font-medium transition-colors ${
                                           isEnabled
                                             ? 'text-green-800 dark:text-green-200'
@@ -1556,6 +1643,195 @@ const RepositoryManager = () => {
           </div>
         )}
       </div>
+
+      {/* Effective Configuration Modal */}
+      {effectiveConfigModal.show && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-purple-50 to-indigo-50 dark:from-purple-900/20 dark:to-indigo-900/20">
+              <div className="flex items-center">
+                <FileText className="h-6 w-6 text-purple-600 dark:text-purple-400 mr-3" />
+                <div>
+                  <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+                    Effective Configuration
+                  </h2>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                    {effectiveConfigModal.data?.repository && `Repository: ${effectiveConfigModal.data.repository}`}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setEffectiveConfigModal(prev => ({ ...prev, show: false }))}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+              >
+                <X className="h-6 w-6" />
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-6 overflow-y-auto max-h-[calc(90vh-120px)]">
+              {effectiveConfigModal.loading ? (
+                <div className="flex flex-col items-center justify-center py-12">
+                  <RefreshCw className="h-8 w-8 text-purple-600 dark:text-purple-400 animate-spin mb-4" />
+                  <p className="text-gray-600 dark:text-gray-400">Loading effective configuration...</p>
+                </div>
+              ) : effectiveConfigModal.error ? (
+                <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-6">
+                  <div className="flex items-center">
+                    <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 mr-3" />
+                    <div>
+                      <h3 className="font-medium text-red-800 dark:text-red-200">Error Loading Configuration</h3>
+                      <p className="text-red-700 dark:text-red-300 mt-1">{effectiveConfigModal.error}</p>
+                    </div>
+                  </div>
+                </div>
+              ) : effectiveConfigModal.data ? (
+                <div className="space-y-6">
+                  {/* Configuration Priority Explanation */}
+                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                    <div className="flex items-start">
+                      <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3 mt-0.5 flex-shrink-0" />
+                      <div>
+                        <h3 className="font-medium text-blue-800 dark:text-blue-200 mb-2">Configuration Priority Order</h3>
+                        <div className="text-sm text-blue-700 dark:text-blue-300 space-y-1">
+                          <div className="flex items-center">
+                            <span className="bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded font-mono text-xs mr-2">1</span>
+                            <span>System Default Configuration (from dashboard settings)</span>
+                          </div>
+                          <div className="flex items-center">
+                            <span className="bg-green-100 dark:bg-green-700 px-2 py-1 rounded font-mono text-xs mr-2">2</span>
+                            <span>Repository Configuration (.pr_agent.toml in repository root)</span>
+                          </div>
+                          <div className="flex items-center">
+                            <span className="bg-blue-100 dark:bg-blue-700 px-2 py-1 rounded font-mono text-xs mr-2">3</span>
+                            <span>GitHub Workflow Environment Variables (.github/workflows/pr_agent.yml)</span>
+                          </div>
+                          <p className="text-xs mt-2 italic">Higher priority sources override settings from lower priority sources. Only overridden values are shown below.</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Environment Variables Section */}
+                  {effectiveConfigModal.data.workflow_config?.configuration_overrides && Object.keys(effectiveConfigModal.data.workflow_config.configuration_overrides).length > 0 && (
+                    <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-6">
+                      <div className="flex items-center mb-4">
+                        <Github className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3" />
+                        <h3 className="text-lg font-medium text-blue-900 dark:text-blue-200">Environment Variables</h3>
+                        <span className="ml-2 bg-blue-200 dark:bg-blue-700 text-blue-800 dark:text-blue-200 px-2 py-1 rounded-full text-xs">Highest Priority</span>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {Object.entries(effectiveConfigModal.data.workflow_config.configuration_overrides).map(([envKey, envInfo]) => (
+                          <div key={envKey} className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-blue-100 dark:border-blue-700">
+                            <div className="flex items-start justify-between mb-2">
+                              <span className="font-mono text-sm font-medium text-blue-700 dark:text-blue-300">{envKey}</span>
+                              {envInfo.is_secret && (
+                                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-200 ml-2">
+                                  <Shield className="h-3 w-3 mr-1" />
+                                  Secret: {envInfo.secret_name}
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-sm text-gray-600 dark:text-gray-400 mb-2">
+                              <span className="font-medium">Value:</span> 
+                              <span className="ml-2 font-mono bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded text-xs">
+                                {envInfo.is_secret ? '[SECRET]' : envInfo.value}
+                              </span>
+                            </div>
+                            {envInfo.config_path && (
+                              <div className="text-xs text-gray-500 dark:text-gray-400">
+                                <span className="font-medium">Maps to:</span> <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">{envInfo.config_path}</code>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Repository Configuration Section */}
+                  {effectiveConfigModal.data.repository_config && (
+                    <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-6">
+                      <div className="flex items-center mb-4">
+                        <FileText className="h-5 w-5 text-green-600 dark:text-green-400 mr-3" />
+                        <h3 className="text-lg font-medium text-green-900 dark:text-green-200">Repository Configuration</h3>
+                        <span className="ml-2 bg-green-200 dark:bg-green-700 text-green-800 dark:text-green-200 px-2 py-1 rounded-full text-xs">Medium Priority</span>
+                      </div>
+                      {effectiveConfigModal.data.override_keys && effectiveConfigModal.data.override_keys.length > 0 && (
+                        <div className="mb-4">
+                          <h4 className="font-medium text-green-800 dark:text-green-200 mb-2">Overridden Keys:</h4>
+                          <div className="flex flex-wrap gap-2">
+                            {effectiveConfigModal.data.override_keys.map((key, index) => (
+                              <span key={index} className="bg-green-100 dark:bg-green-800 text-green-800 dark:text-green-200 px-2 py-1 rounded-full text-xs font-mono">
+                                {key}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-green-100 dark:border-green-700">
+                        <h4 className="font-medium text-green-800 dark:text-green-200 mb-3">Configuration from .pr_agent.toml:</h4>
+                        <pre className="text-sm text-gray-800 dark:text-gray-200 overflow-x-auto whitespace-pre-wrap font-mono bg-gray-50 dark:bg-gray-900 p-3 rounded border max-h-64 overflow-y-auto">
+                          {JSON.stringify(effectiveConfigModal.data.repository_config, null, 2)}
+                        </pre>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Runner Configuration Section */}
+                  {effectiveConfigModal.data.workflow_config?.runner_config && (
+                    <div className="bg-gray-50 dark:bg-gray-900/20 border border-gray-200 dark:border-gray-700 rounded-lg p-6">
+                      <div className="flex items-center mb-4">
+                        <Server className="h-5 w-5 text-gray-600 dark:text-gray-400 mr-3" />
+                        <h3 className="text-lg font-medium text-gray-900 dark:text-gray-200">Runner Configuration</h3>
+                      </div>
+                      <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                          <div>
+                            <span className="font-medium text-gray-700 dark:text-gray-300">Runs on:</span>
+                            <span className="ml-2 font-mono bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded text-xs">
+                              {Array.isArray(effectiveConfigModal.data.workflow_config.runner_config.runs_on) 
+                                ? effectiveConfigModal.data.workflow_config.runner_config.runs_on.join(', ')
+                                : effectiveConfigModal.data.workflow_config.runner_config.runs_on
+                              }
+                            </span>
+                          </div>
+                          {effectiveConfigModal.data.workflow_config.runner_config.is_self_hosted && (
+                            <div className="flex items-center">
+                              <Server className="h-4 w-4 text-green-600 dark:text-green-400 mr-2" />
+                              <span className="text-green-700 dark:text-green-300 font-medium">Self-hosted Runner</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* No Configuration Found Messages */}
+                  {!effectiveConfigModal.data.workflow_config?.configuration_overrides && !effectiveConfigModal.data.repository_config && (
+                    <div className="text-center py-8">
+                      <Settings className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500 mb-4" />
+                      <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">Using Default Configuration</h3>
+                      <p className="text-gray-500 dark:text-gray-400">This repository is using the system default configuration with no overrides.</p>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex justify-end p-6 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
+              <button
+                onClick={() => setEffectiveConfigModal(prev => ({ ...prev, show: false }))}
+                className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
