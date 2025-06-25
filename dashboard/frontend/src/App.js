@@ -1,28 +1,43 @@
 import React, { useState, useEffect, useContext } from 'react';
-import { Activity, AlertCircle, CheckCircle, GitPullRequest, Settings, Code, FileText, BarChart3, GitBranch } from 'lucide-react';
+import { Activity, AlertCircle, CheckCircle, GitPullRequest, Settings, Code, FileText, BarChart3, GitBranch, Bell, Shield, Database } from 'lucide-react';
 import StatusOverview from './components/StatusOverview';
-import OperationsList from './components/OperationsList';
+import JobsList from './components/JobsList';
 import LogsViewer from './components/LogsViewer';
 import ConfigEditor from './components/ConfigEditor';
 import DeveloperView from './components/DeveloperView';
 import RepositoryManager from './components/RepositoryManager';
+import Notifications from './components/Notifications';
+import AdminPanel from './components/AdminPanel';
 import SettingsDropdown from './components/SettingsDropdown';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider, ToastContext } from './contexts/ToastContext';
 import apiService from './services/api';
+import webSocketService from './services/websocket';
 
 function AppContent() {
-  const [activeTab, setActiveTab] = useState('overview');
-  const [operations, setOperations] = useState([]);
+  const [activeTab, setActiveTab] = useState(() => {
+    // Get tab from URL on initial load
+    const urlParams = new URLSearchParams(window.location.search);
+    return urlParams.get('view') || 'overview';
+  });
+  const [jobs, setJobs] = useState([]);
+  const [operations, setOperations] = useState([]); // Keep for legacy compatibility
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [developerMode, setDeveloperMode] = useState(false);
   const [lastFetchTime, setLastFetchTime] = useState(null);
+  const [manualRefreshTrigger, setManualRefreshTrigger] = useState(null);
+  const [logFilterId, setLogFilterId] = useState(null);
+  const [logFilterType, setLogFilterType] = useState(null);
+  const [highlightedJobId, setHighlightedJobId] = useState(null);
+  const [highlightedOperationId, setHighlightedOperationId] = useState(null);
   const [connectionState, setConnectionState] = useState({
     api: 'connected',
     database: 'connected',
-    contextService: 'connected'
+    contextService: 'unknown',
+    websocket: 'disconnected'
   });
+  const [configNavigationTarget, setConfigNavigationTarget] = useState(null);
 
   const { handleApiError, handleApiSuccess, handleSystemError, handleSystemRestore, clearErrorState } = useContext(ToastContext);
 
@@ -42,6 +57,103 @@ function AppContent() {
     checkDeveloperMode();
   }, []);
 
+  // WebSocket connection and real-time updates
+  useEffect(() => {
+    const connectWebSocket = async () => {
+      try {
+        await webSocketService.connect();
+        setConnectionState(prev => ({ ...prev, websocket: 'connected' }));
+      } catch (error) {
+        console.error('Failed to connect WebSocket:', error);
+        setConnectionState(prev => ({ ...prev, websocket: 'error' }));
+      }
+    };
+
+    // WebSocket event handlers
+    const handleWebSocketConnected = () => {
+      setConnectionState(prev => ({ ...prev, websocket: 'connected' }));
+    };
+
+    const handleWebSocketDisconnected = () => {
+      setConnectionState(prev => ({ ...prev, websocket: 'disconnected' }));
+    };
+
+    const handleWebSocketError = (error) => {
+      setConnectionState(prev => ({ ...prev, websocket: 'error' }));
+    };
+
+    const handleLogUpdate = (logData) => {
+      setLogs(prevLogs => {
+        // Add new log to the beginning of the array
+        const newLogs = [logData, ...prevLogs];
+        // Keep only the latest 1000 logs to prevent memory issues
+        return newLogs.slice(0, 1000);
+      });
+    };
+
+    const handleOperationUpdate = (operationData) => {
+      setOperations(prevOperations => {
+        const existingIndex = prevOperations.findIndex(op => op.id === operationData.id);
+        if (existingIndex >= 0) {
+          // Update existing operation
+          const newOperations = [...prevOperations];
+          newOperations[existingIndex] = { ...newOperations[existingIndex], ...operationData };
+          return newOperations;
+        } else {
+          // Add new operation
+          return [operationData, ...prevOperations];
+        }
+      });
+    };
+
+    const handleJobUpdate = (jobData) => {
+      setJobs(prevJobs => {
+        const existingIndex = prevJobs.findIndex(job => job.id === jobData.id);
+        if (existingIndex >= 0) {
+          // Update existing job
+          const newJobs = [...prevJobs];
+          newJobs[existingIndex] = { ...newJobs[existingIndex], ...jobData };
+          return newJobs;
+        } else {
+          // Add new job
+          return [jobData, ...prevJobs];
+        }
+      });
+    };
+
+    // Set up event listeners
+    webSocketService.on('connected', handleWebSocketConnected);
+    webSocketService.on('disconnected', handleWebSocketDisconnected);
+    webSocketService.on('error', handleWebSocketError);
+    webSocketService.on('log', handleLogUpdate);
+    webSocketService.on('operation_update', handleOperationUpdate);
+    webSocketService.on('job_update', handleJobUpdate);
+
+    // Connect WebSocket
+    connectWebSocket();
+
+    // Listen for browser back/forward navigation
+    const handlePopState = (event) => {
+      const urlParams = new URLSearchParams(window.location.search);
+      const view = urlParams.get('view') || 'overview';
+      setActiveTab(view);
+    };
+
+    window.addEventListener('popstate', handlePopState);
+
+    // Cleanup on unmount
+    return () => {
+      webSocketService.off('connected', handleWebSocketConnected);
+      webSocketService.off('disconnected', handleWebSocketDisconnected);
+      webSocketService.off('error', handleWebSocketError);
+      webSocketService.off('log', handleLogUpdate);
+      webSocketService.off('operation_update', handleOperationUpdate);
+      webSocketService.off('job_update', handleJobUpdate);
+      webSocketService.disconnect();
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, []);
+
   // Smart data fetching with error handling
   const fetchData = async (showLoadingState = false) => {
     if (showLoadingState) {
@@ -49,7 +161,15 @@ function AppContent() {
     }
 
     try {
-      let operationsRes, logsRes;
+      let jobsRes, operationsRes, logsRes;
+      
+      try {
+        jobsRes = await apiService.getJobs({ limit: 100, include_operations: true });
+      } catch (error) {
+        console.error('Jobs API Error:', error);
+        handleSystemError(error, 'jobs');
+        jobsRes = { data: { data: [] } };
+      }
       
       try {
         operationsRes = await apiService.getOperations({ limit: 100 });
@@ -68,6 +188,7 @@ function AppContent() {
       }
 
       // Check if we got valid data (axios wraps response in .data)
+      const newJobs = jobsRes.data?.data || [];
       const newOperations = operationsRes.data?.data?.operations || [];
       const newLogs = logsRes.data?.data?.logs || [];
 
@@ -77,10 +198,11 @@ function AppContent() {
       const newConnectionState = {
         api: 'connected',
         database: operationsRes.data?.data ? 'connected' : 'error',
-        contextService: 'connected' // Will be updated by health checks
+        contextService: connectionState.contextService // Preserve context service state - don't reset it
       };
 
       // Always update the state with fresh data
+      setJobs(newJobs);
       setOperations(newOperations);
       setLogs(newLogs);
 
@@ -120,16 +242,35 @@ function AppContent() {
     }
   };
 
-  // Initial data fetch
+  // Initial data fetch and URL parameter handling
   useEffect(() => {
     fetchData(true);
+    
+    // Handle URL parameters on initial load
+    const urlParams = new URLSearchParams(window.location.search);
+    const jobId = urlParams.get('job');
+    const operationId = urlParams.get('operation');
+    
+    if (jobId) {
+      // Delay to ensure data is loaded first
+      setTimeout(() => {
+        if (operationId) {
+          navigateToOperationWithHighlight(jobId, operationId);
+        } else {
+          navigateToJobWithHighlight(jobId);
+        }
+      }, 1000);
+    }
   }, []);
 
-  // Periodic data refresh (every 5 seconds)
+  // Periodic data refresh (every 30 seconds as backup to WebSocket)
   useEffect(() => {
     const interval = setInterval(() => {
-      fetchData(false);
-    }, 5000);
+      // Only poll if WebSocket is not connected
+      if (connectionState.websocket !== 'connected') {
+        fetchData(false);
+      }
+    }, 30000);
 
     return () => clearInterval(interval);
   }, [connectionState]); // Re-establish interval when connection state changes
@@ -142,18 +283,26 @@ function AppContent() {
         
         // Update context service status
         const contextServiceStatus = health.services?.context_service?.status || 'unknown';
-        setConnectionState(prev => ({
-          ...prev,
-          contextService: contextServiceStatus === 'healthy' ? 'connected' : 
-                         contextServiceStatus === 'disabled' ? 'disabled' : 'error'
-        }));
-
-        // Handle context service state changes
-        if (connectionState.contextService === 'error' && contextServiceStatus === 'healthy') {
-          handleSystemRestore('Context Service');
-        } else if (connectionState.contextService === 'connected' && contextServiceStatus !== 'healthy') {
-          handleSystemError(new Error('Service unavailable'), 'Context Service');
-        }
+        const newContextServiceState = contextServiceStatus === 'healthy' ? 'connected' : 
+                                     contextServiceStatus === 'disabled' ? 'disabled' : 'error';
+        
+        setConnectionState(prev => {
+          const previousContextState = prev.contextService;
+          
+          // Handle context service state changes with explicit logic
+          if (previousContextState === 'error' && newContextServiceState === 'connected') {
+            handleSystemRestore('Context Service');
+          } else if (previousContextState === 'connected' && newContextServiceState === 'error') {
+            // Only show error if service went from connected to error (not disabled)
+            handleSystemError(new Error('Service unavailable'), 'Context Service');
+          }
+          // NEVER show errors for disabled services or transitions to disabled
+          
+          return {
+            ...prev,
+            contextService: newContextServiceState
+          };
+        });
 
       } catch (error) {
         // Health check failure - only report if connection was previously good
@@ -168,66 +317,210 @@ function AppContent() {
     healthCheck(); // Run immediately
 
     return () => clearInterval(healthInterval);
-  }, [connectionState.contextService, connectionState.api]);
+  }, [connectionState.api]); // Removed contextService dependency to prevent re-runs
 
   const tabs = [
     { id: 'overview', name: 'Overview', icon: Activity },
-    { id: 'operations', name: 'Operations', icon: BarChart3 },
+    { id: 'jobs', name: 'Jobs', icon: BarChart3 },
     { id: 'logs', name: 'Logs', icon: FileText },
     { id: 'repositories', name: 'Repositories', icon: GitBranch },
-    { id: 'config', name: 'Configuration', icon: Settings },
+    { id: 'notifications', name: 'Notifications', icon: Bell },
+    { id: 'config', name: 'AI Config', icon: Settings },
+    { id: 'admin', name: 'Retention', icon: Database },
     ...(developerMode ? [{ id: 'developer', name: 'Developer', icon: Code }] : [])
   ];
 
   const refreshData = () => {
     fetchData(false);
+    setManualRefreshTrigger(new Date());
   };
 
-  const navigateToConfig = (sectionId) => {
-    setActiveTab('config');
-    // Wait for the config tab to render, then scroll to the section
-    setTimeout(() => {
-      const element = document.getElementById(sectionId);
-      if (element) {
-        element.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        // Optionally expand the section if it's collapsed
-        const sectionHeader = element.querySelector('button');
-        if (sectionHeader) {
-          sectionHeader.click();
+  const navigateToConfig = (target) => {
+    // Special handling for repositories
+    if (target === 'repositories') {
+      handleTabChange('repositories');
+      return;
+    }
+    
+    handleTabChange('config');
+    
+    // Enhanced navigation for context service enable
+    if (target === 'context-service-section') {
+      setConfigNavigationTarget('context-service-enable');
+      // Clear the navigation target after a delay to allow re-triggering
+      setTimeout(() => {
+        setConfigNavigationTarget(null);
+      }, 3000);
+    } else {
+      // Legacy navigation for other sections
+      setTimeout(() => {
+        const element = document.getElementById(target);
+        if (element) {
+          element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          // Optionally expand the section if it's collapsed
+          const sectionHeader = element.querySelector('button');
+          if (sectionHeader) {
+            sectionHeader.click();
+          }
         }
-      }
-    }, 100);
+      }, 100);
+    }
   };
 
-  const navigateToLogs = (operationId) => {
-    setActiveTab('logs');
-    // Store the operation ID for filtering in logs view
-    // We'll pass this to LogsViewer via a ref or context
+  const navigateToLogs = (filterId, filterType = 'operation') => {
+    handleTabChange('logs');
+    // Set the filter for the logs view
+    setLogFilterId(filterId);
+    setLogFilterType(filterType);
+    
+    // Legacy support - trigger event for old components
+    if (filterType === 'operation') {
+      setTimeout(() => {
+        const event = new CustomEvent('filterLogsByOperation', { 
+          detail: { operationId: filterId } 
+        });
+        window.dispatchEvent(event);
+      }, 100);
+    }
+  };
+
+  const navigateToJob = (jobId) => {
+    handleTabChange('jobs');
+    // Clear any existing log filters
+    setLogFilterId(null);
+    setLogFilterType(null);
+    
+    // TODO: In the future, we could add job selection/highlighting in the jobs view
+    // For now, just navigate to the jobs tab where the user can find the job
+  };
+
+  const navigateToJobWithHighlight = (jobId) => {
+    handleTabChange('jobs');
+    setLogFilterId(null);
+    setLogFilterType(null);
+    
+    // Update URL with job parameter
+    const url = new URL(window.location);
+    url.searchParams.set('view', 'jobs');
+    url.searchParams.set('job', jobId);
+    url.searchParams.delete('operation'); // Remove operation if present
+    window.history.pushState({ view: 'jobs', job: jobId }, '', url);
+    
+    // Set highlight and clear it after 3 seconds
+    setHighlightedJobId(jobId);
+    setHighlightedOperationId(null);
     setTimeout(() => {
-      // Trigger filtering in logs view
-      const event = new CustomEvent('filterLogsByOperation', { 
-        detail: { operationId } 
+      setHighlightedJobId(null);
+    }, 3000);
+  };
+
+  const navigateToJobs = (statusFilter = null) => {
+    handleTabChange('jobs');
+    setLogFilterId(null);
+    setLogFilterType(null);
+    setHighlightedJobId(null);
+    setHighlightedOperationId(null);
+    
+    // If a status filter is provided, trigger it after the component loads
+    if (statusFilter) {
+      setTimeout(() => {
+        const event = new CustomEvent('filterJobsByStatus', { 
+          detail: { status: statusFilter } 
+        });
+        window.dispatchEvent(event);
+      }, 100);
+    }
+  };
+
+  const navigateToOperationWithHighlight = (jobId, operationId) => {
+    handleTabChange('jobs');
+    setLogFilterId(null);
+    setLogFilterType(null);
+    
+    // Update URL with job and operation parameters
+    const url = new URL(window.location);
+    url.searchParams.set('view', 'jobs');
+    url.searchParams.set('job', jobId);
+    url.searchParams.set('operation', operationId);
+    window.history.pushState({ view: 'jobs', job: jobId, operation: operationId }, '', url);
+    
+    // Clear any existing highlights
+    setHighlightedJobId(null);
+    setHighlightedOperationId(null);
+    
+    // After navigation and page change, set ONLY the operation highlight (not the job)
+    setTimeout(() => {
+      setHighlightedOperationId(operationId);
+      
+      // Ensure the job is expanded to show the operation (without highlighting the job)
+      const event = new CustomEvent('expandJob', { 
+        detail: { jobId } 
       });
       window.dispatchEvent(event);
-    }, 100);
+    }, 200);
+    
+    // Clear operation highlight after animation
+    setTimeout(() => {
+      setHighlightedOperationId(null);
+    }, 4000);
+  };
+
+  const clearLogFilter = () => {
+    setLogFilterId(null);
+    setLogFilterType(null);
+  };
+
+  const handleTabChange = (tabId) => {
+    setActiveTab(tabId);
+    
+    // Update URL without page reload
+    const url = new URL(window.location);
+    url.searchParams.set('view', tabId);
+    window.history.pushState({ view: tabId }, '', url);
   };
 
   const renderTabContent = () => {
     switch (activeTab) {
       case 'overview':
-        return <StatusOverview operations={operations} onNavigateToConfig={navigateToConfig} />;
-      case 'operations':
-        return <OperationsList operations={operations} onRefresh={refreshData} onShowLogs={navigateToLogs} />;
+        return <StatusOverview 
+          operations={operations} 
+          onNavigateToConfig={navigateToConfig} 
+          onNavigateToJob={navigateToJobWithHighlight}
+          onNavigateToJobs={navigateToJobs}
+        />;
+      case 'jobs':
+        return <JobsList 
+          onShowLogs={navigateToLogs} 
+          refreshTrigger={manualRefreshTrigger}
+          highlightedJobId={highlightedJobId}
+          highlightedOperationId={highlightedOperationId}
+        />;
       case 'logs':
-        return <LogsViewer logs={logs} onRefresh={refreshData} />;
+        return <LogsViewer 
+          logs={logs} 
+          onRefresh={refreshData} 
+          filterId={logFilterId}
+          filterType={logFilterType}
+          onNavigateToJob={navigateToJobWithHighlight}
+          onNavigateToOperation={navigateToOperationWithHighlight}
+          onClearFilter={clearLogFilter}
+        />;
       case 'repositories':
         return <RepositoryManager />;
+      case 'notifications':
+        return <Notifications />;
+      case 'admin':
+        return <AdminPanel />;
       case 'config':
-        return <ConfigEditor />;
+        return <ConfigEditor navigationTarget={configNavigationTarget} />;
       case 'developer':
         return developerMode ? <DeveloperView onRefresh={refreshData} /> : null;
       default:
-        return <StatusOverview operations={operations} onNavigateToConfig={navigateToConfig} />;
+        return <StatusOverview 
+          operations={operations} 
+          onNavigateToConfig={navigateToConfig} 
+          onNavigateToJobs={navigateToJobs}
+        />;
     }
   };
 
@@ -276,7 +569,7 @@ function AppContent() {
               return (
                 <button
                   key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => handleTabChange(tab.id)}
                   className={`flex items-center px-1 py-4 border-b-2 font-medium text-sm transition-colors duration-200 ${
                     activeTab === tab.id
                       ? 'border-blue-500 text-blue-600 dark:text-blue-400'

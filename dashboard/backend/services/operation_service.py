@@ -132,7 +132,9 @@ class LogService:
         limit: int = 1000,
         level: Optional[str] = None,
         search: Optional[str] = None,
-        repo: Optional[str] = None
+        repo: Optional[str] = None,
+        job_id: Optional[str] = None,
+        operation_id: Optional[str] = None
     ) -> APIResponse:
         """Get list of logs with optional filtering"""
         query = db.query(LogEntryDB)
@@ -145,6 +147,12 @@ class LogService:
             
         if repo and repo != "all":
             query = query.filter(LogEntryDB.repo == repo)
+        
+        if job_id:
+            query = query.filter(LogEntryDB.job_id == job_id)
+        
+        if operation_id:
+            query = query.filter(LogEntryDB.operation_id == operation_id)
         
         logs = query.order_by(LogEntryDB.timestamp.desc()).limit(limit).all()
         
@@ -162,6 +170,37 @@ class LogService:
                 "command": log.command,
                 "repo": log.repo,
                 "request_id": log.request_id,
+                "job_id": getattr(log, 'job_id', None),  # Safe access for backward compatibility
+                "operation_id": getattr(log, 'operation_id', None),  # Safe access for backward compatibility
+                "status": log.status,
+                "error": log.error,
+                "artifact": log.artifact
+            })
+        
+        return APIResponse(data={"logs": log_list}, total=len(log_list))
+    
+    async def get_logs_by_job(self, db: Session, job_id: str) -> APIResponse:
+        """Get logs for specific job"""
+        logs = db.query(LogEntryDB).filter(
+            LogEntryDB.job_id == job_id
+        ).order_by(LogEntryDB.timestamp.desc()).all()
+        
+        # Convert to API format
+        log_list = []
+        for log in logs:
+            log_list.append({
+                "id": log.id,
+                "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+                "level": log.level,
+                "message": log.message,
+                "module": log.module,
+                "function": log.function,
+                "pr_url": log.pr_url,
+                "command": log.command,
+                "repo": log.repo,
+                "request_id": log.request_id,
+                "job_id": getattr(log, 'job_id', None),
+                "operation_id": getattr(log, 'operation_id', None),
                 "status": log.status,
                 "error": log.error,
                 "artifact": log.artifact

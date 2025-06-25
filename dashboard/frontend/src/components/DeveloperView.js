@@ -61,6 +61,11 @@ const DeveloperView = ({ onRefresh }) => {
           title = 'Data Cleared';
           message = 'All operations and logs removed from database';
           break;
+        case 'refreshJobCounts':
+          result = await apiService.refreshJobCounts();
+          title = 'Job Counts Refreshed';
+          message = result.message || `Updated ${result.data?.updated_jobs || 0} jobs`;
+          break;
         default:
           throw new Error('Unknown action');
       }
@@ -68,7 +73,7 @@ const DeveloperView = ({ onRefresh }) => {
       showSuccess(title, result.message || message);
       
       // Trigger data refresh after successful operations
-      if (onRefresh && ['generateTestData', 'simulateActivity', 'failActivity', 'succeedActivity', 'triggerError', 'clearData'].includes(action)) {
+      if (onRefresh && ['generateTestData', 'simulateActivity', 'failActivity', 'succeedActivity', 'triggerError', 'clearData', 'refreshJobCounts'].includes(action)) {
         setTimeout(() => {
           onRefresh();
         }, 1000); // Give backend time to process
@@ -134,6 +139,14 @@ const DeveloperView = ({ onRefresh }) => {
       icon: AlertTriangle,
       color: 'orange',
       action: () => showError('Test Error', 'This is a test error message to verify the notification system')
+    },
+    {
+      key: 'refreshJobCounts',
+      label: 'Refresh Job Counts',
+      description: 'Recalculate operations and logs counts for all jobs',
+      icon: Zap,
+      color: 'blue',
+      action: () => handleButtonClick('refreshJobCounts', 'refreshJobCounts')
     },
     {
       key: 'clearData',

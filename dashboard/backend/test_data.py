@@ -6,12 +6,19 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Any
 from database import SessionLocal
-from models import OperationDB, LogEntryDB
+from models import JobDB, OperationDB, LogEntryDB
 
 
 def _get_realistic_error(command: str) -> str:
     """Generate realistic error messages based on command type"""
     error_templates = {
+        "job": [
+            "Job execution failed: multiple operations encountered errors",
+            "Job cancelled due to resource constraints",
+            "Job timeout: exceeded maximum execution time of 30 minutes",
+            "Job failed: GitHub API rate limit exceeded",
+            "Job terminated: insufficient permissions for repository access"
+        ],
         "review": [
             "AI model rate limit exceeded during review analysis",
             "Failed to parse diff: malformed patch format",
@@ -155,11 +162,12 @@ def _generate_realistic_log_sequence(operation) -> list:
 
 
 async def generate_test_data() -> Dict[str, Any]:
-    """Generate sample operations and logs for testing"""
+    """Generate sample jobs, operations and logs for testing"""
     db = None
     try:
         db = SessionLocal()
         
+        jobs_created = 0
         operations_created = 0
         logs_created = 0
         
@@ -184,7 +192,21 @@ async def generate_test_data() -> Dict[str, Any]:
             "diana-contributor", "eve-tester", "frank-architect"
         ]
         
-        status_scenarios = [
+        job_types = [
+            {"type": "webhook", "weight": 5},
+            {"type": "cli", "weight": 2},
+            {"type": "manual", "weight": 2},  
+            {"type": "api", "weight": 1}
+        ]
+        
+        job_status_scenarios = [
+            {"status": "completed", "weight": 4},
+            {"status": "failed", "weight": 3},
+            {"status": "running", "weight": 2},
+            {"status": "cancelled", "weight": 1}
+        ]
+        
+        operation_status_scenarios = [
             {"status": "completed", "weight": 6},
             {"status": "failed", "weight": 2},
             {"status": "processing", "weight": 1},
@@ -193,116 +215,200 @@ async def generate_test_data() -> Dict[str, Any]:
             {"status": "publishing", "weight": 1}
         ]
         
-        for i in range(12):  # Generate more operations
-            operation_id = f"op-{uuid.uuid4().hex[:8]}"
-            started_time = datetime.utcnow() - timedelta(
-                minutes=random.randint(5, 2880)  # Up to 2 days ago
-            )
+        # Generate 15 jobs, each with 1-3 operations
+        for i in range(15):
+            job_id = f"job-{uuid.uuid4().hex[:8]}"
             
-            # Weighted random selection
+            # Weighted random selection for job first to determine timing
             repo = random.choice(test_repos)
-            command = random.choices(
-                [cmd["cmd"] for cmd in test_commands],
-                weights=[cmd["weight"] for cmd in test_commands]
+            job_type = random.choices(
+                [jt["type"] for jt in job_types],
+                weights=[jt["weight"] for jt in job_types]
             )[0]
-            status = random.choices(
-                [s["status"] for s in status_scenarios],
-                weights=[s["weight"] for s in status_scenarios]
+            job_status = random.choices(
+                [s["status"] for s in job_status_scenarios],
+                weights=[s["weight"] for s in job_status_scenarios]
             )[0]
-            sender = random.choice(test_senders)
             
-            # Create realistic operation
-            operation = OperationDB(
-                operation_id=operation_id,
-                command=command,
-                repo=repo,
+            # Set start time based on status - running jobs should be more recent
+            if job_status == "running":
+                started_time = datetime.utcnow() - timedelta(
+                    minutes=random.randint(1, 60)  # Running jobs: 1-60 minutes ago
+                )
+            elif job_status == "failed":
+                started_time = datetime.utcnow() - timedelta(
+                    minutes=random.randint(10, 720)  # Failed jobs: 10 minutes to 12 hours ago
+                )
+            else:  # completed, cancelled
+                started_time = datetime.utcnow() - timedelta(
+                    minutes=random.randint(30, 2880)  # Other jobs: 30 minutes to 2 days ago
+                )
+            sender = random.choice(test_senders)
+            request_id = f"req_{uuid.uuid4().hex[:12]}"
+            
+            # Create job
+            job = JobDB(
+                job_id=job_id,
+                job_type=job_type,
+                source=f"{job_type}_trigger",
+                status=job_status,
+                repository=repo,
                 pr_url=f"https://github.com/{repo}/pull/{random.randint(1000, 9999)}",
-                status=status,
+                trigger_user=sender,
+                trigger_event="pull_request" if job_type == "webhook" else job_type,
+                installation_id=f"inst_{random.randint(100000, 999999)}" if job_type == "webhook" else None,
+                request_id=request_id,
                 started_at=started_time,
-                last_updated=datetime.utcnow(),
-                completed_at=datetime.utcnow() if status in ["completed", "failed"] else None,
-                duration=random.uniform(15, 300) if status in ["completed", "failed"] else None,
-                error_details=_get_realistic_error(command) if status == "failed" else None,
-                installation_id=f"inst_{random.randint(100000, 999999)}",
-                sender=sender,
-                request_id=f"req_{uuid.uuid4().hex[:12]}",
-                response_time=random.uniform(0.3, 8.0),
-                context_fetch_time=random.uniform(0.1, 3.0),
-                ai_processing_time=random.uniform(3.0, 45.0),
-                suggestions_count=random.randint(2, 15) if status == "completed" and command in ["review", "improve"] else None,
-                errors_count=random.randint(0, 2),
-                warnings_count=random.randint(0, 4)
+                completed_at=datetime.utcnow() if job_status in ["completed", "failed", "cancelled"] else None,
+                duration=random.uniform(30, 600) if job_status in ["completed", "failed", "cancelled"] else None,
+                webhook_payload={"action": "opened", "number": random.randint(1000, 9999)} if job_type == "webhook" else None,
+                result_summary={"message": f"Job completed with {random.randint(1, 3)} operations", "success": True} if job_status == "completed" else None,
+                error_details=_get_realistic_error("job") if job_status == "failed" else None
             )
             
-            db.add(operation)
-            operations_created += 1
+            db.add(job)
+            jobs_created += 1
             
-            # Generate realistic linked logs for this operation
-            log_messages = _generate_realistic_log_sequence(operation)
+            # Generate 1-3 operations for this job
+            num_operations = random.randint(1, 3)
+            job_operations = []
             
-            for j, (level, message, module, function) in enumerate(log_messages):
-                log_time = started_time + timedelta(seconds=j * random.randint(2, 15))
+            for j in range(num_operations):
+                operation_id = f"op-{uuid.uuid4().hex[:8]}"
+                op_started_time = started_time + timedelta(seconds=j * random.randint(5, 30))
                 
-                log_entry = LogEntryDB(
-                    timestamp=log_time,
-                    level=level,
-                    message=message,
-                    module=module,
-                    function=function,
-                    line=random.randint(25, 800),
-                    pr_url=operation.pr_url,
-                    command=operation.command,
-                    installation_id=operation.installation_id,
-                    repo=operation.repo,
-                    sender=operation.sender,
-                    request_id=operation.request_id,
-                    status=operation.status,
-                    analytics=random.choice([True, False]),
-                    app_name="pr-agent",
-                    git_provider="github"
+                command = random.choices(
+                    [cmd["cmd"] for cmd in test_commands],
+                    weights=[cmd["weight"] for cmd in test_commands]
+                )[0]
+                
+                # Operation status should be consistent with job status
+                if job_status == "failed":
+                    # Failed jobs: some operations completed, last one(s) failed
+                    if j == num_operations - 1:
+                        op_status = "failed"
+                    else:
+                        op_status = random.choice(["completed", "failed"])
+                elif job_status == "running":
+                    # Running jobs: earlier operations completed, later ones in progress
+                    if j < num_operations - 1:
+                        op_status = "completed"
+                    else:
+                        op_status = random.choice(["processing", "fetching_context", "self_reflecting", "publishing"])
+                elif job_status == "cancelled":
+                    # Cancelled jobs: some completed, some skipped
+                    op_status = random.choice(["completed", "skipped"])
+                else:  # completed
+                    # Completed jobs: all operations completed (with occasional failures that were recovered)
+                    op_status = random.choices(
+                        ["completed", "failed"],
+                        weights=[9, 1]  # 90% completed, 10% failed (but job still completed overall)
+                    )[0]
+                
+                operation = OperationDB(
+                    operation_id=operation_id,
+                    job_id=job_id,
+                    operation_type=command,
+                    command=command,
+                    repo=repo,
+                    pr_url=job.pr_url,
+                    status=op_status,
+                    started_at=op_started_time,
+                    last_updated=datetime.utcnow(),
+                    completed_at=datetime.utcnow() if op_status in ["completed", "failed", "skipped"] else None,
+                    duration=random.uniform(15, 300) if op_status in ["completed", "failed", "skipped"] else None,
+                    error_details=_get_realistic_error(command) if op_status == "failed" else None,
+                    installation_id=job.installation_id,
+                    sender=sender,
+                    request_id=request_id,
+                    response_time=random.uniform(0.3, 8.0) if op_status in ["completed", "failed"] else None,
+                    context_fetch_time=random.uniform(0.1, 3.0) if op_status in ["completed", "failed"] else None,
+                    ai_processing_time=random.uniform(3.0, 45.0) if op_status in ["completed", "failed"] else None,
+                    suggestions_count=random.randint(2, 15) if op_status == "completed" and command in ["review", "improve"] else None,
+                    errors_count=random.randint(0, 2),
+                    warnings_count=random.randint(0, 4),
+                    result_data={"suggestions": random.randint(1, 8)} if op_status == "completed" else None
                 )
                 
-                db.add(log_entry)
-                logs_created += 1
-        
-        # Generate some unlinked logs (system-level logs)
-        for i in range(8):
-            log_time = datetime.utcnow() - timedelta(minutes=random.randint(1, 180))
-            level = random.choice(["INFO", "WARNING", "ERROR", "DEBUG"])
+                db.add(operation)
+                operations_created += 1
+                job_operations.append(operation)
             
-            system_messages = [
-                "System health check completed successfully",
-                "Database connection pool optimization completed", 
-                "Configuration reload triggered by admin",
-                "WebSocket connection established with dashboard",
-                "Rate limit exceeded for API key, throttling requests",
-                "Cache invalidation triggered for repository metadata",
-                "Background cleanup task removed 45 expired sessions",
-                "Security scan detected no vulnerabilities in dependencies"
-            ]
+            # Generate realistic linked logs for each operation in this job
+            for operation in job_operations:
+                log_messages = _generate_realistic_log_sequence(operation)
+                
+                for k, (level, message, module, function) in enumerate(log_messages):
+                    log_time = operation.started_at + timedelta(seconds=k * random.randint(2, 15))
+                    
+                    log_entry = LogEntryDB(
+                        timestamp=log_time,
+                        level=level,
+                        message=message,
+                        module=module,
+                        function=function,
+                        line=random.randint(25, 800),
+                        pr_url=operation.pr_url,
+                        command=operation.command,
+                        installation_id=operation.installation_id,
+                        repo=operation.repo,
+                        sender=operation.sender,
+                        request_id=operation.request_id,
+                        status=operation.status,
+                        analytics=random.choice([True, False]),
+                        app_name="pr-agent",
+                        git_provider="github",
+                        job_id=job_id,
+                        operation_id=operation.operation_id
+                    )
+                    
+                    db.add(log_entry)
+                    logs_created += 1
             
-            log_entry = LogEntryDB(
-                timestamp=log_time,
-                level=level,
-                message=random.choice(system_messages),
-                module="system",
-                function=random.choice(["health_check", "cleanup", "security", "cache"]),
-                line=random.randint(10, 200),
-                analytics=False,
-                app_name="pr-agent",
-                git_provider="system"
-            )
+        # Update job counts after all operations and logs are created
+        # Move this outside the job creation loop to update ALL jobs after everything is created
+        for job in db.query(JobDB).all():
+            # Count operations for this job
+            operations_count = db.query(OperationDB).filter(OperationDB.job_id == job.job_id).count()
+            job.operations_count = operations_count
             
-            db.add(log_entry)
-            logs_created += 1
+            # Count completed and failed operations
+            completed_operations = db.query(OperationDB).filter(
+                OperationDB.job_id == job.job_id,
+                OperationDB.status == "completed"
+            ).count()
+            job.completed_operations = completed_operations
+            
+            failed_operations = db.query(OperationDB).filter(
+                OperationDB.job_id == job.job_id,
+                OperationDB.status == "failed"
+            ).count()
+            job.failed_operations = failed_operations
+            
+            # Count logs for this job
+            total_logs = db.query(LogEntryDB).filter(LogEntryDB.job_id == job.job_id).count()
+            job.total_logs = total_logs
+            
+            # Count error and warning logs
+            error_count = db.query(LogEntryDB).filter(
+                LogEntryDB.job_id == job.job_id,
+                LogEntryDB.level.in_(['ERROR', 'CRITICAL'])
+            ).count()
+            job.error_count = error_count
+            
+            warning_count = db.query(LogEntryDB).filter(
+                LogEntryDB.job_id == job.job_id,
+                LogEntryDB.level == 'WARNING'
+            ).count()
+            job.warning_count = warning_count
         
         db.commit()
         db.close()
         
         return {
             "status": "success",
-            "message": f"Generated {operations_created} test operations and {logs_created} test logs with realistic linking",
-            "data": {"operations": operations_created, "logs": logs_created}
+            "message": f"Generated {jobs_created} test jobs, {operations_created} test operations and {logs_created} test logs with realistic job/operation hierarchy",
+            "data": {"jobs": jobs_created, "operations": operations_created, "logs": logs_created}
         }
         
     except Exception as e:
@@ -313,10 +419,11 @@ async def generate_test_data() -> Dict[str, Any]:
 
 
 async def simulate_live_activity() -> Dict[str, Any]:
-    """Simulate a live operation in progress with linked logs"""
+    """Simulate a live job with operations in progress with linked logs"""
     try:
         db = SessionLocal()
         
+        job_id = f"live-job-{uuid.uuid4().hex[:8]}"
         operation_id = f"live-op-{uuid.uuid4().hex[:8]}"
         demo_repos = ["microsoft/vscode", "facebook/react", "nodejs/node"]
         demo_commands = ["review", "describe", "improve"]
@@ -325,18 +432,41 @@ async def simulate_live_activity() -> Dict[str, Any]:
         repo = random.choice(demo_repos)
         command = random.choice(demo_commands)
         user = random.choice(demo_users)
+        request_id = f"live_{uuid.uuid4().hex[:12]}"
+        started_time = datetime.utcnow() - timedelta(seconds=random.randint(15, 120))
         
+        # Create live job
+        job = JobDB(
+            job_id=job_id,
+            job_type="webhook",
+            source="webhook_trigger",
+            status="running",
+            repository=repo,
+            pr_url=f"https://github.com/{repo}/pull/{random.randint(1000, 5000)}",
+            trigger_user=user,
+            trigger_event="pull_request",
+            installation_id=f"live_{random.randint(100000, 999999)}",
+            request_id=request_id,
+            started_at=started_time,
+            webhook_payload={"action": "opened", "number": random.randint(1000, 5000)}
+        )
+        
+        db.add(job)
+        
+        # Create live operation
         operation = OperationDB(
             operation_id=operation_id,
+            job_id=job_id,
+            operation_type=command,
             command=command,
             repo=repo,
-            pr_url=f"https://github.com/{repo}/pull/{random.randint(1000, 5000)}",
+            pr_url=job.pr_url,
             status="processing",
-            started_at=datetime.utcnow() - timedelta(seconds=random.randint(15, 120)),
+            started_at=started_time,
             last_updated=datetime.utcnow(),
-            installation_id=f"live_{random.randint(100000, 999999)}",
+            installation_id=job.installation_id,
             sender=user,
-            request_id=f"live_{uuid.uuid4().hex[:12]}",
+            request_id=request_id,
             response_time=random.uniform(0.3, 2.0),
             context_fetch_time=random.uniform(0.1, 1.5),
             errors_count=0,
@@ -393,7 +523,9 @@ async def simulate_live_activity() -> Dict[str, Any]:
                 status=operation.status,
                 analytics=True,
                 app_name="pr-agent",
-                git_provider="github"
+                git_provider="github",
+                job_id=job_id,
+                operation_id=operation_id
             )
             
             db.add(log_entry)
@@ -403,7 +535,8 @@ async def simulate_live_activity() -> Dict[str, Any]:
         
         return {
             "status": "success",
-            "message": f"Simulated live {command} activity for operation {operation_id} with {len(live_logs)} linked logs",
+            "message": f"Simulated live {command} activity for job {job_id} with operation {operation_id} and {len(live_logs)} linked logs",
+            "job_id": job_id,
             "operation_id": operation_id
         }
         
@@ -412,17 +545,41 @@ async def simulate_live_activity() -> Dict[str, Any]:
 
 
 async def trigger_test_error() -> Dict[str, Any]:
-    """Create a test operation that ends in error"""
+    """Create a test job and operation that ends in error"""
     try:
         db = SessionLocal()
         
+        job_id = f"error-job-{uuid.uuid4().hex[:8]}"
         operation_id = f"error-op-{uuid.uuid4().hex[:8]}"
+        request_id = f"err_{uuid.uuid4().hex[:12]}"
         
+        # Create failed job
+        job = JobDB(
+            job_id=job_id,
+            job_type="manual",
+            source="manual_trigger",
+            status="failed",
+            repository="error/test-repo",
+            pr_url=f"https://github.com/error/test-repo/pull/{random.randint(1, 20)}",
+            trigger_user="error-test-user",
+            trigger_event="manual",
+            request_id=request_id,
+            started_at=datetime.utcnow() - timedelta(minutes=2),
+            completed_at=datetime.utcnow(),
+            duration=120.5,
+            error_details="Simulated job failure for testing"
+        )
+        
+        db.add(job)
+        
+        # Create failed operation
         operation = OperationDB(
             operation_id=operation_id,
+            job_id=job_id,
+            operation_type="improve",
             command="improve",
             repo="error/test-repo",
-            pr_url=f"https://github.com/error/test-repo/pull/{random.randint(1, 20)}",
+            pr_url=job.pr_url,
             status="failed",
             started_at=datetime.utcnow() - timedelta(minutes=2),
             last_updated=datetime.utcnow(),
@@ -431,7 +588,7 @@ async def trigger_test_error() -> Dict[str, Any]:
             error_details="Simulated API timeout error for testing",
             installation_id=f"err_{random.randint(10000, 99999)}",
             sender="error-test-user",
-            request_id=f"err_{uuid.uuid4().hex[:12]}",
+            request_id=request_id,
             response_time=5.2,
             context_fetch_time=1.1,
             ai_processing_time=15.8,
@@ -445,7 +602,8 @@ async def trigger_test_error() -> Dict[str, Any]:
         
         return {
             "status": "success",
-            "message": f"Created test error operation {operation_id}",
+            "message": f"Created test error job {job_id} with operation {operation_id}",
+            "job_id": job_id,
             "operation_id": operation_id
         }
         
@@ -523,18 +681,21 @@ async def clear_all_data() -> Dict[str, Any]:
     try:
         db = SessionLocal()
         
+        jobs_count = db.query(JobDB).count()
         operations_count = db.query(OperationDB).count()
         logs_count = db.query(LogEntryDB).count()
         
+        # Delete in order due to foreign key constraints
         db.query(LogEntryDB).delete()
         db.query(OperationDB).delete()
+        db.query(JobDB).delete()
         
         db.commit()
         db.close()
         
         return {
             "status": "success",
-            "message": f"Cleared {operations_count} operations and {logs_count} logs"
+            "message": f"Cleared {jobs_count} jobs, {operations_count} operations and {logs_count} logs"
         }
         
     except Exception as e:

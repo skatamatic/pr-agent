@@ -71,6 +71,10 @@ class DashboardSink:
             "function": record.get("function", ""),
             "line": record.get("line", 0),
             
+            # NEW: Job and Operation tracking
+            "job_id": extra.get("job_id"),
+            "operation_id": extra.get("operation_id"),
+            
             # Context information
             "pr_url": extra.get("pr_url"),
             "command": extra.get("command"),

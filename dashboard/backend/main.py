@@ -3,9 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+from pathlib import Path
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Import configuration and database
 from config import settings
@@ -18,6 +19,10 @@ from services.metrics_service import MetricsService
 from services.operation_service import OperationService, LogService
 from services.config_service import ConfigService
 from services.repository_service import RepositoryService
+from services.job_service import JobService
+from database import DatabaseManager
+from services.notification_service import NotificationService
+from services.retention_service import RetentionService
 
 # Configure logging
 logging.basicConfig(
@@ -31,26 +36,44 @@ class DashboardApplication:
     """Main application class following Single Responsibility Principle"""
     
     def __init__(self):
-        self.app = FastAPI(
-            title=settings.app_name,
-            description="API for monitoring PR Agent operations and logs",
-            version="1.0.0",
-            debug=settings.debug
-        )
-        
-        # Initialize services (Dependency Injection)
-        self.health_service = HealthService()
-        self.metrics_service = MetricsService()
-        self.operation_service = OperationService()
-        self.log_service = LogService()
-        self.config_service = ConfigService()
-        self.repository_service = RepositoryService()
-        self.websocket_manager = WebSocketManager()
-        
-        # Setup application
-        self._setup_middleware()
-        self._setup_routes()
-        self._setup_background_tasks()
+        try:
+            self.app = FastAPI(
+                title=settings.app_name,
+                description="API for monitoring PR Agent operations and logs",
+                version="1.0.0",
+                debug=settings.debug
+            )
+            
+            # Initialize services (Dependency Injection)
+            self.database_manager = DatabaseManager()
+            self.config_service = ConfigService(self.database_manager)
+            self.notification_service = NotificationService(self.database_manager)
+            
+            # Pass config_service to health service as third parameter
+            self.health_service = HealthService(
+                self.database_manager, 
+                self.notification_service, 
+                self.config_service
+            )
+            
+            self.metrics_service = MetricsService()
+            self.operation_service = OperationService()
+            self.log_service = LogService()
+            self.repository_service = RepositoryService()
+            self.job_service = JobService(self.database_manager, self.notification_service)
+            self.retention_service = RetentionService(self.database_manager)
+            self.websocket_manager = WebSocketManager()
+            
+            # Setup application
+            self._setup_middleware()
+            self._setup_routes()
+            self._setup_background_tasks()
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize dashboard application: {e}")
+            # Create minimal app to prevent complete failure
+            self.app = FastAPI(title="Dashboard Error", description="Dashboard failed to initialize")
+            raise
     
     def _setup_middleware(self):
         """Configure CORS and other middleware"""
@@ -69,6 +92,36 @@ class DashboardApplication:
         @self.app.get("/api/health")
         async def health_check():
             return await self.health_service.get_system_health()
+        
+        @self.app.get("/api/health/database")
+        async def health_check_database():
+            try:
+                # Test database connectivity directly
+                test_query = self.database_manager.get_notification_configs()
+                return {"service": "database", "health": {"status": "connected", "message": "Database is accessible and responding"}}
+            except Exception as e:
+                return {"service": "database", "health": {"status": "error", "message": f"Database error: {str(e)}"}}
+        
+        @self.app.get("/api/health/config")
+        async def health_check_config():
+            # For config health, only check if config file is accessible and valid TOML
+            try:
+                config = await self.config_service.get_config()
+                
+                # Just verify we got a valid config object - API keys can come from env or repo-specific configs
+                if isinstance(config, dict) and len(config) > 0:
+                    return {"service": "pr_agent_config", "health": {"status": "connected", "message": "Configuration file accessible and valid"}}
+                else:
+                    return {"service": "pr_agent_config", "health": {"status": "misconfigured", "message": "Configuration file is empty or invalid"}}
+                    
+            except Exception as e:
+                return {"service": "pr_agent_config", "health": {"status": "error", "message": f"Configuration error: {str(e)}"}}
+        
+        @self.app.get("/api/health/context")
+        async def health_check_context():
+            health_status = await self.health_service.get_system_health()
+            context_health = health_status.get('context_service', {'status': 'unknown', 'message': 'Context service health unavailable'})
+            return {"service": "context_service", "health": context_health}
         
         @self.app.get("/api/status")
         async def get_status():
@@ -108,6 +161,44 @@ class DashboardApplication:
                 raise HTTPException(status_code=404, detail="Operation not found")
             return APIResponse(data=operation)
         
+        # Jobs endpoints
+        @self.app.get("/api/jobs")
+        async def get_jobs(
+            limit: int = 50,
+            include_operations: bool = False,
+            status: Optional[str] = None,
+            job_type: Optional[str] = None,
+            repository: Optional[str] = None,
+            ensure_counts: bool = True
+        ):
+            jobs = self.job_service.get_jobs(
+                limit=limit, 
+                include_operations=include_operations,
+                ensure_counts=ensure_counts
+            )
+            filtered_jobs = jobs
+            
+            if status:
+                filtered_jobs = [job for job in filtered_jobs if job.status == status]
+            if job_type:
+                filtered_jobs = [job for job in filtered_jobs if job.job_type == job_type]
+            if repository:
+                filtered_jobs = [job for job in filtered_jobs if job.repository == repository]
+            
+            return APIResponse(data=filtered_jobs, total=len(filtered_jobs))
+        
+        @self.app.get("/api/jobs/{job_id}")
+        async def get_job(job_id: str, include_operations: bool = True):
+            job = self.job_service.get_job_by_id(job_id, include_operations=include_operations)
+            if not job:
+                raise HTTPException(status_code=404, detail="Job not found")
+            return APIResponse(data=job)
+        
+        @self.app.get("/api/jobs/{job_id}/operations")
+        async def get_job_operations(job_id: str):
+            operations = self.job_service.get_operations_by_job(job_id)
+            return APIResponse(data=operations, total=len(operations))
+        
         # Logs endpoints
         @self.app.get("/api/logs")
         async def get_logs(
@@ -115,9 +206,15 @@ class DashboardApplication:
             level: Optional[str] = None,
             search: Optional[str] = None,
             repo: Optional[str] = None,
+            job_id: Optional[str] = None,
+            operation_id: Optional[str] = None,
             db: Session = Depends(get_db)
         ):
-            return await self.log_service.get_logs(db, limit, level, search, repo)
+            return await self.log_service.get_logs(db, limit, level, search, repo, job_id, operation_id)
+        
+        @self.app.get("/api/logs/job/{job_id}")
+        async def get_logs_by_job(job_id: str, db: Session = Depends(get_db)):
+            return await self.log_service.get_logs_by_job(db, job_id)
         
         @self.app.get("/api/logs/operation/{operation_id}")
         async def get_logs_by_operation(operation_id: str, db: Session = Depends(get_db)):
@@ -142,6 +239,15 @@ class DashboardApplication:
                         "level": log_data.get('level'),
                         "message": log_data.get('message'),
                         "status": log_data.get('status'),
+                        "source": log_data.get('source'),
+                        "job_id": log_data.get('job_id'),
+                        "operation_id": log_data.get('operation_id'),
+                        "repository": log_data.get('repository'),
+                        "repo": log_data.get('repo'),
+                        "command": log_data.get('command'),
+                        "pr_url": log_data.get('pr_url'),
+                        "module": log_data.get('module'),
+                        "function": log_data.get('function'),
                         "severity": "high" if log_data.get('level') in ["ERROR", "CRITICAL"] else "normal"
                     }
                 })
@@ -249,8 +355,491 @@ class DashboardApplication:
         @self.app.get("/api/repositories/names")
         async def get_repository_names(active_only: bool = True, db: Session = Depends(get_db)):
             names = await self.repository_service.get_repository_names(db, active_only)
-            return APIResponse(data=names)
+            return APIResponse(data=names, message=f"Found {len(names)} repository names")
         
+        @self.app.get("/api/repositories/health")
+        async def get_repositories_health(db: Session = Depends(get_db)):
+            """Get health status of all repositories"""
+            try:
+                from services.runner_health_service import RunnerHealthService
+                
+                runner_service = RunnerHealthService()
+                try:
+                    summary = await runner_service.get_repository_health_summary(db)
+                    return APIResponse(data=summary, message="Repository health retrieved successfully")
+                finally:
+                    await runner_service.close_session()
+                    
+            except Exception as e:
+                logger.error(f"Error getting repository health: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/api/repositories/{repo_id}/check-health")
+        async def check_repository_health(repo_id: int, db: Session = Depends(get_db)):
+            """Trigger health check for a specific repository"""
+            try:
+                from services.runner_health_service import RunnerHealthService
+                from models import RepositoryDB
+                
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                runner_service = RunnerHealthService()
+                try:
+                    result = await runner_service.check_repository_runner_health(db, repo)
+                    
+                    # Update repository with results
+                    repo.runner_status = result["status"]
+                    repo.runner_error = result["error"]
+                    if result["last_seen"]:
+                        repo.runner_last_seen = result["last_seen"]
+                    db.commit()
+                    
+                    return APIResponse(data=result, message="Health check completed")
+                finally:
+                    await runner_service.close_session()
+                    
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error checking repository health: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/api/repositories/{repo_id}/check-config")
+        async def check_repository_config(repo_id: int, db: Session = Depends(get_db)):
+            """Check repository configuration and update effective config"""
+            try:
+                from services.runner_health_service import RunnerHealthService
+                from models import RepositoryDB
+                from datetime import datetime
+                
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                runner_service = RunnerHealthService()
+                try:
+                    config_result = await runner_service.check_repository_config(db, repo)
+                    
+                    # Update repository with config status
+                    repo.has_pr_agent_config = config_result["has_config"]
+                    repo.config_last_checked = datetime.utcnow()
+                    repo.effective_config = config_result.get("effective_config")
+                    db.commit()
+                    
+                    return APIResponse(data={
+                        "repository": repo.name,
+                        "has_config": config_result["has_config"],
+                        "config_last_checked": repo.config_last_checked,
+                        "error": config_result.get("error"),
+                        "effective_config": config_result.get("effective_config"),
+                        "repo_config": config_result.get("repo_config")
+                    }, message="Configuration check completed")
+                finally:
+                    await runner_service.close_session()
+                    
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error checking repository config: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.get("/api/repositories/{repo_id}/effective-config")
+        async def get_repository_effective_config(repo_id: int, db: Session = Depends(get_db)):
+            """Get the effective configuration for a repository"""
+            try:
+                from services.runner_health_service import RunnerHealthService
+                from models import RepositoryDB
+                from datetime import datetime
+                
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                # Return stored effective config or trigger a fresh check
+                if repo.effective_config:
+                    return APIResponse(data={
+                        "repository": repo.name,
+                        "has_config": repo.has_pr_agent_config,
+                        "config_last_checked": repo.config_last_checked,
+                        "effective_config": repo.effective_config
+                    }, message="Effective configuration retrieved")
+                else:
+                    # No stored config, trigger a fresh check
+                    runner_service = RunnerHealthService()
+                    try:
+                        config_result = await runner_service.check_repository_config(db, repo)
+                        
+                        # Update repository with config status
+                        repo.has_pr_agent_config = config_result["has_config"]
+                        repo.config_last_checked = datetime.utcnow()
+                        repo.effective_config = config_result.get("effective_config")
+                        db.commit()
+                        
+                        return APIResponse(data={
+                            "repository": repo.name,
+                            "has_config": config_result["has_config"],
+                            "config_last_checked": repo.config_last_checked,
+                            "error": config_result.get("error"),
+                            "effective_config": config_result.get("effective_config")
+                        }, message="Effective configuration retrieved")
+                    finally:
+                        await runner_service.close_session()
+                        
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error getting repository effective config: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/api/repositories/update-configs")
+        async def update_all_repository_configs(db: Session = Depends(get_db)):
+            """Update configuration status for all repositories"""
+            try:
+                from services.runner_health_service import RunnerHealthService
+                
+                runner_service = RunnerHealthService()
+                try:
+                    results = await runner_service.update_all_repository_configs(db)
+                    return APIResponse(data=results, message="Repository configurations updated")
+                finally:
+                    await runner_service.close_session()
+                    
+            except Exception as e:
+                logger.error(f"Error updating repository configs: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        # Notification endpoints
+        @self.app.get("/api/notifications/configs")
+        async def get_notification_configs():
+            """Get all notification configurations"""
+            try:
+                from database import database_manager
+                configs = database_manager.get_notification_configs()
+                return APIResponse(data=configs, message="Notification configurations retrieved")
+            except Exception as e:
+                logger.error(f"Failed to get notification configs: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/api/notifications/configs")
+        async def create_notification_config(config_data: dict):
+            """Create new notification configuration"""
+            try:
+                from database import database_manager
+                config = database_manager.save_notification_config(config_data)
+                return APIResponse(data=config, message="Notification configuration created")
+            except Exception as e:
+                logger.error(f"Failed to create notification config: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.put("/api/notifications/configs/{config_id}")
+        async def update_notification_config(config_id: int, config_data: dict):
+            """Update notification configuration"""
+            try:
+                config_data['id'] = config_id
+                from database import database_manager
+                config = database_manager.save_notification_config(config_data)
+                return APIResponse(data=config, message="Notification configuration updated")
+            except Exception as e:
+                logger.error(f"Failed to update notification config: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.delete("/api/notifications/configs/{config_id}")
+        async def delete_notification_config(config_id: int):
+            """Delete notification configuration"""
+            try:
+                from database import database_manager
+                success = database_manager.delete_notification_config(config_id)
+                if success:
+                    return APIResponse(data={}, message="Notification configuration deleted")
+                else:
+                    raise HTTPException(status_code=404, detail="Configuration not found")
+            except Exception as e:
+                logger.error(f"Failed to delete notification config: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/api/notifications/test/{config_id}")
+        async def test_notification_config(config_id: int, test_data: dict = {}):
+            """Test notification configuration"""
+            try:
+                from database import database_manager
+                from services.notification_service import NotificationService
+                
+                logger.info(f"Testing notification config {config_id}")
+                
+                # Get config
+                configs = database_manager.get_notification_configs()
+                config = next((c for c in configs if c['id'] == config_id), None)
+                if not config:
+                    logger.error(f"Configuration {config_id} not found")
+                    raise HTTPException(status_code=404, detail="Configuration not found")
+                
+                logger.info(f"Found config: {config['name']} ({config['service_type']})")
+                
+                # Debug: Test the notification service creation
+                try:
+                    notification_service = NotificationService(database_manager)
+                    logger.info(f"NotificationService created successfully")
+                    logger.info(f"Enabled services: {list(notification_service.enabled_services.keys())}")
+                    
+                    # Check if our config is in enabled services
+                    if config['service_type'] in notification_service.enabled_services:
+                        logger.info(f"Config {config['service_type']} found in enabled services")
+                    else:
+                        logger.warning(f"Config {config['service_type']} NOT found in enabled services")
+                        logger.info(f"Available services: {notification_service.enabled_services}")
+                        
+                except Exception as e:
+                    logger.error(f"Failed to create NotificationService: {e}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+                    raise
+                
+                # Create test notification
+                test_event = test_data if test_data else {
+                    'title': 'Test Notification',
+                    'message': 'This is a test notification from PR Agent Dashboard',
+                    'job_id': 'test-job-123',
+                    'repository': 'test/repository',
+                    'status': 'success'
+                }
+                
+                logger.info(f"Sending test notification with event: {test_event}")
+                
+                # Send test notification using the config's test method
+                try:
+                    # The test_notification_config method is now async
+                    success = await notification_service.test_notification_config(config)
+                    logger.info(f"Test notification result: {success}")
+                except Exception as e:
+                    logger.error(f"Failed to send test notification: {e}")
+                    import traceback
+                    logger.error(f"Test notification traceback: {traceback.format_exc()}")
+                    raise
+                
+                # Update test status
+                status = 'success' if success else 'failed'
+                database_manager.update_notification_test_status(config_id, status)
+                
+                if success:
+                    return APIResponse(data={}, message="Test notification sent successfully")
+                else:
+                    raise HTTPException(status_code=500, detail="Failed to send test notification")
+                    
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Failed to test notification config: {e}")
+                import traceback
+                logger.error(f"Full traceback: {traceback.format_exc()}")
+                # Update test status as failed
+                try:
+                    from database import database_manager
+                    database_manager.update_notification_test_status(config_id, 'failed')
+                except:
+                    pass
+                raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+        
+        @self.app.get("/api/notifications/events")
+        async def get_notification_events(
+            limit: int = 100, 
+            offset: int = 0,
+            event_type: str = None,
+            repository: str = None
+        ):
+            """Get notification events with pagination"""
+            try:
+                from database import database_manager
+                events = database_manager.get_notification_events(
+                    limit=limit, 
+                    offset=offset,
+                    event_type=event_type,
+                    repository=repository
+                )
+                
+                # Get total count for pagination
+                total_count = database_manager.get_notification_events_count(
+                    event_type=event_type,
+                    repository=repository
+                )
+                
+                return APIResponse(
+                    data=events, 
+                    total=total_count,
+                    page=offset // limit + 1,
+                    per_page=limit,
+                    message="Notification events retrieved"
+                )
+            except Exception as e:
+                logger.error(f"Failed to get notification events: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        # Admin endpoints
+        @self.app.get("/api/admin/retention/config")
+        async def get_retention_config():
+            """Get retention configuration"""
+            try:
+                config = self.retention_service.get_retention_config()
+                return APIResponse(data=config, message="Retention configuration retrieved")
+            except Exception as e:
+                logger.error(f"Failed to get retention config: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/api/admin/retention/config")
+        async def update_retention_config(config_data: dict):
+            """Update retention configuration"""
+            try:
+                success = self.retention_service.update_retention_config(config_data)
+                if success:
+                    return APIResponse(data={}, message="Retention configuration updated")
+                else:
+                    raise HTTPException(status_code=400, detail="Failed to update retention configuration")
+            except Exception as e:
+                logger.error(f"Failed to update retention config: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.get("/api/admin/database/stats")
+        async def get_database_stats():
+            """Get database statistics"""
+            try:
+                stats = self.retention_service.get_database_stats()
+                return APIResponse(data=stats, message="Database statistics retrieved")
+            except Exception as e:
+                logger.error(f"Failed to get database stats: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/api/admin/database/cleanup")
+        async def perform_cleanup(dry_run: bool = True):
+            """Perform database cleanup"""
+            try:
+                results = self.retention_service.perform_cleanup(dry_run=dry_run)
+                action = "simulated" if dry_run else "performed"
+                return APIResponse(data=results, message=f"Database cleanup {action}")
+            except Exception as e:
+                logger.error(f"Failed to perform cleanup: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/api/admin/database/backup")
+        async def create_backup(compressed: bool = True):
+            """Create database backup"""
+            try:
+                result = self.retention_service.create_backup(include_compression=compressed)
+                if result["success"]:
+                    return APIResponse(data=result, message="Database backup created")
+                else:
+                    raise HTTPException(status_code=500, detail=result["error"])
+            except Exception as e:
+                logger.error(f"Failed to create backup: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.get("/api/admin/database/backups")
+        async def get_backup_list():
+            """Get list of available backups"""
+            try:
+                backups = self.retention_service.get_backup_list()
+                return APIResponse(data=backups, message="Backup list retrieved")
+            except Exception as e:
+                logger.error(f"Failed to get backup list: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.get("/api/admin/backup/directory")
+        async def get_backup_directory():
+            """Get current backup directory"""
+            try:
+                backup_dir = self.retention_service.backup_dir
+                return APIResponse(data={"backup_directory": str(backup_dir)}, message="Backup directory retrieved")
+            except Exception as e:
+                logger.error(f"Failed to get backup directory: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/api/admin/backup/directory")
+        async def set_backup_directory(directory_data: dict):
+            """Set backup directory"""
+            try:
+                new_directory = directory_data.get("backup_directory")
+                if not new_directory:
+                    raise HTTPException(status_code=400, detail="backup_directory is required")
+                
+                # Save to database
+                success = self.database_manager.set_system_setting("backup_directory", new_directory)
+                if success:
+                    # Update the retention service
+                    self.retention_service.backup_dir = Path(new_directory)
+                    self.retention_service.backup_dir.mkdir(exist_ok=True)
+                    return APIResponse(data={}, message="Backup directory updated")
+                else:
+                    raise HTTPException(status_code=500, detail="Failed to save backup directory")
+            except Exception as e:
+                logger.error(f"Failed to set backup directory: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/api/admin/database/export")
+        async def export_data(request_data: dict):
+            """Export database data for download"""
+            try:
+                format_type = request_data.get("format", "json")
+                tables = request_data.get("tables")
+                result = self.retention_service.export_data(format=format_type, table_filter=tables)
+                if result["success"]:
+                    # Return the content for download
+                    from fastapi.responses import Response
+                    return Response(
+                        content=result["content"], 
+                        media_type=result["content_type"],
+                        headers={
+                            "Content-Disposition": f"attachment; filename={result['filename']}",
+                            "Content-Length": str(result["size_bytes"])
+                        }
+                    )
+                else:
+                    raise HTTPException(status_code=500, detail=result["error"])
+            except Exception as e:
+                logger.error(f"Failed to export data: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.delete("/api/admin/database/backups/{filename}")
+        async def delete_backup(filename: str):
+            """Delete a specific backup file"""
+            try:
+                result = self.retention_service.delete_backup(filename)
+                if result["success"]:
+                    return APIResponse(data=result, message=result["message"])
+                else:
+                    raise HTTPException(status_code=400, detail=result["error"])
+            except Exception as e:
+                logger.error(f"Failed to delete backup: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.delete("/api/admin/database/backups")
+        async def delete_all_backups():
+            """Delete all backup files"""
+            try:
+                result = self.retention_service.delete_all_backups()
+                if result["success"]:
+                    return APIResponse(data=result, message=result["message"])
+                else:
+                    raise HTTPException(status_code=400, detail=result["error"])
+            except Exception as e:
+                logger.error(f"Failed to delete all backups: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/admin/database/backups/{filename}/restore")
+        async def restore_backup(filename: str):
+            """Restore database from a backup file"""
+            try:
+                result = self.retention_service.restore_backup(filename)
+                if result["success"]:
+                    return APIResponse(data=result, message=result["message"])
+                else:
+                    raise HTTPException(status_code=400, detail=result["error"])
+            except Exception as e:
+                logger.error(f"Failed to restore backup: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
         # Developer endpoints (Open/Closed Principle - easily extensible)
         if settings.developer_mode:
             self._setup_developer_routes()
@@ -341,6 +930,39 @@ class DashboardApplication:
                 return APIResponse(data={}, message=result["message"])
             else:
                 raise HTTPException(status_code=500, detail=result["message"])
+        
+        @self.app.post("/api/dev/refresh-job-counts")
+        async def refresh_job_counts():
+            """Refresh job operation counts"""
+            result = await self.job_service.refresh_job_counts()
+            return APIResponse(data=result, message="Job counts refreshed")
+        
+        @self.app.post("/api/dev/test-system-logs")
+        async def test_system_logs():
+            """Test system logging functionality for debugging"""
+            try:
+                # Test retention system logging
+                self.retention_service._log_to_system('INFO', 
+                    "Test retention system log - Manual test trigger",
+                    {'system_event': 'test_retention_log', 'test': True}
+                )
+                
+                # Test health system logging  
+                self.health_service._log_to_system('INFO',
+                    "Test health system log - Manual test trigger", 
+                    {'system_event': 'test_health_log', 'test': True}
+                )
+                
+                # Test backend system logging
+                self._log_system_event('INFO',
+                    "Test backend system log - Manual test trigger",
+                    {'system_event': 'test_backend_log', 'test': True}
+                )
+                
+                return APIResponse(data={"success": True}, message="System log tests triggered")
+            except Exception as e:
+                logger.error(f"Failed to trigger system log tests: {e}")
+                return APIResponse(data={"success": False, "error": str(e)}, message="System log tests failed")
     
     def _setup_background_tasks(self):
         """Setup background monitoring tasks using modern lifespan events"""
@@ -349,6 +971,22 @@ class DashboardApplication:
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             # Startup
+            try:
+                startup_config = await self._get_startup_config_summary()
+                
+                self._log_system_event('INFO', 
+                    f"Dashboard backend starting - Version {settings.app_name} (Developer mode: {'enabled' if settings.developer_mode else 'disabled'})",
+                    {
+                        'system_event': 'backend_startup',
+                        'config': startup_config,
+                        'developer_mode': settings.developer_mode,
+                        'api_host': settings.api_host,
+                        'api_port': settings.api_port
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log startup event: {e}")
+            
             logger.info(f"{settings.app_name} started")
             if settings.developer_mode:
                 logger.info("Developer mode enabled")
@@ -358,67 +996,261 @@ class DashboardApplication:
                 from database import initialize_database
                 initialize_database()
                 logger.info("Database initialized successfully")
+                
+                try:
+                    self._log_system_event('INFO', 
+                        "Database system initialized - Schema validation completed",
+                        {
+                            'system_event': 'database_initialized',
+                            'database_type': 'SQLite',
+                            'schema_version': 'latest'
+                        }
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to log database init event: {e}")
             except Exception as e:
                 logger.error(f"Database initialization failed: {e}")
+                try:
+                    self._log_system_event('ERROR', 
+                        f"Database initialization failed: {e}",
+                        {
+                            'system_event': 'database_init_failed',
+                            'error': str(e)
+                        }
+                    )
+                except Exception:
+                    pass  # Don't let logging errors cascade
                 # Continue anyway, the fallback in models.py should handle it
             
             # Start background monitoring tasks
             cleanup_task = asyncio.create_task(self._cleanup_old_data())
+            backup_task = asyncio.create_task(self._backup_scheduler())
             health_task = asyncio.create_task(self._monitor_system_health())
+            
+            # Start health service background monitoring
+            try:
+                await self.health_service.start_background_monitoring()
+            except Exception as e:
+                logger.error(f"Failed to start health monitoring: {e}")
+            
+            # Create a task to log system startup after server is fully ready
+            startup_logging_task = asyncio.create_task(self._log_system_startup_after_delay())
             
             yield
             
+            # Cancel startup logging task during shutdown
+            startup_logging_task.cancel()
+            
             # Shutdown
+            try:
+                self._log_system_event('INFO', 
+                    f"Dashboard backend shutting down - Stopping background services",
+                    {
+                        'system_event': 'backend_shutdown',
+                        'uptime_seconds': getattr(self, '_startup_time', None) and (asyncio.get_event_loop().time() - self._startup_time) or None
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log shutdown event: {e}")
+            
             logger.info(f"{settings.app_name} stopped")
             cleanup_task.cancel()
+            backup_task.cancel()
             health_task.cancel()
+            try:
+                await self.health_service.stop_background_monitoring()
+            except Exception as e:
+                logger.error(f"Failed to stop health monitoring: {e}")
         
         # Apply lifespan to the app
         self.app.router.lifespan_context = lifespan
+        try:
+            self._startup_time = asyncio.get_event_loop().time()
+        except Exception:
+            self._startup_time = None
+    
+    async def _get_startup_config_summary(self) -> Dict[str, Any]:
+        """Get configuration summary for startup logging"""
+        try:
+            # Now we can properly await the async config call
+            config = await self.config_service.get_config() if self.config_service else {}
+            retention_config = self.retention_service.get_retention_config() if self.retention_service else {}
+            
+            return {
+                'api': {
+                    'host': settings.api_host,
+                    'port': settings.api_port,
+                    'debug': settings.debug
+                },
+                'database': {
+                    'type': 'SQLite',
+                    'max_logs_storage': settings.max_logs_storage,
+                    'max_operations_storage': settings.max_operations_storage
+                },
+                'backup': {
+                    'enabled': retention_config.get('auto_backup_enabled', False),
+                    'interval_hours': retention_config.get('backup_schedule_hours', 168),
+                    'compression': retention_config.get('backup_compression', True)
+                },
+                'health_monitoring': {
+                    'enabled': True,
+                    'interval': '5 minutes'
+                },
+                'pr_agent': {
+                    'configured': bool(config.get('pr_agent_url')),
+                    'url': config.get('pr_agent_url', 'not_configured')
+                },
+                'context_service': {
+                    'enabled': bool(config.get('context_service', {}).get('enabled')),
+                    'url': config.get('context_service', {}).get('url', 'not_configured')
+                }
+            }
+        except Exception as e:
+            return {
+                'error': f"Failed to get config summary: {e}",
+                'basic_config': {
+                    'api_host': settings.api_host,
+                    'api_port': settings.api_port
+                }
+            }
+    
+    def _log_system_event(self, level: str, message: str, context: dict = None):
+        """Log system events to the dashboard logging system"""
+        try:
+            import requests
+            from datetime import datetime
+            
+            # Create a system log entry
+            log_data = {
+                'timestamp': datetime.utcnow().isoformat(),
+                'level': level,
+                'message': f"[SYSTEM] {message}",
+                'source': 'dashboard_backend',
+                'job_id': None,
+                'operation_id': None,
+                'repository': None,
+                'status': None
+            }
+            
+            # Add context to log data
+            if context:
+                log_data.update(context)
+            
+            # Send directly to dashboard backend (self-logging)
+            try:
+                requests.post('http://localhost:8000/logs/immediate', json=log_data, timeout=1)
+            except Exception:
+                # If dashboard is not available yet, just use standard logging
+                try:
+                    getattr(logger, level.lower(), logger.info)(message)
+                except Exception:
+                    pass  # Don't cascade logging errors
+                
+        except Exception:
+            # Completely ignore logging errors to prevent startup issues
+            pass
     
     async def _cleanup_old_data(self):
-        """Background task to cleanup old data"""
+        """Background task to cleanup old data using RetentionService"""
+        from services.retention_service import RetentionService
+        
+        # Initialize retention service
+        retention_service = RetentionService(self.database_manager)
+        
         while True:
             try:
-                await asyncio.sleep(3600)  # Run every hour
+                # Get retention configuration
+                config = retention_service.get_retention_config()
                 
-                from database import SessionLocal
-                from models import OperationDB, LogEntryDB
-                from datetime import timedelta
+                # Check if auto cleanup is enabled
+                if not config.get("auto_cleanup_enabled", True):
+                    await asyncio.sleep(3600)  # Check again in 1 hour
+                    continue
                 
-                db = SessionLocal()
-                try:
-                    # Delete operations older than 30 days
-                    cutoff_date = datetime.utcnow() - timedelta(days=30)
-                    old_ops = db.query(OperationDB).filter(
-                        OperationDB.completed_at < cutoff_date,
-                        OperationDB.status.in_(["completed", "failed"])
-                    ).count()
+                # Calculate sleep time based on schedule
+                schedule_hours = config.get("cleanup_schedule_hours", 24)
+                sleep_seconds = schedule_hours * 3600
+                
+                # Check if it's time for cleanup
+                stats = retention_service.get_database_stats()
+                last_cleanup = stats.get("last_cleanup")
+                
+                should_cleanup = True
+                if last_cleanup:
+                    try:
+                        last_cleanup_dt = datetime.fromisoformat(last_cleanup.replace('Z', '+00:00'))
+                        next_cleanup_dt = last_cleanup_dt + timedelta(hours=schedule_hours)
+                        should_cleanup = datetime.utcnow() >= next_cleanup_dt.replace(tzinfo=None)
+                    except Exception as e:
+                        logger.warning(f"Could not parse last cleanup time: {e}")
+                
+                if should_cleanup:
+                    logger.info("Starting scheduled database cleanup...")
+                    result = retention_service.perform_cleanup(dry_run=False)
                     
-                    if old_ops > 0:
-                        db.query(OperationDB).filter(
-                            OperationDB.completed_at < cutoff_date,
-                            OperationDB.status.in_(["completed", "failed"])
-                        ).delete()
-                        
-                        # Also cleanup old logs
-                        old_logs = db.query(LogEntryDB).filter(
-                            LogEntryDB.timestamp < cutoff_date
-                        ).count()
-                        
-                        if old_logs > 100:  # Keep at least 100 logs
-                            db.query(LogEntryDB).filter(
-                                LogEntryDB.timestamp < cutoff_date
-                            ).delete()
-                        
-                        db.commit()
-                        logger.info(f"Cleaned up {old_ops} old operations and {old_logs} old logs")
-                        
-                finally:
-                    db.close()
+                    if result["errors"]:
+                        logger.error(f"Cleanup completed with errors: {result['errors']}")
+                    else:
+                        logger.info(f"Cleanup completed successfully. Deleted {result['total_deleted']} records, reclaimed {result['space_reclaimed_mb']} MB")
+                
+                # Sleep until next check
+                await asyncio.sleep(min(sleep_seconds, 3600))  # Check at least every hour
                     
             except Exception as e:
                 logger.error(f"Error in cleanup task: {e}")
+                await asyncio.sleep(3600)  # Wait 1 hour before retrying
+    
+    async def _backup_scheduler(self):
+        """Background task to perform automatic backups"""
+        while True:
+            try:
+                await asyncio.sleep(3600)  # Check every hour
+                
+                # Log backup scheduler check
+                self._log_system_event('DEBUG', 
+                    "Backup scheduler checking for due automatic backups",
+                    {'system_event': 'backup_scheduler_check'}
+                )
+                
+                # Perform backup if due
+                result = self.retention_service.perform_automatic_backup()
+                
+                if result.get("success"):
+                    # Successful backup was logged by retention service
+                    pass
+                elif result.get("reason") == "Auto backup disabled":
+                    # Only log this once per startup, not every hour
+                    if not hasattr(self, '_backup_disabled_logged'):
+                        self._log_system_event('INFO', 
+                            "Automatic backups disabled - Manual backups only",
+                            {
+                                'system_event': 'backup_scheduler_disabled',
+                                'reason': 'auto_backup_disabled'
+                            }
+                        )
+                        self._backup_disabled_logged = True
+                elif "not due" in result.get("reason", ""):
+                    # Don't log "not due" messages as they're too frequent
+                    pass
+                else:
+                    # Log other reasons (like errors)
+                    self._log_system_event('WARNING', 
+                        f"Automatic backup check result: {result.get('reason', 'Unknown reason')}",
+                        {
+                            'system_event': 'backup_scheduler_result',
+                            'result': result
+                        }
+                    )
+                    
+            except Exception as e:
+                logger.error(f"Error in backup scheduler: {e}")
+                self._log_system_event('ERROR', 
+                    f"Backup scheduler error: {e}",
+                    {
+                        'system_event': 'backup_scheduler_error',
+                        'error': str(e)
+                    }
+                )
     
     async def _monitor_system_health(self):
         """Background task to monitor system health"""
@@ -439,6 +1271,44 @@ class DashboardApplication:
                 
             except Exception as e:
                 logger.error(f"Error in health monitoring: {e}")
+    
+    async def _log_system_startup_after_delay(self):
+        """Log system startup events after server is fully ready to handle requests"""
+        try:
+            # Wait a short time for server to be fully ready
+            await asyncio.sleep(2)
+            
+            # Log retention service startup
+            try:
+                self.retention_service._log_system_startup()
+                logger.info("Logged retention service startup")
+            except Exception as e:
+                logger.warning(f"Failed to log retention service startup: {e}")
+            
+            # Log health service startup
+            try:
+                self.health_service._log_health_service_startup()
+                logger.info("Logged health service startup")
+            except Exception as e:
+                logger.warning(f"Failed to log health service startup: {e}")
+            
+            # Log background services startup
+            try:
+                self._log_system_event('INFO', 
+                    "Background services started - Cleanup, backup, and health monitoring active",
+                    {
+                        'system_event': 'background_services_started',
+                        'services': ['cleanup_scheduler', 'backup_scheduler', 'health_monitor']
+                    }
+                )
+                logger.info("Logged background services startup")
+            except Exception as e:
+                logger.warning(f"Failed to log background services start: {e}")
+                
+        except asyncio.CancelledError:
+            logger.info("System startup logging task cancelled")
+        except Exception as e:
+            logger.error(f"Error in system startup logging: {e}")
     
     def get_app(self):
         """Get the FastAPI application instance"""

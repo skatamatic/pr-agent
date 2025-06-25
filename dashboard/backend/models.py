@@ -97,6 +97,20 @@ class RepositoryDB(Base):
     # Provider-specific configuration
     config = Column(JSON, nullable=True)  # Store provider-specific settings
     
+    # Access tokens for health checks (encrypted/hashed in production)
+    github_token = Column(String, nullable=True)  # GitHub personal access token
+    azure_pat = Column(String, nullable=True)     # Azure DevOps personal access token
+    
+    # Runner/Agent health tracking
+    runner_status = Column(String, nullable=True)  # "running", "stopped", "error", "unknown"
+    runner_last_seen = Column(DateTime, nullable=True)
+    runner_error = Column(String, nullable=True)
+    
+    # Repository configuration detection
+    has_pr_agent_config = Column(Boolean, default=False)  # .pr_agent.toml exists
+    config_last_checked = Column(DateTime, nullable=True)
+    effective_config = Column(JSON, nullable=True)  # Merged config with overrides
+    
     # Monitoring settings
     monitor_prs = Column(Boolean, default=True)
     monitor_issues = Column(Boolean, default=False)
@@ -187,12 +201,19 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 class OperationType(str, Enum):
+    # PR-Agent commands/tools
+    REVIEW = "review"
+    DESCRIBE = "describe"
+    IMPROVE = "improve"
+    TEST = "test"
+    ADD_DOCS = "add_docs"
+    UPDATE_CHANGELOG = "update_changelog"
+    SIMILAR_ISSUE = "similar_issue"
+    
+    # Process stages
     STARTING = "starting"
     FETCHING_CONTEXT = "fetching_context"
     PROCESSING_PR = "processing_pr"
-    GENERATING_REVIEW = "generating_review"
-    GENERATING_DESCRIPTION = "generating_description"
-    GENERATING_SUGGESTIONS = "generating_suggestions"
     SELF_REFLECTING = "self_reflecting"
     PUBLISHING_RESULTS = "publishing_results"
     FINALIZING = "finalizing"
@@ -409,6 +430,20 @@ class Repository(BaseModel):
     # Provider-specific configuration
     config: Optional[Dict[str, Any]] = Field(default=None, description="Provider-specific settings")
     
+    # Access tokens (never exposed in API responses)
+    github_token: Optional[str] = Field(default=None, description="GitHub access token")
+    azure_pat: Optional[str] = Field(default=None, description="Azure DevOps PAT")
+    
+    # Runner/Agent health tracking
+    runner_status: Optional[str] = Field(default=None, description="Runner health status")
+    runner_last_seen: Optional[str] = None
+    runner_error: Optional[str] = None
+    
+    # Repository configuration detection
+    has_pr_agent_config: bool = Field(default=False, description="Has .pr_agent.toml file")
+    config_last_checked: Optional[str] = None
+    effective_config: Optional[Dict[str, Any]] = Field(default=None, description="Merged configuration")
+    
     # Monitoring settings
     monitor_prs: bool = Field(default=True, description="Monitor pull requests")
     monitor_issues: bool = Field(default=False, description="Monitor issues")
@@ -433,6 +468,10 @@ class RepositoryCreate(BaseModel):
     # Provider-specific configuration
     config: Optional[Dict[str, Any]] = None
     
+    # Access tokens for health checks
+    github_token: Optional[str] = None
+    azure_pat: Optional[str] = None
+    
     # Monitoring settings
     monitor_prs: bool = Field(default=True)
     monitor_issues: bool = Field(default=False)
@@ -446,8 +485,157 @@ class RepositoryUpdate(BaseModel):
     url: Optional[str] = None
     is_active: Optional[bool] = None
     config: Optional[Dict[str, Any]] = None
+    
+    # Access tokens for health checks
+    github_token: Optional[str] = None
+    azure_pat: Optional[str] = None
+    
     monitor_prs: Optional[bool] = None
     monitor_issues: Optional[bool] = None
     auto_review: Optional[bool] = None
     auto_describe: Optional[bool] = None
-    auto_improve: Optional[bool] = None 
+    auto_improve: Optional[bool] = None
+
+# Notification Models
+class NotificationConfigDB(Base):
+    __tablename__ = "notification_configs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    service_type = Column(String, index=True)  # "teams", "slack", "email"
+    name = Column(String)  # User-friendly name for the config
+    enabled = Column(Boolean, default=True)
+    
+    # Service-specific configuration
+    webhook_url = Column(String, nullable=True)  # For Teams/Slack
+    channel = Column(String, nullable=True)  # For Slack
+    
+    # Email configuration
+    smtp_server = Column(String, nullable=True)
+    smtp_port = Column(Integer, nullable=True)
+    email_username = Column(String, nullable=True)
+    email_password = Column(String, nullable=True)  # Should be encrypted
+    recipient_emails = Column(JSON, nullable=True)  # List of email addresses
+    
+    # Event configuration
+    event_types = Column(JSON, default=list)  # List of event types to notify for
+    repository_filter = Column(JSON, nullable=True)  # List of repositories to monitor
+    
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_test = Column(DateTime, nullable=True)
+    test_status = Column(String, nullable=True)  # "success", "failed"
+
+class NotificationEventDB(Base):
+    __tablename__ = "notification_events"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    event_type = Column(String, index=True)
+    event_data = Column(JSON)
+    repositories = Column(JSON, nullable=True)  # List of repositories involved
+    
+    # Delivery tracking
+    sent_to_services = Column(JSON, nullable=True)  # List of services it was sent to
+    delivery_status = Column(JSON, nullable=True)  # Delivery status per service
+    
+    # Metadata
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    processed = Column(Boolean, default=False)
+
+class NotificationEventType(str, Enum):
+    NEW_JOB = "new_job"
+    NEW_OPERATION = "new_operation"
+    JOB_FAILURE = "job_failure"
+    SYSTEM_HEALTH_CHANGE = "system_health_change"
+    TEST_NOTIFICATION = "test_notification"
+
+class NotificationServiceType(str, Enum):
+    TEAMS = "teams"
+    SLACK = "slack"
+    EMAIL = "email"
+
+class NotificationConfig(BaseModel):
+    id: Optional[int] = None
+    service_type: NotificationServiceType
+    name: str
+    enabled: bool = True
+    
+    # Service-specific configuration
+    webhook_url: Optional[str] = None
+    channel: Optional[str] = None
+    
+    # Email configuration
+    smtp_server: Optional[str] = None
+    smtp_port: Optional[int] = None
+    email_username: Optional[str] = None
+    email_password: Optional[str] = None
+    recipient_emails: Optional[List[str]] = None
+    
+    # Event configuration
+    event_types: List[NotificationEventType] = Field(default_factory=list)
+    repository_filter: Optional[List[str]] = None
+    
+    # Metadata
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    last_test: Optional[str] = None
+    test_status: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class NotificationConfigCreate(BaseModel):
+    service_type: NotificationServiceType
+    name: str
+    enabled: bool = True
+    
+    # Service-specific configuration
+    webhook_url: Optional[str] = None
+    channel: Optional[str] = None
+    
+    # Email configuration
+    smtp_server: Optional[str] = None
+    smtp_port: Optional[int] = None
+    email_username: Optional[str] = None
+    email_password: Optional[str] = None
+    recipient_emails: Optional[List[str]] = None
+    
+    # Event configuration
+    event_types: List[NotificationEventType] = Field(default_factory=list)
+    repository_filter: Optional[List[str]] = None
+
+class NotificationConfigUpdate(BaseModel):
+    name: Optional[str] = None
+    enabled: Optional[bool] = None
+    
+    # Service-specific configuration
+    webhook_url: Optional[str] = None
+    channel: Optional[str] = None
+    
+    # Email configuration
+    smtp_server: Optional[str] = None
+    smtp_port: Optional[int] = None
+    email_username: Optional[str] = None
+    email_password: Optional[str] = None
+    recipient_emails: Optional[List[str]] = None
+    
+    # Event configuration
+    event_types: Optional[List[NotificationEventType]] = None
+    repository_filter: Optional[List[str]] = None
+
+class NotificationEvent(BaseModel):
+    id: Optional[int] = None
+    event_type: NotificationEventType
+    event_data: Dict[str, Any]
+    repositories: Optional[List[str]] = None
+    
+    # Delivery tracking
+    sent_to_services: Optional[List[str]] = None
+    delivery_status: Optional[Dict[str, str]] = None
+    
+    # Metadata
+    timestamp: Optional[str] = None
+    processed: bool = False
+
+    class Config:
+        from_attributes = True 

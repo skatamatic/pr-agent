@@ -34,13 +34,15 @@ code {
   background: #94a3b8;
 }
 
-/* Custom animations for log expansion */
-@keyframes fadeIn {
+/* Simple expand animation - just fade in and height expansion */
+@keyframes expandDetails {
   from {
     opacity: 0;
+    max-height: 0;
   }
   to {
     opacity: 1;
+    max-height: 1000px;
   }
 }
 
@@ -55,10 +57,45 @@ code {
   }
 }
 
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Animation classes */
+.animate-expand {
+  animation: expandDetails 0.3s ease-out;
+  overflow: hidden;
+}
+
 .animate-fadeIn {
   animation: fadeIn 0.3s ease-out;
 }
 
 .animate-slideDown {
   animation: slideDown 0.3s ease-out;
+}
+
+/* Custom highlight animations */
+@keyframes highlightPulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.02);
+    opacity: 0.8;
+  }
+}
+
+.animate-highlight-job {
+  animation: highlightPulse 1s ease-in-out 3;
+}
+
+.animate-highlight-operation {
+  animation: highlightPulse 0.8s ease-in-out 4;
 } 

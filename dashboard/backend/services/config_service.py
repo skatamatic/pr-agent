@@ -12,7 +12,10 @@ from config import settings
 class ConfigService:
     """Service for managing PR-Agent configuration files"""
     
-    def __init__(self):
+    def __init__(self, database_manager=None):
+        # Store database manager (optional for now)
+        self.database_manager = database_manager
+        
         # Initialize all configuration file paths
         self.config_path = getattr(settings, 'pr_agent_config_path', None)
         self.backup_path = getattr(settings, 'pr_agent_backup_path', None)

@@ -38,18 +38,34 @@ api.interceptors.response.use(
 
 // API endpoints
 const apiService = {
-  // Operations
+  // Jobs (new primary focus)
+  getJobs: (params = {}) => api.get('/api/jobs', { params }),
+  getJob: (id) => api.get(`/api/jobs/${id}`),
+  getJobOperations: (jobId) => api.get(`/api/jobs/${jobId}/operations`),
+  
+  // Operations (legacy support)
   getOperations: (params = {}) => api.get('/api/operations', { params }),
   getOperation: (id) => api.get(`/api/operations/${id}`),
   
-  // Logs
+  // Logs (enhanced with job/operation filtering)
   getLogs: (params = {}) => api.get('/api/logs', { params }),
+  getLogsByJob: (jobId) => api.get(`/api/logs/job/${jobId}`),
   getLogsByOperation: (operationId) => api.get(`/api/logs/operation/${operationId}`),
   
   // System Health & Status
   getSystemHealth: () => api.get('/api/health'),
   getSystemStatus: () => api.get('/api/status'),
   getRealtimeStatus: () => api.get('/api/status/realtime'),
+  
+  // Individual Health Checks (for async monitoring)
+  getHealthCheck: (service) => {
+    switch (service) {
+      case 'database': return api.get('/api/health/database');
+      case 'pr_agent_config': return api.get('/api/health/config');
+      case 'context_service': return api.get('/api/health/context');
+      default: throw new Error(`Unknown service: ${service}`);
+    }
+  },
   
   // Production Monitoring
   getSystemAlerts: () => api.get('/api/system/alerts'),
@@ -78,6 +94,39 @@ const apiService = {
   succeedActivity: (operationId) => api.post('/api/dev/succeed-activity', { operation_id: operationId }),
   triggerError: () => api.post('/api/dev/trigger-error'),
   clearData: () => api.post('/api/dev/clear-data'),
+  refreshJobCounts: () => api.post('/api/dev/refresh-job-counts'),
+  
+  // Notification management
+  getNotificationConfigs: () => api.get('/api/notifications/configs'),
+  createNotificationConfig: (data) => api.post('/api/notifications/configs', data),
+  updateNotificationConfig: (id, data) => api.put(`/api/notifications/configs/${id}`, data),
+  deleteNotificationConfig: (id) => api.delete(`/api/notifications/configs/${id}`),
+  testNotificationConfig: (id, testData = {}) => api.post(`/api/notifications/test/${id}`, testData),
+  getNotificationEvents: (params = {}) => api.get('/api/notifications/events', { params }),
+  
+  // Admin management
+  getRetentionConfig: () => api.get('/api/admin/retention/config'),
+  updateRetentionConfig: (data) => api.post('/api/admin/retention/config', data),
+  getDatabaseStats: () => api.get('/api/admin/database/stats'),
+  performCleanup: (dryRun = true) => api.post(`/api/admin/database/cleanup?dry_run=${dryRun}`),
+  createBackup: (compressed = true) => api.post(`/api/admin/database/backup?compressed=${compressed}`),
+  getBackupList: () => api.get('/api/admin/database/backups'),
+  getBackupDirectory: () => api.get('/api/admin/backup/directory'),
+  setBackupDirectory: (directory) => api.post('/api/admin/backup/directory', { backup_directory: directory }),
+  deleteBackup: (filename) => api.delete(`/api/admin/database/backups/${encodeURIComponent(filename)}`),
+  deleteAllBackups: () => api.delete('/api/admin/database/backups'),
+  restoreBackup: (filename) => api.post(`/api/admin/database/backups/${encodeURIComponent(filename)}/restore`),
+  exportData: (format = 'json', tables = null) => {
+    return api.post('/api/admin/database/export', { 
+      format: format,
+      tables: tables 
+    }, { 
+      responseType: 'blob',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+  },
 };
 
 export default apiService; 

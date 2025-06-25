@@ -17,7 +17,7 @@ import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
 
-const ConfigEditor = () => {
+const ConfigEditor = ({ navigationTarget = null }) => {
   const [config, setConfig] = useState(null);
   const [originalConfig, setOriginalConfig] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -31,6 +31,7 @@ const ConfigEditor = () => {
     advanced: false
   });
   const [errors, setErrors] = useState({});
+  const [animatingCheckbox, setAnimatingCheckbox] = useState(null);
   const { showSuccess, showError } = useContext(ToastContext);
 
   // Available models categorized by type
@@ -99,6 +100,36 @@ const ConfigEditor = () => {
   useEffect(() => {
     fetchConfig();
   }, []);
+
+  // Handle navigation target (e.g., expand context section and animate checkbox)
+  useEffect(() => {
+    if (navigationTarget === 'context-service-enable' && config && initialLoadComplete) {
+      // Ensure context section is expanded
+      setExpandedSections(prev => ({
+        ...prev,
+        context: true
+      }));
+
+      // Wait for rendering, then scroll and animate
+      setTimeout(() => {
+        const element = document.getElementById('context-service-section');
+        if (element) {
+          // Scroll to center the element in view
+          element.scrollIntoView({ 
+            behavior: 'smooth', 
+            block: 'center',
+            inline: 'nearest'
+          });
+
+          // Animate the checkbox to draw attention
+          setAnimatingCheckbox('context-enabled');
+          setTimeout(() => {
+            setAnimatingCheckbox(null);
+          }, 2000); // Stop animation after 2 seconds
+        }
+      }, 100);
+    }
+  }, [navigationTarget, config, initialLoadComplete]);
 
   const fetchConfig = async () => {
     try {
@@ -396,7 +427,7 @@ const ConfigEditor = () => {
 
       {/* Header */}
       <ViewHeader 
-        title="Configuration"
+        title="AI Config"
         subtitle="Manage AI models, performance settings, and API keys"
         icon={Settings}
       />
@@ -564,15 +595,27 @@ const ConfigEditor = () => {
         <div id="context-service-section">
           <SectionHeader title="Code Context Service" icon={Database} section="context">
             <div className="space-y-6 pt-4">
-              <div className="flex items-center space-x-3">
+              <div className={`flex items-center space-x-3 p-2 rounded-md transition-all duration-500 ${
+                animatingCheckbox === 'context-enabled' 
+                  ? 'bg-blue-50 dark:bg-blue-900/20 ring-2 ring-blue-200 dark:ring-blue-800' 
+                  : ''
+              }`}>
                 <input
                   type="checkbox"
                   id="context-enabled"
                   checked={config.csharp_code_context_service?.enabled || false}
                   onChange={(e) => updateConfig('csharp_code_context_service.enabled', e.target.checked)}
-                  className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800"
+                  className={`h-5 w-5 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 transition-all duration-300 ${
+                    animatingCheckbox === 'context-enabled' 
+                      ? 'ring-4 ring-blue-500 ring-opacity-75 animate-pulse scale-125 shadow-lg' 
+                      : ''
+                  }`}
                 />
-                <label htmlFor="context-enabled" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                <label htmlFor="context-enabled" className={`text-sm font-medium transition-all duration-300 ${
+                  animatingCheckbox === 'context-enabled'
+                    ? 'text-blue-700 dark:text-blue-300 font-semibold'
+                    : 'text-gray-700 dark:text-gray-300'
+                }`}>
                   Enable Code Context Service
                 </label>
                 <Info className="h-4 w-4 text-gray-400 dark:text-gray-500" title="Provides additional code context for better suggestions" />
