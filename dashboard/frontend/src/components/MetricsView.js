@@ -20,7 +20,9 @@ import {
   Play,
   Pause,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  GitBranch,
+  FolderGit2
 } from 'lucide-react';
 import apiService from '../services/api';
 import ViewHeader from './ViewHeader';
@@ -28,6 +30,8 @@ import ViewHeader from './ViewHeader';
 const MetricsView = () => {
   const [activeTab, setActiveTab] = useState('overview');
   const [metricsData, setMetricsData] = useState(null);
+  const [operationData, setOperationData] = useState(null);
+  const [repositoryData, setRepositoryData] = useState(null);
   const [config, setConfig] = useState(null);
   const [availableModels, setAvailableModels] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -36,6 +40,8 @@ const MetricsView = () => {
   const [lastUpdated, setLastUpdated] = useState(null);
   const [activeModelTab, setActiveModelTab] = useState('premium');
   const [currentModelIndex, setCurrentModelIndex] = useState(0);
+  const [currentOperationIndex, setCurrentOperationIndex] = useState(0);
+  const [currentRepositoryIndex, setCurrentRepositoryIndex] = useState(0);
   const [hoveredPieSlice, setHoveredPieSlice] = useState(null);
 
   // Config form state
@@ -54,13 +60,17 @@ const MetricsView = () => {
       setLoading(true);
       setError(null);
       
-      const [summaryRes, configRes] = await Promise.all([
+      const [summaryRes, configRes, operationRes, repositoryRes] = await Promise.all([
         apiService.get('/api/metrics/summary'),
-        apiService.get('/api/metrics/config')
+        apiService.get('/api/metrics/config'),
+        apiService.get('/api/metrics/operations'),
+        apiService.get('/api/metrics/repositories')
       ]);
 
       const summary = summaryRes.data?.data || summaryRes.data;
       const configData = configRes.data?.data || configRes.data;
+      const operationBreakdown = operationRes.data?.data || operationRes.data;
+      const repositoryBreakdown = repositoryRes.data?.data || repositoryRes.data;
 
       // Use the same model structure as AI Config
       const availableModels = [
@@ -85,6 +95,8 @@ const MetricsView = () => {
       ];
 
       setMetricsData(summary);
+      setOperationData(operationBreakdown);
+      setRepositoryData(repositoryBreakdown);
       setConfig(configData);
       setAvailableModels(availableModels);
       setEditableConfig({
@@ -128,12 +140,23 @@ const MetricsView = () => {
   };
 
   const formatCurrency = (amount) => {
+    const value = amount || 0;
+    let decimals;
+    
+    if (value >= 10) {
+      decimals = 2;
+    } else if (value >= 1) {
+      decimals = 3;
+    } else {
+      decimals = 4;
+    }
+    
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 4
-    }).format(amount || 0);
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    }).format(value);
   };
 
   const formatNumber = (num) => {
@@ -166,6 +189,8 @@ const MetricsView = () => {
   const tabs = [
     { id: 'overview', name: 'Overview', icon: BarChart3 },
     { id: 'models', name: 'Model Breakdown', icon: Cpu },
+    { id: 'operations', name: 'Operation Breakdown', icon: Zap },
+    { id: 'repositories', name: 'Repository Breakdown', icon: GitBranch },
     { id: 'configuration', name: 'Configuration', icon: Settings }
   ];
 
@@ -195,6 +220,10 @@ const MetricsView = () => {
           return renderOverviewTab();
         case 'models':
           return renderModelsTab();
+        case 'operations':
+          return renderOperationsTab();
+        case 'repositories':
+          return renderRepositoriesTab();
         case 'configuration':
           return renderConfigurationTab();
         default:
@@ -406,16 +435,102 @@ const MetricsView = () => {
   };
 
   const getModelTier = (model) => {
+    const cleanName = model.replace('anthropic/', '').replace('openai/', '');
     if (model.includes('claude-opus-4') || model.includes('claude-sonnet-4') || model.includes('o1') || model.includes('o3') || model.includes('o4')) {
-      return { tier: 'premium', icon: '💎', color: 'from-amber-50 to-yellow-50 dark:from-amber-900/20 dark:to-yellow-900/20 border-amber-200 dark:border-amber-700' };
+      return { tier: 'premium', icon: '💎', name: cleanName, color: 'from-amber-50 to-yellow-50 dark:from-amber-900/20 dark:to-yellow-900/20 border-amber-200 dark:border-amber-700' };
     }
     if ((model.includes('claude-3-5') || model.includes('gpt-4')) && !model.includes('claude-opus-4') && !model.includes('claude-sonnet-4')) {
-      return { tier: 'standard', icon: '⚡', color: 'from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border-blue-200 dark:border-blue-700' };
+      return { tier: 'standard', icon: '⚡', name: cleanName, color: 'from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border-blue-200 dark:border-blue-700' };
     }
     if (model.includes('gpt-3.5') || model.includes('mini')) {
-      return { tier: 'budget', icon: '💚', color: 'from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 border-green-200 dark:border-green-700' };
+      return { tier: 'budget', icon: '💚', name: cleanName, color: 'from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 border-green-200 dark:border-green-700' };
     }
-    return { tier: 'other', icon: '🔧', color: 'from-gray-50 to-slate-50 dark:from-gray-900/20 dark:to-slate-900/20 border-gray-200 dark:border-gray-700' };
+    return { tier: 'other', icon: '🔧', name: cleanName, color: 'from-gray-50 to-slate-50 dark:from-gray-900/20 dark:to-slate-900/20 border-gray-200 dark:border-gray-700' };
+  };
+
+  const getOperationType = (operation) => {
+    const operationMap = {
+      'review': { icon: '🔍', name: 'Review', description: 'AI-powered code review' },
+      'describe': { icon: '📝', name: 'Describe', description: 'PR description generation' },
+      'improve': { icon: '🚀', name: 'Improve', description: 'Code improvement suggestions' },
+      'test': { icon: '🧪', name: 'Test', description: 'Test generation and analysis' },
+      'add_docs': { icon: '📚', name: 'Add Docs', description: 'Documentation generation' },
+      'update_changelog': { icon: '📋', name: 'Changelog', description: 'Changelog updates' },
+      'similar_issue': { icon: '🔗', name: 'Similar Issue', description: 'Similar issue detection' },
+      'fetching_context': { icon: '📡', name: 'Fetch Context', description: 'Context data retrieval' },
+      'processing_pr': { icon: '⚙️', name: 'Process PR', description: 'PR data processing' },
+      'self_reflecting': { icon: '🤔', name: 'Self Reflect', description: 'AI self-reflection process' },
+      'publishing_results': { icon: '📤', name: 'Publish', description: 'Results publication' },
+      'starting': { icon: '🚀', name: 'Starting', description: 'Operation initialization' },
+      'finalizing': { icon: '✅', name: 'Finalizing', description: 'Operation completion' },
+      'cleanup': { icon: '🧹', name: 'Cleanup', description: 'Resource cleanup' },
+      'unknown': { icon: '❓', name: 'Unknown', description: 'Unknown operation type' }
+    };
+    
+    return operationMap[operation] || operationMap['unknown'];
+  };
+
+  const generateOperationPieSlices = (sortedOperations, totals) => {
+    const colors = [
+      '#3B82F6', '#10B981', '#8B5CF6', '#F59E0B', '#06B6D4', 
+      '#EF4444', '#84CC16', '#6B7280', '#F97316', '#EC4899'
+    ];
+    
+    let currentAngle = 0;
+    return sortedOperations.map(([operationName, data], index) => {
+      const percentage = totals.cost > 0 ? (data.total_cost / totals.cost) * 100 : 0;
+      const sweepAngle = (percentage / 100) * 360;
+      
+      const slice = {
+        operationName,
+        data,
+        startAngle: currentAngle,
+        endAngle: currentAngle + sweepAngle,
+        percentage,
+        color: colors[index % colors.length]
+      };
+      
+      currentAngle += sweepAngle;
+      return slice;
+    });
+  };
+
+  const getRepositoryType = (repository) => {
+    // Extract repository name from full path if needed
+    const repoName = repository.split('/').pop() || repository;
+    
+    // Default repository info - you could customize this based on actual repo names
+    return {
+      icon: FolderGit2,
+      name: repoName === 'unknown' ? 'Unknown Repository' : repoName,
+      description: `Repository: ${repository}`
+    };
+  };
+
+  const generateRepositoryPieSlices = (sortedRepositories, totals) => {
+    const colors = [
+      '#3B82F6', '#10B981', '#8B5CF6', '#F59E0B', '#06B6D4', 
+      '#EF4444', '#84CC16', '#6B7280', '#F97316', '#EC4899',
+      '#F43F5E', '#06B6D4', '#8B5CF6', '#F59E0B', '#84CC16'
+    ];
+    
+    let currentAngle = 0;
+    return sortedRepositories.map(([repositoryName, data], index) => {
+      const percentage = totals.cost > 0 ? (data.total_cost / totals.cost) * 100 : 0;
+      const sweepAngle = (percentage / 100) * 360;
+      
+      const slice = {
+        repositoryName,
+        data,
+        startAngle: currentAngle,
+        endAngle: currentAngle + sweepAngle,
+        percentage,
+        color: colors[index % colors.length]
+      };
+      
+      currentAngle += sweepAngle;
+      return slice;
+    });
   };
 
   const renderModelsTab = () => {
@@ -486,12 +601,12 @@ const MetricsView = () => {
                         d={createPieSlicePath(221, 221, radius, slice.startAngle, slice.endAngle)}
                         fill={slice.color}
                         stroke="white"
-                        strokeWidth="3"
+                        strokeWidth="1"
                         className="cursor-pointer transition-all duration-300 hover:brightness-110"
                         style={{
-                          filter: isSelected ? 'drop-shadow(0 4px 8px rgba(0,0,0,0.3))' : 
+                          filter: isSelected ? 'drop-shadow(0 4px 8px rgba(0,0,0,0.3)) drop-shadow(0 0 12px rgba(59, 130, 246, 0.5))' : 
                                   isHovered ? 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))' : 'none',
-                          opacity: isSelected ? 1 : isHovered ? 0.9 : 0.8
+                          opacity: isSelected ? 1 : isHovered ? 0.75 : 0.6
                         }}
                         onMouseEnter={() => setHoveredPieSlice(index)}
                         onMouseLeave={() => setHoveredPieSlice(null)}
@@ -531,6 +646,35 @@ const MetricsView = () => {
                 </div>
               )}
             </div>
+
+            {/* Navigation Controls Below Pie Chart */}
+            {currentModel && (
+              <div className="flex items-center justify-center space-x-6 mt-6">
+                <button
+                  onClick={() => handleCarouselNav('prev')}
+                  className="p-3 rounded-lg bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors shadow-sm"
+                  title="Previous model"
+                >
+                  <ChevronLeft className="h-5 w-5 text-gray-600 dark:text-gray-400" />
+                </button>
+                <div className="flex items-center space-x-3 bg-gray-100 dark:bg-gray-700 rounded-lg px-4 py-2">
+                  <span className="text-lg font-medium text-gray-900 dark:text-white">
+                    {currentModelIndex + 1}
+                  </span>
+                  <span className="text-gray-500 dark:text-gray-400">/</span>
+                  <span className="text-lg font-medium text-gray-900 dark:text-white">
+                    {sortedModels.length}
+                  </span>
+                </div>
+                <button
+                  onClick={() => handleCarouselNav('next')}
+                  className="p-3 rounded-lg bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors shadow-sm"
+                  title="Next model"
+                >
+                  <ChevronRight className="h-5 w-5 text-gray-600 dark:text-gray-400" />
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Enhanced Model Carousel */}
@@ -565,17 +709,42 @@ const MetricsView = () => {
                           </div>
                         </div>
 
-                        {/* Cost Highlight - Compact */}
+                        {/* Cost vs Savings Highlight */}
                         <div className="text-center mb-4 p-4 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-lg border border-green-200 dark:border-green-700">
-                          <div className="text-2xl font-bold text-green-800 dark:text-green-200 mb-1">
-                            {formatCurrency(data.total_cost)}
+                          <div className="text-xs font-semibold text-green-700 dark:text-green-300 mb-2 uppercase tracking-wide">
+                            Financial Impact
                           </div>
-                          <div className="text-xs text-green-600 dark:text-green-400 mb-1">
-                            {formatCurrency(data.cost_per_operation)} per operation
-                          </div>
-                          <div className="text-xs text-green-500 dark:text-green-300 opacity-80">
-                            {((data.total_cost / totals.cost) * 100).toFixed(1)}% of total {formatCurrency(totals.cost)}
-                          </div>
+                          {(() => {
+                            const devCostSaved = (data.estimated_dev_hours || 0) * (config?.developer_hourly_rate || 75) * (config?.hours_multiplier || 1.0);
+                            const netSavings = devCostSaved - (data.total_cost || 0);
+                            return (
+                              <>
+                                <div className="grid grid-cols-2 gap-3 mb-2">
+                                  <div>
+                                    <div className="text-sm font-semibold text-red-600 dark:text-red-400">Cost</div>
+                                    <div className="text-lg font-bold text-red-700 dark:text-red-300">
+                                      {formatCurrency(data.total_cost)}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div className="text-sm font-semibold text-green-600 dark:text-green-400">Saved</div>
+                                    <div className="text-lg font-bold text-green-700 dark:text-green-300">
+                                      {formatCurrency(devCostSaved)}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="pt-2 border-t border-green-200 dark:border-green-700">
+                                  <div className="text-xs text-green-600 dark:text-green-400 mb-1">Net Savings</div>
+                                  <div className={`text-xl font-bold ${netSavings >= 0 ? 'text-green-800 dark:text-green-200' : 'text-red-800 dark:text-red-200'}`}>
+                                    {formatCurrency(Math.abs(netSavings))} {netSavings >= 0 ? 'saved' : 'loss'}
+                                  </div>
+                                  <div className="text-xs text-green-500 dark:text-green-300 opacity-80">
+                                    ROI: {data.total_cost > 0 ? (((devCostSaved - data.total_cost) / data.total_cost * 100).toFixed(0)) : '∞'}%
+                                  </div>
+                                </div>
+                              </>
+                            );
+                          })()}
                         </div>
 
                         {/* Compact Stats Grid */}
@@ -664,34 +833,641 @@ const MetricsView = () => {
           )}
         </div>
 
-        {/* Navigation Controls Below */}
-        {currentModel && (
-          <div className="flex items-center justify-center space-x-6 mt-4">
-            <button
-              onClick={() => handleCarouselNav('prev')}
-              className="p-3 rounded-lg bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors shadow-sm"
-              title="Previous model"
-            >
-              <ChevronLeft className="h-5 w-5 text-gray-600 dark:text-gray-400" />
-            </button>
-            <div className="flex items-center space-x-3 bg-gray-100 dark:bg-gray-700 rounded-lg px-4 py-2">
-              <span className="text-lg font-medium text-gray-900 dark:text-white">
-                {currentModelIndex + 1}
-              </span>
-              <span className="text-gray-500 dark:text-gray-400">/</span>
-              <span className="text-lg font-medium text-gray-900 dark:text-white">
-                {sortedModels.length}
-              </span>
+
+      </div>
+    );
+  };
+
+  const renderOperationsTab = () => {
+    const operationBreakdown = operationData?.operation_breakdown || {};
+    const operationEntries = Object.entries(operationBreakdown);
+    
+    if (operationEntries.length === 0) {
+      return (
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8 text-center">
+          <Zap className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No Operation Data</h3>
+          <p className="text-gray-600 dark:text-gray-400">
+            Operation breakdown will appear here once AI operations are processed.
+          </p>
+        </div>
+      );
+    }
+
+    // Sort operations by total cost (descending)
+    const sortedOperations = operationEntries.sort(([, a], [, b]) => (b.total_cost || 0) - (a.total_cost || 0));
+    
+    // Calculate totals for percentage calculations
+    const totals = operationEntries.reduce((acc, [, data]) => ({
+      operations: acc.operations + (data.operations_count || 0),
+      inputTokens: acc.inputTokens + (data.input_tokens || 0),
+      outputTokens: acc.outputTokens + (data.output_tokens || 0),
+      cost: acc.cost + (data.total_cost || 0),
+      hours: acc.hours + (data.estimated_dev_hours || 0)
+    }), { operations: 0, inputTokens: 0, outputTokens: 0, cost: 0, hours: 0 });
+
+    const pieSlices = generateOperationPieSlices(sortedOperations, totals);
+    const currentOperation = sortedOperations[currentOperationIndex];
+
+    const handleOperationPieSliceClick = (sliceIndex) => {
+      setCurrentOperationIndex(sliceIndex);
+    };
+
+    const handleOperationCarouselNav = (direction) => {
+      if (direction === 'prev') {
+        setCurrentOperationIndex(prev => prev > 0 ? prev - 1 : sortedOperations.length - 1);
+      } else {
+        setCurrentOperationIndex(prev => prev < sortedOperations.length - 1 ? prev + 1 : 0);
+      }
+    };
+
+    return (
+      <div className="space-y-8">
+
+        {/* Pie Chart and Carousel Side by Side */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* Interactive Pie Chart */}
+          <div className="flex flex-col items-center">
+            <div className="text-center mb-6">
+              <h3 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Cost Distribution by Operation</h3>
+              <p className="text-gray-600 dark:text-gray-400">Click on a slice to view operation details</p>
             </div>
-            <button
-              onClick={() => handleCarouselNav('next')}
-              className="p-3 rounded-lg bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors shadow-sm"
-              title="Next model"
-            >
-              <ChevronRight className="h-5 w-5 text-gray-600 dark:text-gray-400" />
-            </button>
+            
+            <div className="relative">
+              <svg width="442" height="442" className="drop-shadow-lg">
+                {pieSlices.map((slice, index) => {
+                  const isHovered = hoveredPieSlice === index;
+                  const isSelected = currentOperationIndex === index;
+                  const radius = isHovered ? 173 : isSelected ? 166 : 159;
+                  
+                  return (
+                    <g key={slice.operationName}>
+                      <path
+                        d={createPieSlicePath(221, 221, radius, slice.startAngle, slice.endAngle)}
+                        fill={slice.color}
+                        stroke="white"
+                        strokeWidth="1"
+                        className="cursor-pointer transition-all duration-300 hover:brightness-110"
+                        style={{
+                          filter: isSelected ? 'drop-shadow(0 4px 8px rgba(0,0,0,0.3)) drop-shadow(0 0 12px rgba(59, 130, 246, 0.5))' : 
+                                  isHovered ? 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))' : 'none',
+                          opacity: isSelected ? 1 : isHovered ? 0.75 : 0.6
+                        }}
+                        onMouseEnter={() => setHoveredPieSlice(index)}
+                        onMouseLeave={() => setHoveredPieSlice(null)}
+                        onClick={() => handleOperationPieSliceClick(index)}
+                      />
+                      {slice.percentage > 8 && (
+                        <text
+                          x={221 + (radius - 30) * Math.cos(((slice.startAngle + slice.endAngle) / 2 - 90) * Math.PI / 180)}
+                          y={221 + (radius - 30) * Math.sin(((slice.startAngle + slice.endAngle) / 2 - 90) * Math.PI / 180)}
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          className="fill-white text-sm font-semibold pointer-events-none"
+                          style={{ textShadow: '1px 1px 2px rgba(0,0,0,0.7)' }}
+                        >
+                          {slice.percentage.toFixed(1)}%
+                        </text>
+                      )}
+                    </g>
+                  );
+                })}
+              </svg>
+
+              {/* Tooltip */}
+              {hoveredPieSlice !== null && (
+                <div 
+                  className="absolute bg-gray-900 text-white px-3 py-2 rounded-lg text-sm font-medium pointer-events-none z-10 shadow-lg"
+                  style={{
+                    left: '50%',
+                    top: '10px',
+                    transform: 'translateX(-50%)'
+                  }}
+                >
+                  {getOperationType(pieSlices[hoveredPieSlice]?.operationName).name}
+                  <div className="text-xs text-gray-300">
+                    {formatCurrency(pieSlices[hoveredPieSlice]?.data.total_cost)} ({pieSlices[hoveredPieSlice]?.percentage.toFixed(1)}%)
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Navigation Controls Below Pie Chart */}
+            {currentOperation && (
+              <div className="flex items-center justify-center space-x-6 mt-6">
+                <button
+                  onClick={() => handleOperationCarouselNav('prev')}
+                  className="p-3 rounded-lg bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors shadow-sm"
+                  title="Previous operation"
+                >
+                  <ChevronLeft className="h-5 w-5 text-gray-600 dark:text-gray-400" />
+                </button>
+                <div className="flex items-center space-x-3 bg-gray-100 dark:bg-gray-700 rounded-lg px-4 py-2">
+                  <span className="text-lg font-medium text-gray-900 dark:text-white">
+                    {currentOperationIndex + 1}
+                  </span>
+                  <span className="text-gray-500 dark:text-gray-400">/</span>
+                  <span className="text-lg font-medium text-gray-900 dark:text-white">
+                    {sortedOperations.length}
+                  </span>
+                </div>
+                <button
+                  onClick={() => handleOperationCarouselNav('next')}
+                  className="p-3 rounded-lg bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors shadow-sm"
+                  title="Next operation"
+                >
+                  <ChevronRight className="h-5 w-5 text-gray-600 dark:text-gray-400" />
+                </button>
+              </div>
+            )}
           </div>
-        )}
+
+          {/* Enhanced Operation Carousel */}
+          {currentOperation && (
+            <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+              {/* Carousel Content with Animation */}
+              <div className="relative overflow-hidden" style={{ minHeight: 'fit-content' }}>
+                <div 
+                  className="flex transition-transform duration-500 ease-in-out"
+                  style={{ transform: `translateX(-${currentOperationIndex * 100}%)` }}
+                >
+                  {sortedOperations.map(([operationName, data], index) => {
+                    const operationType = getOperationType(operationName);
+                    return (
+                      <div key={operationName} className="w-full flex-shrink-0 p-6 flex flex-col">
+                        {/* Operation Header */}
+                        <div className="flex items-center space-x-3 mb-4">
+                          <div className="text-2xl">{operationType.icon}</div>
+                          <div className="flex-1">
+                            <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+                              {operationType.name}
+                            </h3>
+                            <div className="flex items-center space-x-3 text-xs text-gray-600 dark:text-gray-400 mt-1">
+                              <span className="text-gray-500 dark:text-gray-400">{operationType.description}</span>
+                            </div>
+                            <div className="flex items-center space-x-3 text-xs text-gray-600 dark:text-gray-400 mt-1">
+                              <span className="bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200 px-2 py-0.5 rounded-full">
+                                #{index + 1} by cost
+                              </span>
+                              <span className="bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200 px-2 py-0.5 rounded-full">
+                                {((data.total_cost / totals.cost) * 100).toFixed(1)}%
+                              </span>
+                              <span className="bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200 px-2 py-0.5 rounded-full">
+                                {data.success_rate}% success
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Cost vs Savings Highlight */}
+                        <div className="text-center mb-4 p-4 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-lg border border-green-200 dark:border-green-700">
+                          <div className="text-xs font-semibold text-green-700 dark:text-green-300 mb-2 uppercase tracking-wide">
+                            Financial Impact
+                          </div>
+                          {(() => {
+                            const devCostSaved = (data.estimated_dev_hours || 0) * (config?.developer_hourly_rate || 75) * (config?.hours_multiplier || 1.0);
+                            const netSavings = devCostSaved - (data.total_cost || 0);
+                            return (
+                              <>
+                                <div className="grid grid-cols-2 gap-3 mb-2">
+                                  <div>
+                                    <div className="text-sm font-semibold text-red-600 dark:text-red-400">Cost</div>
+                                    <div className="text-lg font-bold text-red-700 dark:text-red-300">
+                                      {formatCurrency(data.total_cost)}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div className="text-sm font-semibold text-green-600 dark:text-green-400">Saved</div>
+                                    <div className="text-lg font-bold text-green-700 dark:text-green-300">
+                                      {formatCurrency(devCostSaved)}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="pt-2 border-t border-green-200 dark:border-green-700">
+                                  <div className="text-xs text-green-600 dark:text-green-400 mb-1">Net Savings</div>
+                                  <div className={`text-xl font-bold ${netSavings >= 0 ? 'text-green-800 dark:text-green-200' : 'text-red-800 dark:text-red-200'}`}>
+                                    {formatCurrency(Math.abs(netSavings))} {netSavings >= 0 ? 'saved' : 'loss'}
+                                  </div>
+                                  <div className="text-xs text-green-500 dark:text-green-300 opacity-80">
+                                    ROI: {data.total_cost > 0 ? (((devCostSaved - data.total_cost) / data.total_cost * 100).toFixed(0)) : '∞'}%
+                                  </div>
+                                </div>
+                              </>
+                            );
+                          })()}
+                        </div>
+
+                        {/* Stats Grid */}
+                        <div className="grid grid-cols-2 gap-3 mb-4 flex-1">
+                          <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-3 border border-blue-200 dark:border-blue-700">
+                            <div className="flex items-center justify-between mb-1">
+                              <BarChart3 className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                              <span className="text-xs font-medium text-blue-700 dark:text-blue-300">Operations</span>
+                            </div>
+                            <div className="text-lg font-bold text-blue-800 dark:text-blue-200">
+                              {formatNumber(data.operations_count)}
+                            </div>
+                            <div className="text-xs text-blue-600 dark:text-blue-400">
+                              {((data.operations_count / totals.operations) * 100).toFixed(1)}% of total
+                            </div>
+                          </div>
+                          
+                          <div className="bg-purple-50 dark:bg-purple-900/20 rounded-lg p-3 border border-purple-200 dark:border-purple-700">
+                            <div className="flex items-center justify-between mb-1">
+                              <Clock className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+                              <span className="text-xs font-medium text-purple-700 dark:text-purple-300">Dev Hours</span>
+                            </div>
+                            <div className="text-lg font-bold text-purple-800 dark:text-purple-200">
+                              {formatHours(data.estimated_dev_hours)}
+                            </div>
+                            <div className="text-xs text-purple-600 dark:text-purple-400">
+                              {formatHours(data.avg_dev_hours)} avg/op
+                            </div>
+                          </div>
+                          
+                          <div className="bg-orange-50 dark:bg-orange-900/20 rounded-lg p-3 border border-orange-200 dark:border-orange-700">
+                            <div className="flex items-center justify-between mb-1">
+                              <ArrowUp className="h-4 w-4 text-orange-600 dark:text-orange-400" />
+                              <span className="text-xs font-medium text-orange-700 dark:text-orange-300">Input</span>
+                            </div>
+                            <div className="text-lg font-bold text-orange-800 dark:text-orange-200">
+                              {formatNumber(data.input_tokens)}
+                            </div>
+                            <div className="text-xs text-orange-600 dark:text-orange-400">
+                              {formatNumber(data.avg_input_tokens)} avg/op
+                            </div>
+                          </div>
+                          
+                          <div className="bg-pink-50 dark:bg-pink-900/20 rounded-lg p-3 border border-pink-200 dark:border-pink-700">
+                            <div className="flex items-center justify-between mb-1">
+                              <ArrowDown className="h-4 w-4 text-pink-600 dark:text-pink-400" />
+                              <span className="text-xs font-medium text-pink-700 dark:text-pink-300">Output</span>
+                            </div>
+                            <div className="text-lg font-bold text-pink-800 dark:text-pink-200">
+                              {formatNumber(data.output_tokens)}
+                            </div>
+                            <div className="text-xs text-pink-600 dark:text-pink-400">
+                              {formatNumber(data.avg_output_tokens)} avg/op
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Performance Metrics */}
+                        <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 border border-gray-200 dark:border-gray-700">
+                          <div className="flex items-center mb-2">
+                            <TrendingUp className="h-4 w-4 text-gray-600 dark:text-gray-400 mr-2" />
+                            <span className="text-xs font-semibold text-gray-900 dark:text-white">Performance</span>
+                          </div>
+                          <div className="space-y-1 text-xs">
+                            <div className="flex justify-between items-center">
+                              <span className="text-gray-600 dark:text-gray-400">Avg Duration</span>
+                              <span className="font-medium text-gray-900 dark:text-white">
+                                {data.avg_duration ? `${data.avg_duration}s` : 'N/A'}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <span className="text-gray-600 dark:text-gray-400">Models Used</span>
+                              <span className="font-medium text-gray-900 dark:text-white">
+                                {data.models_used ? data.models_used.length : 0}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <span className="text-gray-600 dark:text-gray-400">Cost/1K tokens</span>
+                              <span className="font-medium text-gray-900 dark:text-white">
+                                {data.input_tokens + data.output_tokens > 0 ? 
+                                  formatCurrency(data.total_cost / ((data.input_tokens + data.output_tokens) / 1000)) : '$0.00'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+
+      </div>
+    );
+  };
+
+  const renderRepositoriesTab = () => {
+    const repositoryBreakdown = repositoryData?.repository_breakdown || {};
+    const repositoryEntries = Object.entries(repositoryBreakdown);
+    
+    if (repositoryEntries.length === 0) {
+      return (
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8 text-center">
+          <Star className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No Repository Data</h3>
+          <p className="text-gray-600 dark:text-gray-400">
+            Repository breakdown will appear here once AI operations are processed.
+          </p>
+        </div>
+      );
+    }
+
+    // Sort repositories by total cost (descending)
+    const sortedRepositories = repositoryEntries.sort(([, a], [, b]) => (b.total_cost || 0) - (a.total_cost || 0));
+    
+    // Calculate totals for percentage calculations
+    const totals = repositoryEntries.reduce((acc, [, data]) => ({
+      operations: acc.operations + (data.operations_count || 0),
+      inputTokens: acc.inputTokens + (data.input_tokens || 0),
+      outputTokens: acc.outputTokens + (data.output_tokens || 0),
+      cost: acc.cost + (data.total_cost || 0),
+      hours: acc.hours + (data.estimated_dev_hours || 0),
+      jobs: acc.jobs + (data.unique_jobs_count || 0)
+    }), { operations: 0, inputTokens: 0, outputTokens: 0, cost: 0, hours: 0, jobs: 0 });
+
+    const pieSlices = generateRepositoryPieSlices(sortedRepositories, totals);
+    const currentRepository = sortedRepositories[currentRepositoryIndex];
+
+    const handleRepositoryPieSliceClick = (sliceIndex) => {
+      setCurrentRepositoryIndex(sliceIndex);
+    };
+
+    const handleRepositoryCarouselNav = (direction) => {
+      if (direction === 'prev') {
+        setCurrentRepositoryIndex(prev => prev > 0 ? prev - 1 : sortedRepositories.length - 1);
+      } else {
+        setCurrentRepositoryIndex(prev => prev < sortedRepositories.length - 1 ? prev + 1 : 0);
+      }
+    };
+
+    return (
+      <div className="space-y-8">
+
+        {/* Pie Chart and Carousel Side by Side */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* Interactive Pie Chart */}
+          <div className="flex flex-col items-center">
+            <div className="text-center mb-6">
+              <h3 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Cost Distribution by Repository</h3>
+              <p className="text-gray-600 dark:text-gray-400">Click on a slice to view repository details</p>
+            </div>
+            
+            <div className="relative">
+              <svg width="442" height="442" className="drop-shadow-lg">
+                {pieSlices.map((slice, index) => {
+                  const isHovered = hoveredPieSlice === index;
+                  const isSelected = currentRepositoryIndex === index;
+                  const radius = isHovered ? 173 : isSelected ? 166 : 159;
+                  
+                  return (
+                    <g key={slice.repositoryName}>
+                      <path
+                        d={createPieSlicePath(221, 221, radius, slice.startAngle, slice.endAngle)}
+                        fill={slice.color}
+                        stroke="white"
+                        strokeWidth="1"
+                        className="cursor-pointer transition-all duration-300 hover:brightness-110"
+                        style={{
+                          filter: isSelected ? 'drop-shadow(0 4px 8px rgba(0,0,0,0.3)) drop-shadow(0 0 12px rgba(59, 130, 246, 0.5))' : 
+                                  isHovered ? 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))' : 'none',
+                          opacity: isSelected ? 1 : isHovered ? 0.75 : 0.6
+                        }}
+                        onMouseEnter={() => setHoveredPieSlice(index)}
+                        onMouseLeave={() => setHoveredPieSlice(null)}
+                        onClick={() => handleRepositoryPieSliceClick(index)}
+                      />
+                      {slice.percentage > 8 && (
+                        <text
+                          x={221 + (radius - 30) * Math.cos(((slice.startAngle + slice.endAngle) / 2 - 90) * Math.PI / 180)}
+                          y={221 + (radius - 30) * Math.sin(((slice.startAngle + slice.endAngle) / 2 - 90) * Math.PI / 180)}
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          className="fill-white text-sm font-semibold pointer-events-none"
+                          style={{ textShadow: '1px 1px 2px rgba(0,0,0,0.7)' }}
+                        >
+                          {slice.percentage.toFixed(1)}%
+                        </text>
+                      )}
+                    </g>
+                  );
+                })}
+              </svg>
+
+              {/* Tooltip */}
+              {hoveredPieSlice !== null && (
+                <div 
+                  className="absolute bg-gray-900 text-white px-3 py-2 rounded-lg text-sm font-medium pointer-events-none z-10 shadow-lg"
+                  style={{
+                    left: '50%',
+                    top: '10px',
+                    transform: 'translateX(-50%)'
+                  }}
+                >
+                  {getRepositoryType(pieSlices[hoveredPieSlice]?.repositoryName).name}
+                  <div className="text-xs text-gray-300">
+                    {formatCurrency(pieSlices[hoveredPieSlice]?.data.total_cost)} ({pieSlices[hoveredPieSlice]?.percentage.toFixed(1)}%)
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Navigation Controls Below Pie Chart */}
+            {currentRepository && (
+              <div className="flex items-center justify-center space-x-6 mt-6">
+                <button
+                  onClick={() => handleRepositoryCarouselNav('prev')}
+                  className="p-3 rounded-lg bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors shadow-sm"
+                  title="Previous repository"
+                >
+                  <ChevronLeft className="h-5 w-5 text-gray-600 dark:text-gray-400" />
+                </button>
+                <div className="flex items-center space-x-3 bg-gray-100 dark:bg-gray-700 rounded-lg px-4 py-2">
+                  <span className="text-lg font-medium text-gray-900 dark:text-white">
+                    {currentRepositoryIndex + 1}
+                  </span>
+                  <span className="text-gray-500 dark:text-gray-400">/</span>
+                  <span className="text-lg font-medium text-gray-900 dark:text-white">
+                    {sortedRepositories.length}
+                  </span>
+                </div>
+                <button
+                  onClick={() => handleRepositoryCarouselNav('next')}
+                  className="p-3 rounded-lg bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors shadow-sm"
+                  title="Next repository"
+                >
+                  <ChevronRight className="h-5 w-5 text-gray-600 dark:text-gray-400" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Enhanced Repository Carousel */}
+          {currentRepository && (
+            <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+              {/* Carousel Content with Animation */}
+              <div className="relative overflow-hidden" style={{ minHeight: 'fit-content' }}>
+                <div 
+                  className="flex transition-transform duration-500 ease-in-out"
+                  style={{ transform: `translateX(-${currentRepositoryIndex * 100}%)` }}
+                >
+                  {sortedRepositories.map(([repositoryName, data], index) => {
+                    const repositoryType = getRepositoryType(repositoryName);
+                    return (
+                      <div key={repositoryName} className="w-full flex-shrink-0 p-6 flex flex-col">
+                        {/* Repository Header */}
+                        <div className="flex items-center space-x-3 mb-4">
+                          <div className="text-blue-600 dark:text-blue-400">
+                            {React.createElement(repositoryType.icon, { className: "h-8 w-8" })}
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+                              {repositoryType.name}
+                            </h3>
+                            <div className="flex items-center space-x-3 text-xs text-gray-600 dark:text-gray-400 mt-1">
+                              <span className="text-gray-500 dark:text-gray-400">{repositoryType.description}</span>
+                            </div>
+                            <div className="flex items-center space-x-3 text-xs text-gray-600 dark:text-gray-400 mt-1">
+                              <span className="bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200 px-2 py-0.5 rounded-full">
+                                #{index + 1} by cost
+                              </span>
+                              <span className="bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200 px-2 py-0.5 rounded-full">
+                                {((data.total_cost / totals.cost) * 100).toFixed(1)}%
+                              </span>
+                              <span className="bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200 px-2 py-0.5 rounded-full">
+                                {data.success_rate}% success
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Cost vs Savings Highlight */}
+                        <div className="text-center mb-4 p-4 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-lg border border-green-200 dark:border-green-700">
+                          <div className="text-xs font-semibold text-green-700 dark:text-green-300 mb-2 uppercase tracking-wide">
+                            Financial Impact
+                          </div>
+                          {(() => {
+                            const devCostSaved = (data.estimated_dev_hours || 0) * (config?.developer_hourly_rate || 75) * (config?.hours_multiplier || 1.0);
+                            const netSavings = devCostSaved - (data.total_cost || 0);
+                            return (
+                              <>
+                                <div className="grid grid-cols-2 gap-3 mb-2">
+                                  <div>
+                                    <div className="text-sm font-semibold text-red-600 dark:text-red-400">Cost</div>
+                                    <div className="text-lg font-bold text-red-700 dark:text-red-300">
+                                      {formatCurrency(data.total_cost)}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div className="text-sm font-semibold text-green-600 dark:text-green-400">Saved</div>
+                                    <div className="text-lg font-bold text-green-700 dark:text-green-300">
+                                      {formatCurrency(devCostSaved)}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="pt-2 border-t border-green-200 dark:border-green-700">
+                                  <div className="text-xs text-green-600 dark:text-green-400 mb-1">Net Savings</div>
+                                  <div className={`text-xl font-bold ${netSavings >= 0 ? 'text-green-800 dark:text-green-200' : 'text-red-800 dark:text-red-200'}`}>
+                                    {formatCurrency(Math.abs(netSavings))} {netSavings >= 0 ? 'saved' : 'loss'}
+                                  </div>
+                                  <div className="text-xs text-green-500 dark:text-green-300 opacity-80">
+                                    ROI: {data.total_cost > 0 ? (((devCostSaved - data.total_cost) / data.total_cost * 100).toFixed(0)) : '∞'}%
+                                  </div>
+                                </div>
+                              </>
+                            );
+                          })()}
+                        </div>
+
+                        {/* Stats Grid */}
+                        <div className="grid grid-cols-2 gap-3 mb-4 flex-1">
+                          <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-3 border border-blue-200 dark:border-blue-700">
+                            <div className="flex items-center justify-between mb-1">
+                              <BarChart3 className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                              <span className="text-xs font-medium text-blue-700 dark:text-blue-300">Operations</span>
+                            </div>
+                            <div className="text-lg font-bold text-blue-800 dark:text-blue-200">
+                              {formatNumber(data.operations_count)}
+                            </div>
+                            <div className="text-xs text-blue-600 dark:text-blue-400">
+                              {data.ops_per_job} ops/job
+                            </div>
+                          </div>
+                          
+                          <div className="bg-purple-50 dark:bg-purple-900/20 rounded-lg p-3 border border-purple-200 dark:border-purple-700">
+                            <div className="flex items-center justify-between mb-1">
+                              <Clock className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+                              <span className="text-xs font-medium text-purple-700 dark:text-purple-300">Dev Hours</span>
+                            </div>
+                            <div className="text-lg font-bold text-purple-800 dark:text-purple-200">
+                              {formatHours(data.estimated_dev_hours)}
+                            </div>
+                            <div className="text-xs text-purple-600 dark:text-purple-400">
+                              {formatHours(data.avg_dev_hours)} avg/op
+                            </div>
+                          </div>
+                          
+                          <div className="bg-orange-50 dark:bg-orange-900/20 rounded-lg p-3 border border-orange-200 dark:border-orange-700">
+                            <div className="flex items-center justify-between mb-1">
+                              <ArrowUp className="h-4 w-4 text-orange-600 dark:text-orange-400" />
+                              <span className="text-xs font-medium text-orange-700 dark:text-orange-300">Jobs</span>
+                            </div>
+                            <div className="text-lg font-bold text-orange-800 dark:text-orange-200">
+                              {formatNumber(data.unique_jobs_count)}
+                            </div>
+                            <div className="text-xs text-orange-600 dark:text-orange-400">
+                              {((data.unique_jobs_count / totals.jobs) * 100).toFixed(1)}% of total
+                            </div>
+                          </div>
+                          
+                          <div className="bg-pink-50 dark:bg-pink-900/20 rounded-lg p-3 border border-pink-200 dark:border-pink-700">
+                            <div className="flex items-center justify-between mb-1">
+                              <Zap className="h-4 w-4 text-pink-600 dark:text-pink-400" />
+                              <span className="text-xs font-medium text-pink-700 dark:text-pink-300">Op Types</span>
+                            </div>
+                            <div className="text-lg font-bold text-pink-800 dark:text-pink-200">
+                              {data.operation_types ? data.operation_types.length : 0}
+                            </div>
+                            <div className="text-xs text-pink-600 dark:text-pink-400">
+                              {data.models_used ? data.models_used.length : 0} models
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Performance Metrics */}
+                        <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 border border-gray-200 dark:border-gray-700">
+                          <div className="flex items-center mb-2">
+                            <TrendingUp className="h-4 w-4 text-gray-600 dark:text-gray-400 mr-2" />
+                            <span className="text-xs font-semibold text-gray-900 dark:text-white">Performance</span>
+                          </div>
+                          <div className="space-y-1 text-xs">
+                            <div className="flex justify-between items-center">
+                              <span className="text-gray-600 dark:text-gray-400">Avg Duration</span>
+                              <span className="font-medium text-gray-900 dark:text-white">
+                                {data.avg_duration ? `${data.avg_duration}s` : 'N/A'}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <span className="text-gray-600 dark:text-gray-400">Cost/operation</span>
+                              <span className="font-medium text-gray-900 dark:text-white">
+                                {formatCurrency(data.cost_per_operation || 0)}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <span className="text-gray-600 dark:text-gray-400">Tokens/op</span>
+                              <span className="font-medium text-gray-900 dark:text-white">
+                                {formatNumber((data.avg_input_tokens || 0) + (data.avg_output_tokens || 0))}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+
       </div>
     );
   };

@@ -1149,6 +1149,26 @@ class DashboardApplication:
                 logger.error(f"Error recalculating metrics: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
         
+        @self.app.get("/api/metrics/operations")
+        async def get_operation_breakdown(db: Session = Depends(get_db)):
+            """Get operation breakdown with cost calculations"""
+            try:
+                breakdown = await self.metrics_service.get_operation_breakdown(db)
+                return APIResponse(data=breakdown, message="Operation breakdown retrieved")
+            except Exception as e:
+                logger.error(f"Error getting operation breakdown: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.get("/api/metrics/repositories")
+        async def get_repository_breakdown(db: Session = Depends(get_db)):
+            """Get repository breakdown with cost calculations"""
+            try:
+                breakdown = await self.metrics_service.get_repository_breakdown(db)
+                return APIResponse(data=breakdown, message="Repository breakdown retrieved")
+            except Exception as e:
+                logger.error(f"Error getting repository breakdown: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
         # Admin endpoints
         @self.app.get("/api/admin/retention/config")
         async def get_retention_config():

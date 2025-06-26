@@ -33,9 +33,8 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expandedJobs, setExpandedJobs] = useState(new Set());
-  const [showFilters, setShowFilters] = useState(false);
   const [selectedFilters, setSelectedFilters] = useState({
-    status: 'all',
+    status: 'running', // Default to running jobs
     jobType: 'all',
     repository: 'all'
   });
@@ -44,9 +43,17 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
   const { showError } = useContext(ToastContext);
   const highlightedJobRef = useRef(null);
   const highlightedOperationRef = useRef(null);
-  const filterJustExpanded = useRef(false);
 
   const jobsPerPage = 10;
+
+  // Available status options for tabs
+  const statusTabs = [
+    { id: 'running', label: 'Running', icon: Play },
+    { id: 'completed', label: 'Completed', icon: CheckCircle },
+    { id: 'failed', label: 'Failed', icon: XCircle },
+    { id: 'cancelled', label: 'Cancelled', icon: AlertTriangle },
+    { id: 'all', label: 'All Jobs', icon: BarChart3 }
+  ];
 
   // Initial data fetch and filter changes
   useEffect(() => {
@@ -88,7 +95,7 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
     }
   }, [jobs]);
 
-  // Listen for external filter events from status cards
+  // Listen for external filter events from status cards (convert to tab selection)
   useEffect(() => {
     const handleStatusFilter = (event) => {
       const { status } = event.detail;
@@ -340,11 +347,6 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
   const startIndex = (currentPage - 1) * jobsPerPage;
   const paginatedJobs = filteredJobs.slice(startIndex, startIndex + jobsPerPage);
 
-  // Reset to page 1 when filters change
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [selectedFilters]);
-
   // Auto-expand job when highlighting and handle navigation
   useEffect(() => {
     if (highlightedJobId && jobs.length > 0) {
@@ -444,39 +446,6 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
     }
   }, [highlightedOperationId, filteredJobs, jobs, currentPage, jobsPerPage]);
 
-  // Helper function to get active filter summary
-  const getActiveFilterSummary = () => {
-    const filters = [];
-    if (selectedFilters.status !== 'all') {
-      filters.push(`Status: ${selectedFilters.status}`);
-    }
-    if (selectedFilters.jobType !== 'all') {
-      filters.push(`Type: ${selectedFilters.jobType}`);
-    }
-    if (selectedFilters.repository !== 'all') {
-      filters.push(`Repo: ${selectedFilters.repository.split('/').pop()}`);
-    }
-    return filters;
-  };
-
-  // Clear all filters function
-  const clearAllFilters = (event) => {
-    event.stopPropagation(); // Prevent filter card from toggling
-    setSelectedFilters({
-      status: 'all',
-      jobType: 'all',
-      repository: 'all'
-    });
-    setCurrentPage(1);
-  };
-
-  // Check if any filters are active
-  const hasActiveFilters = () => {
-    return selectedFilters.status !== 'all' || 
-           selectedFilters.jobType !== 'all' || 
-           selectedFilters.repository !== 'all';
-  };
-
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -494,186 +463,104 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
         icon={BarChart3}
       />
 
-      {/* Filters */}
-      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/10 dark:to-indigo-900/10 rounded-xl border border-blue-200 dark:border-blue-700 shadow-sm max-w-none mx-auto" style={{width: '90%'}}>
-        {/* Filter Header */}
-        <div
-          className="p-5 cursor-pointer hover:bg-blue-100/50 dark:hover:bg-blue-900/20 transition-colors rounded-t-xl"
-          onClick={() => {
-            const wasShowingFilters = showFilters;
-            setShowFilters(!showFilters);
-            // Only set the flag if we're expanding (going from false to true)
-            if (!wasShowingFilters) {
-              filterJustExpanded.current = true;
-              // Reset the flag after animation completes
-              setTimeout(() => {
-                filterJustExpanded.current = false;
-              }, 300);
-            }
-          }}
-        >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <div className="p-2 bg-blue-100 dark:bg-blue-900/30 rounded-lg">
-                <Filter className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-              </div>
-              <div>
-                <h3 className="text-lg font-semibold text-blue-900 dark:text-blue-100">Filter Jobs</h3>
-                <p className="text-sm text-blue-700 dark:text-blue-300">Narrow down results by status, type, or repository</p>
-              </div>
-            </div>
-            
-            <div className="flex items-center space-x-4">
-              {/* Active filter summary */}
-              <div className="flex-1">
-                {(() => {
-                  const activeFilters = getActiveFilterSummary();
-                  if (activeFilters.length === 0) {
-                    return (
-                      <span className="text-sm text-blue-600 dark:text-blue-400 font-medium">
-                        No active filters
-                      </span>
-                    );
-                  }
-                  return (
-                    <div className="flex flex-wrap gap-2 justify-end">
-                      {activeFilters.slice(0, 2).map((filter, index) => (
-                        <span
-                          key={index}
-                          className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-blue-200 text-blue-800 dark:bg-blue-800/40 dark:text-blue-200 border border-blue-300 dark:border-blue-600"
-                        >
-                          {filter}
-                        </span>
-                      ))}
-                      {activeFilters.length > 2 && (
-                        <span className="text-sm text-blue-700 dark:text-blue-300 font-medium">
-                          +{activeFilters.length - 2} more
-                        </span>
-                      )}
-                    </div>
-                  );
-                })()}
-              </div>
-
-              {/* Clear All Filters Button */}
-              {hasActiveFilters() && (
-                <button
-                  onClick={clearAllFilters}
-                  className="px-4 py-2 text-sm text-blue-700 dark:text-blue-300 hover:text-blue-900 dark:hover:text-blue-100 hover:bg-blue-200 dark:hover:bg-blue-800/30 rounded-lg transition-colors flex items-center space-x-2 font-medium border border-blue-300 dark:border-blue-600"
-                  title="Clear all filters"
-                >
-                  <X className="h-4 w-4" />
-                  <span>Clear All</span>
-                </button>
+      {/* Status Tabs Navigation */}
+      <div className="flex space-x-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
+        {statusTabs.map((tab) => {
+          const Icon = tab.icon;
+          const isActive = selectedFilters.status === tab.id;
+          const jobCount = tab.id === 'all' ? jobs.length : jobs.filter(job => job.status === tab.id).length;
+          
+          return (
+            <button
+              key={tab.id}
+              onClick={() => {
+                setSelectedFilters(prev => ({ ...prev, status: tab.id }));
+                setCurrentPage(1);
+              }}
+              className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                isActive
+                  ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
+                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+              }`}
+            >
+              <Icon className="h-4 w-4 mr-2" />
+              {tab.label}
+              {jobCount > 0 && (
+                <span className={`ml-2 px-2 py-0.5 text-xs rounded-full ${
+                  isActive 
+                    ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+                    : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400'
+                }`}>
+                  {jobCount}
+                </span>
               )}
-
-              {/* Chevron */}
-              {showFilters ? (
-                <ChevronUp className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-              ) : (
-                <ChevronDown className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Expandable Filter Content */}
-        {showFilters && (
-          <div className={`border-t border-blue-200 dark:border-blue-700 bg-white/50 dark:bg-gray-800/50 p-6 space-y-6 rounded-b-xl ${filterJustExpanded.current ? 'animate-slideDown' : ''}`}>
-            {/* Status Filter */}
-            <div>
-              <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200 mb-3">
-                Status
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {['all', 'running', 'completed', 'failed', 'cancelled'].map((status) => {
-                  const hasResults = hasResultsForFilter('status', status, selectedFilters);
-                  const isSelected = selectedFilters.status === status;
-                  
-                  return (
-                    <button
-                      key={status}
-                      onClick={() => hasResults && setSelectedFilters(prev => ({ ...prev, status }))}
-                      disabled={!hasResults && !isSelected}
-                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
-                        isSelected
-                          ? 'bg-blue-600 text-white shadow-md scale-105'
-                          : hasResults
-                          ? 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600 hover:border-blue-300 dark:hover:border-blue-500'
-                          : 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 border border-gray-200 dark:border-gray-700 cursor-not-allowed opacity-60'
-                      }`}
-                    >
-                      {status.charAt(0).toUpperCase() + status.slice(1)}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Job Type Filter */}
-            <div>
-              <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200 mb-3">
-                Job Type
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {['all', ...getAllPossibleValues('job_type')].map((type) => {
-                  const hasResults = hasResultsForFilter('job_type', type, selectedFilters);
-                  const isSelected = selectedFilters.jobType === type;
-                  
-                  return (
-                    <button
-                      key={type}
-                      onClick={() => hasResults && setSelectedFilters(prev => ({ ...prev, jobType: type }))}
-                      disabled={!hasResults && !isSelected}
-                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
-                        isSelected
-                          ? 'bg-blue-600 text-white shadow-md scale-105'
-                          : hasResults
-                          ? 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600 hover:border-blue-300 dark:hover:border-blue-500'
-                          : 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 border border-gray-200 dark:border-gray-700 cursor-not-allowed opacity-60'
-                      }`}
-                    >
-                      {type.charAt(0).toUpperCase() + type.slice(1)}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Repository Filter */}
-            {getAllPossibleValues('repository').length > 0 && (
-              <div>
-                <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200 mb-3">
-                  Repository
-                </label>
-                <div className="flex flex-wrap gap-2">
-                  {['all', ...getAllPossibleValues('repository')].map((repo) => {
-                    const hasResults = hasResultsForFilter('repository', repo, selectedFilters);
-                    const isSelected = selectedFilters.repository === repo;
-                    
-                    return (
-                      <button
-                        key={repo}
-                        onClick={() => hasResults && setSelectedFilters(prev => ({ ...prev, repository: repo }))}
-                        disabled={!hasResults && !isSelected}
-                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
-                          isSelected
-                            ? 'bg-blue-600 text-white shadow-md scale-105'
-                            : hasResults
-                            ? 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600 hover:border-blue-300 dark:hover:border-blue-500'
-                            : 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 border border-gray-200 dark:border-gray-700 cursor-not-allowed opacity-60'
-                        }`}
-                      >
-                        {repo === 'all' ? 'All' : repo.split('/').pop()}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+            </button>
+          );
+        })}
       </div>
+
+      {/* Additional Filters */}
+      {(getAllPossibleValues('job_type').length > 0 || getAllPossibleValues('repository').length > 0) && (
+        <div className="flex flex-wrap gap-4 items-center bg-gray-50 dark:bg-gray-800/50 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
+          {/* Job Type Filter */}
+          {getAllPossibleValues('job_type').length > 0 && (
+            <div className="flex items-center space-x-2">
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Type:</label>
+              <select
+                value={selectedFilters.jobType}
+                onChange={(e) => {
+                  setSelectedFilters(prev => ({ ...prev, jobType: e.target.value }));
+                  setCurrentPage(1);
+                }}
+                className="px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="all">All Types</option>
+                {getAllPossibleValues('job_type').map(type => (
+                  <option key={type} value={type}>
+                    {type.charAt(0).toUpperCase() + type.slice(1)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Repository Filter */}
+          {getAllPossibleValues('repository').length > 0 && (
+            <div className="flex items-center space-x-2">
+              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Repository:</label>
+              <select
+                value={selectedFilters.repository}
+                onChange={(e) => {
+                  setSelectedFilters(prev => ({ ...prev, repository: e.target.value }));
+                  setCurrentPage(1);
+                }}
+                className="px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="all">All Repositories</option>
+                {getAllPossibleValues('repository').map(repo => (
+                  <option key={repo} value={repo}>
+                    {repo.split('/').pop()}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Clear Filters Button */}
+          {(selectedFilters.jobType !== 'all' || selectedFilters.repository !== 'all') && (
+            <button
+              onClick={() => {
+                setSelectedFilters(prev => ({ ...prev, jobType: 'all', repository: 'all' }));
+                setCurrentPage(1);
+              }}
+              className="flex items-center px-3 py-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-700 rounded-md transition-colors"
+            >
+              <X className="h-3 w-3 mr-1" />
+              Clear Filters
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Jobs List */}
       <div className="space-y-4">

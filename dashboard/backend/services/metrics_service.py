@@ -239,6 +239,255 @@ class MetricsService:
             db.rollback()
             raise
     
+    async def get_operation_breakdown(self, db: Session) -> Dict[str, Any]:
+        """Get operation breakdown with cost calculations"""
+        try:
+            # Get config for cost calculations
+            config = await self.get_or_create_config(db)
+            
+            # Query operations with metrics data
+            operations = db.query(OperationDB).filter(
+                (OperationDB.model_used.is_not(None)) |
+                (OperationDB.input_tokens.is_not(None)) |
+                (OperationDB.output_tokens.is_not(None)) |
+                (OperationDB.estimated_dev_hours_saved.is_not(None))
+            ).all()
+            
+            # Aggregate by operation type
+            operation_breakdown = {}
+            total_cost = 0.0
+            total_operations = 0
+            total_input_tokens = 0
+            total_output_tokens = 0
+            total_dev_hours = 0.0
+            
+            for operation in operations:
+                op_type = operation.operation_type or "unknown"
+                input_tokens = operation.input_tokens or 0
+                output_tokens = operation.output_tokens or 0
+                estimated_dev_hours = operation.estimated_dev_hours_saved or 0.0
+                model_used = operation.model_used
+                
+                # Calculate operation cost
+                operation_cost = 0.0
+                if model_used and (input_tokens > 0 or output_tokens > 0):
+                    model_costs = config.model_costs.get(model_used, self.default_model_costs.get(model_used, {'input': 0.01, 'output': 0.03}))
+                    input_cost = (input_tokens / 1000) * model_costs.get('input', 0.01)
+                    output_cost = (output_tokens / 1000) * model_costs.get('output', 0.03)
+                    operation_cost = input_cost + output_cost
+                
+                # Initialize operation type if not exists
+                if op_type not in operation_breakdown:
+                    operation_breakdown[op_type] = {
+                        'operations_count': 0,
+                        'input_tokens': 0,
+                        'output_tokens': 0,
+                        'estimated_dev_hours': 0.0,
+                        'total_cost': 0.0,
+                        'avg_duration': 0.0,
+                        'success_rate': 0.0,
+                        'total_duration': 0.0,
+                        'successful_operations': 0,
+                        'models_used': set()
+                    }
+                
+                # Update breakdown
+                operation_breakdown[op_type]['operations_count'] += 1
+                operation_breakdown[op_type]['input_tokens'] += input_tokens
+                operation_breakdown[op_type]['output_tokens'] += output_tokens
+                operation_breakdown[op_type]['estimated_dev_hours'] += estimated_dev_hours
+                operation_breakdown[op_type]['total_cost'] += operation_cost
+                
+                # Track duration and success
+                if operation.duration:
+                    operation_breakdown[op_type]['total_duration'] += operation.duration
+                
+                if operation.status in ['completed', 'published']:
+                    operation_breakdown[op_type]['successful_operations'] += 1
+                
+                if model_used:
+                    operation_breakdown[op_type]['models_used'].add(model_used)
+                
+                # Update totals
+                total_operations += 1
+                total_input_tokens += input_tokens
+                total_output_tokens += output_tokens
+                total_dev_hours += estimated_dev_hours
+                total_cost += operation_cost
+            
+            # Calculate derived metrics for each operation type
+            for op_type, data in operation_breakdown.items():
+                # Convert set to list for JSON serialization
+                data['models_used'] = list(data['models_used'])
+                
+                # Calculate averages
+                ops_count = data['operations_count']
+                if ops_count > 0:
+                    data['avg_duration'] = round(data['total_duration'] / ops_count, 2) if data['total_duration'] > 0 else 0.0
+                    data['success_rate'] = round((data['successful_operations'] / ops_count) * 100, 1)
+                    data['cost_per_operation'] = round(data['total_cost'] / ops_count, 4)
+                    data['avg_input_tokens'] = round(data['input_tokens'] / ops_count, 0)
+                    data['avg_output_tokens'] = round(data['output_tokens'] / ops_count, 0)
+                    data['avg_dev_hours'] = round(data['estimated_dev_hours'] / ops_count, 3)
+                else:
+                    data['cost_per_operation'] = 0.0
+                    data['avg_input_tokens'] = 0
+                    data['avg_output_tokens'] = 0
+                    data['avg_dev_hours'] = 0.0
+                
+                # Round cost to 4 decimal places
+                data['total_cost'] = round(data['total_cost'], 4)
+                
+                # Remove helper fields
+                del data['total_duration']
+                del data['successful_operations']
+            
+            return {
+                'operation_breakdown': operation_breakdown,
+                'totals': {
+                    'total_operations': total_operations,
+                    'total_input_tokens': total_input_tokens,
+                    'total_output_tokens': total_output_tokens,
+                    'total_estimated_dev_hours': round(total_dev_hours, 2),
+                    'total_cost': round(total_cost, 2)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting operation breakdown: {e}")
+            raise
+
+    async def get_repository_breakdown(self, db: Session) -> Dict[str, Any]:
+        """Get repository breakdown with cost calculations"""
+        try:
+            # Get config for cost calculations
+            config = await self.get_or_create_config(db)
+            
+            # Query operations with metrics data
+            operations = db.query(OperationDB).filter(
+                (OperationDB.model_used.is_not(None)) |
+                (OperationDB.input_tokens.is_not(None)) |
+                (OperationDB.output_tokens.is_not(None)) |
+                (OperationDB.estimated_dev_hours_saved.is_not(None))
+            ).all()
+            
+            # Aggregate by repository
+            repository_breakdown = {}
+            total_cost = 0.0
+            total_operations = 0
+            total_input_tokens = 0
+            total_output_tokens = 0
+            total_dev_hours = 0.0
+            
+            for operation in operations:
+                repo = operation.repo or "unknown"
+                input_tokens = operation.input_tokens or 0
+                output_tokens = operation.output_tokens or 0
+                estimated_dev_hours = operation.estimated_dev_hours_saved or 0.0
+                model_used = operation.model_used
+                
+                # Calculate operation cost
+                operation_cost = 0.0
+                if model_used and (input_tokens > 0 or output_tokens > 0):
+                    model_costs = config.model_costs.get(model_used, self.default_model_costs.get(model_used, {'input': 0.01, 'output': 0.03}))
+                    input_cost = (input_tokens / 1000) * model_costs.get('input', 0.01)
+                    output_cost = (output_tokens / 1000) * model_costs.get('output', 0.03)
+                    operation_cost = input_cost + output_cost
+                
+                # Initialize repository if not exists
+                if repo not in repository_breakdown:
+                    repository_breakdown[repo] = {
+                        'operations_count': 0,
+                        'input_tokens': 0,
+                        'output_tokens': 0,
+                        'estimated_dev_hours': 0.0,
+                        'total_cost': 0.0,
+                        'avg_duration': 0.0,
+                        'success_rate': 0.0,
+                        'total_duration': 0.0,
+                        'successful_operations': 0,
+                        'operation_types': set(),
+                        'models_used': set(),
+                        'unique_jobs': set()
+                    }
+                
+                # Update breakdown
+                repository_breakdown[repo]['operations_count'] += 1
+                repository_breakdown[repo]['input_tokens'] += input_tokens
+                repository_breakdown[repo]['output_tokens'] += output_tokens
+                repository_breakdown[repo]['estimated_dev_hours'] += estimated_dev_hours
+                repository_breakdown[repo]['total_cost'] += operation_cost
+                
+                # Track duration and success
+                if operation.duration:
+                    repository_breakdown[repo]['total_duration'] += operation.duration
+                
+                if operation.status in ['completed', 'published']:
+                    repository_breakdown[repo]['successful_operations'] += 1
+                
+                if operation.operation_type:
+                    repository_breakdown[repo]['operation_types'].add(operation.operation_type)
+                
+                if model_used:
+                    repository_breakdown[repo]['models_used'].add(model_used)
+                
+                if operation.job_id:
+                    repository_breakdown[repo]['unique_jobs'].add(operation.job_id)
+                
+                # Update totals
+                total_operations += 1
+                total_input_tokens += input_tokens
+                total_output_tokens += output_tokens
+                total_dev_hours += estimated_dev_hours
+                total_cost += operation_cost
+            
+            # Calculate derived metrics for each repository
+            for repo, data in repository_breakdown.items():
+                # Convert sets to lists for JSON serialization
+                data['operation_types'] = list(data['operation_types'])
+                data['models_used'] = list(data['models_used'])
+                data['unique_jobs_count'] = len(data['unique_jobs'])
+                del data['unique_jobs']  # Remove the set itself
+                
+                # Calculate averages
+                ops_count = data['operations_count']
+                if ops_count > 0:
+                    data['avg_duration'] = round(data['total_duration'] / ops_count, 2) if data['total_duration'] > 0 else 0.0
+                    data['success_rate'] = round((data['successful_operations'] / ops_count) * 100, 1)
+                    data['cost_per_operation'] = round(data['total_cost'] / ops_count, 4)
+                    data['avg_input_tokens'] = round(data['input_tokens'] / ops_count, 0)
+                    data['avg_output_tokens'] = round(data['output_tokens'] / ops_count, 0)
+                    data['avg_dev_hours'] = round(data['estimated_dev_hours'] / ops_count, 3)
+                    data['ops_per_job'] = round(ops_count / max(data['unique_jobs_count'], 1), 1)
+                else:
+                    data['cost_per_operation'] = 0.0
+                    data['avg_input_tokens'] = 0
+                    data['avg_output_tokens'] = 0
+                    data['avg_dev_hours'] = 0.0
+                    data['ops_per_job'] = 0.0
+                
+                # Round cost to 4 decimal places
+                data['total_cost'] = round(data['total_cost'], 4)
+                
+                # Remove helper fields
+                del data['total_duration']
+                del data['successful_operations']
+            
+            return {
+                'repository_breakdown': repository_breakdown,
+                'totals': {
+                    'total_operations': total_operations,
+                    'total_input_tokens': total_input_tokens,
+                    'total_output_tokens': total_output_tokens,
+                    'total_estimated_dev_hours': round(total_dev_hours, 2),
+                    'total_cost': round(total_cost, 2)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting repository breakdown: {e}")
+            raise
+
     async def get_metrics_summary(self, db: Session) -> MetricsSummary:
         """Get complete metrics summary with cost calculations"""
         try:
