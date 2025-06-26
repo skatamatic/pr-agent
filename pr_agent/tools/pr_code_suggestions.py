@@ -30,6 +30,14 @@ from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.pr_description import insert_br_after_x_chars
 
+# Dashboard integration imports
+try:
+    from pr_agent.log.job_context import operation_context, OperationType, update_operation_ai_metrics
+    DASHBOARD_INTEGRATION_AVAILABLE = True
+except ImportError:
+    DASHBOARD_INTEGRATION_AVAILABLE = False
+    get_logger().debug("Dashboard integration not available for PR Code Suggestions tool")
+
 
 class PRCodeSuggestions:
     def __init__(self, pr_url: str, cli_mode=False, args: list = None,
@@ -102,6 +110,48 @@ class PRCodeSuggestions:
         self.progress_response = None
 
     async def run(self):
+        # Dashboard integration - try with tracking first, fallback to normal execution
+        if DASHBOARD_INTEGRATION_AVAILABLE:
+            try:
+                with operation_context(
+                    operation_type=OperationType.GENERATING_SUGGESTIONS,
+                    command="improve",
+                    repository_url=self.pr_url
+                ) as operation_id:
+                    return await self._run_with_tracking(operation_id)
+            except Exception as e:
+                get_logger().warning(f"Dashboard operation context failed, continuing without tracking: {e}")
+                # Fall through to execute without tracking
+        
+        return await self._run_without_tracking()
+    
+    async def _run_with_tracking(self, operation_id: str):
+        """Run code suggestions with dashboard tracking"""
+        try:
+            # Update operation status to processing
+            from pr_agent.log.job_context import update_operation_status
+            update_operation_status("processing")
+            
+            result = await self._run_without_tracking()
+            
+            # Update operation status based on result
+            update_operation_status("completed", result_data={
+                "suggestions_count": len(result.get("code_suggestions", [])) if result else 0,
+                "pr_url": self.pr_url,
+                "suggestions_generated": result is not None
+            })
+                
+            return result
+        except Exception as e:
+            get_logger().error(f"PR code suggestions failed: {e}")
+            try:
+                from pr_agent.log.job_context import update_operation_status
+                update_operation_status("failed", error_details=str(e))
+            except Exception as status_error:
+                get_logger().debug(f"Failed to update operation status: {status_error}")
+            raise
+
+    async def _run_without_tracking(self):
         try:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping code suggestions")
@@ -404,8 +454,95 @@ class PRCodeSuggestions:
         system_prompt = environment.from_string(self.pr_code_suggestions_prompt_system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_code_suggestions_prompt.user).render(variables)
         
-        response, finish_reason = await self.ai_handler.chat_completion(
-            model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+        # Track AI metrics for dashboard
+        ai_metrics_data = None
+        if DASHBOARD_INTEGRATION_AVAILABLE:
+            try:
+                prompt_tokens = self.token_handler.count_tokens(system_prompt + user_prompt)
+                ai_metrics_data = {
+                    'model_used': model,
+                    'prompt_tokens': prompt_tokens,
+                    'prompt_type': 'code_suggestions'
+                }
+            except Exception as e:
+                get_logger().debug(f"Failed to prepare AI metrics: {e}")
+        
+        # Track AI metrics for dashboard (error resilient)
+        from pr_agent.algo.token_handler import TokenUsageTracker
+        
+        token_tracker = TokenUsageTracker()
+        
+        try:
+            response, finish_reason, token_usage = await self.ai_handler.chat_completion(
+                model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+            
+            # Track token usage from successful call
+            token_tracker.add_usage(token_usage, call_failed=False)
+            
+            # Update AI metrics with response data
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                try:
+                    totals = token_tracker.get_totals()
+                    input_tokens = totals['input_tokens']
+                    output_tokens = totals['output_tokens']
+                    
+                    # Use accurate token counts if available, otherwise estimate
+                    if not token_tracker.has_usage():
+                        get_logger().warning("No accurate token usage available, falling back to estimation")
+                        # Fallback to tiktoken estimation
+                        input_tokens = self.token_handler.count_tokens(system_prompt + user_prompt)
+                        output_tokens = self.token_handler.count_tokens(response)
+                    
+                    # Estimate developer time saved for code suggestions using AI analysis
+                    files_count = len(self.git_provider.get_files()) if hasattr(self, 'git_provider') else 1
+                    try:
+                        dev_hours_saved = await self._estimate_suggestions_dev_hours_saved_ai(
+                            model=model,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            files_count=files_count,
+                            diff=patches_diff,
+                            suggestions_content=response,
+                            suggestions_count=len(data.get("code_suggestions", []))
+                        )
+                    except Exception as e:
+                        get_logger().debug(f"AI time estimation failed, using fallback: {e}")
+                        dev_hours_saved = self._estimate_suggestions_dev_hours_saved(files_count, input_tokens + output_tokens, model)
+                    
+                    # Update AI metrics
+                    update_operation_ai_metrics(
+                        model_used=model,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        estimated_dev_hours_saved=dev_hours_saved
+                    )
+                    
+                    get_logger().info(f"AI metrics updated - Input: {input_tokens}, Output: {output_tokens}, "
+                                    f"Calls: {totals['call_count']}, Failed: {totals['failed_calls']}")
+                    
+                except Exception as e:
+                    get_logger().debug(f"Failed to update AI metrics: {e}")
+                    
+        except Exception as e:
+            # Track failed AI call
+            token_tracker.add_usage(None, call_failed=True)
+            
+            # Track failed AI call if dashboard is available
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                try:
+                    # Estimate tokens for failed call
+                    input_tokens = self.token_handler.count_tokens(system_prompt + user_prompt)
+                    
+                    update_operation_ai_metrics(
+                        model_used=model,
+                        input_tokens=input_tokens,
+                        output_tokens=0,
+                        estimated_dev_hours_saved=0.0
+                    )
+                except:
+                    pass  # Ignore dashboard errors during error handling
+            raise
+        
         if not get_settings().config.publish_output:
             get_settings().system_prompt = system_prompt
             get_settings().user_prompt = user_prompt
@@ -432,6 +569,103 @@ class PRCodeSuggestions:
                 suggestion["score_why"] = ""
 
         return data
+
+    async def _estimate_suggestions_dev_hours_saved_ai(self, model: str, input_tokens: int = None, 
+                                                     output_tokens: int = None, files_count: int = 0,
+                                                     diff: str = None, suggestions_content: str = None,
+                                                     suggestions_count: int = 0) -> float:
+        """
+        Estimate developer hours saved using AI-powered analysis of the code suggestions
+        """
+        try:
+            if not diff or not suggestions_content:
+                # Fall back to heuristic if we don't have the necessary data
+                return self._estimate_suggestions_dev_hours_saved(files_count, input_tokens + output_tokens, model)
+            
+            from pr_agent.algo.dev_time_estimator import DevTimeEstimator
+            
+            estimator = DevTimeEstimator(self.ai_handler, self.token_handler)
+            
+            # Extract line counts from diff
+            lines_added = 0
+            lines_deleted = 0
+            if diff:
+                for line in diff.split('\n'):
+                    if line.startswith('+') and not line.startswith('+++'):
+                        lines_added += 1
+                    elif line.startswith('-') and not line.startswith('---'):
+                        lines_deleted += 1
+            
+            estimation_result = await estimator.estimate_suggestions_time_savings(
+                diff=diff,
+                ai_suggestions_content=suggestions_content,
+                language=self.main_language,
+                files_changed=files_count,
+                lines_added=lines_added,
+                lines_deleted=lines_deleted,
+                suggestions_count=suggestions_count,
+                model=model
+            )
+            
+            if estimation_result and 'final_assessment' in estimation_result:
+                estimated_hours = estimation_result['final_assessment'].get('total_developer_hours_saved', 1.0)
+                confidence = estimation_result['final_assessment'].get('confidence_level', 'medium')
+                
+                get_logger().info(f"AI-powered suggestions time estimation: {estimated_hours} hours (confidence: {confidence})", 
+                                artifacts={'estimation_details': estimation_result})
+                return float(estimated_hours)
+            else:
+                # Fall back to heuristic if AI estimation fails
+                return self._estimate_suggestions_dev_hours_saved(files_count, input_tokens + output_tokens, model)
+            
+        except Exception as e:
+            get_logger().debug(f"AI time estimation failed: {e}")
+            return self._estimate_suggestions_dev_hours_saved(files_count, input_tokens + output_tokens, model)
+
+    def _estimate_suggestions_dev_hours_saved(self, files_count: int, total_tokens: int, model: str) -> float:
+        """Estimate developer hours saved for code suggestions based on complexity (heuristic fallback)"""
+        try:
+            # Base time for code suggestions (finding and implementing improvements)
+            base_hours = 1.0
+            
+            # Scale by file count - more files means more potential improvements
+            if files_count > 50:
+                file_multiplier = 4.0
+            elif files_count > 20:
+                file_multiplier = 2.5
+            elif files_count > 10:
+                file_multiplier = 1.5
+            elif files_count > 5:
+                file_multiplier = 1.2
+            else:
+                file_multiplier = 1.0
+            
+            # Scale by token complexity - more tokens indicate more complex analysis
+            if total_tokens > 8000:
+                token_multiplier = 2.0
+            elif total_tokens > 4000:
+                token_multiplier = 1.5
+            elif total_tokens > 2000:
+                token_multiplier = 1.2
+            else:
+                token_multiplier = 1.0
+            
+            # Model quality adjustment
+            if 'gpt-4' in model.lower() or 'claude-3' in model.lower():
+                model_multiplier = 1.3  # Higher quality suggestions
+            elif 'gpt-3.5' in model.lower():
+                model_multiplier = 1.0
+            else:
+                model_multiplier = 0.8  # Conservative for other models
+            
+            estimated_hours = base_hours * file_multiplier * token_multiplier * model_multiplier
+            
+            # Cap at reasonable bounds (15 minutes to 8 hours)
+            return max(0.25, min(8.0, round(estimated_hours, 2)))
+            
+        except Exception as e:
+            get_logger().debug(f"Error estimating dev hours for suggestions: {e}")
+            return 1.0  # Default fallback
 
     async def analyze_self_reflection_response(self, data, response_reflect):
         response_reflect_yaml = load_yaml(response_reflect)
@@ -957,10 +1191,69 @@ class PRCodeSuggestions:
                 user_prompt_reflect = environment.from_string(
                     get_settings().pr_code_suggestions_reflect_prompt.user).render(variables)
 
+            # Track AI metrics for self-reflection
+            from pr_agent.algo.token_handler import TokenUsageTracker
+            
+            reflection_token_tracker = TokenUsageTracker()
+            
             with get_logger().contextualize(command="self_reflect_on_suggestions"):
-                response_reflect, finish_reason_reflect = await self.ai_handler.chat_completion(model=model,
-                                                                                                system=system_prompt_reflect,
-                                                                                                user=user_prompt_reflect)
+                try:
+                    response_reflect, finish_reason_reflect, token_usage = await self.ai_handler.chat_completion(
+                        model=model,
+                        system=system_prompt_reflect,
+                        user=user_prompt_reflect
+                    )
+                    
+                    # Track token usage from successful reflection call
+                    reflection_token_tracker.add_usage(token_usage, call_failed=False)
+                    
+                    # Update AI metrics with reflection response data
+                    if DASHBOARD_INTEGRATION_AVAILABLE:
+                        try:
+                            totals = reflection_token_tracker.get_totals()
+                            input_tokens = totals['input_tokens']
+                            output_tokens = totals['output_tokens']
+                            
+                            # Use accurate token counts if available, otherwise estimate
+                            if not reflection_token_tracker.has_usage():
+                                get_logger().warning("No accurate reflection token usage available, falling back to estimation")
+                                # Fallback to tiktoken estimation
+                                input_tokens = self.token_handler.count_tokens(system_prompt_reflect + user_prompt_reflect)
+                                output_tokens = self.token_handler.count_tokens(response_reflect)
+                            
+                            # Update AI metrics for reflection
+                            update_operation_ai_metrics(
+                                model_used=model,
+                                input_tokens=input_tokens,
+                                output_tokens=output_tokens,
+                                estimated_dev_hours_saved=0.1  # Small amount for reflection
+                            )
+                            
+                            get_logger().info(f"Reflection AI metrics updated - Input: {input_tokens}, Output: {output_tokens}, "
+                                            f"Calls: {totals['call_count']}, Failed: {totals['failed_calls']}")
+                            
+                        except Exception as e:
+                            get_logger().debug(f"Failed to update reflection AI metrics: {e}")
+                            
+                except Exception as e:
+                    # Track failed reflection call
+                    reflection_token_tracker.add_usage(None, call_failed=True)
+                    
+                    # Track failed reflection call if dashboard is available
+                    if DASHBOARD_INTEGRATION_AVAILABLE:
+                        try:
+                            # Estimate tokens for failed reflection call
+                            input_tokens = self.token_handler.count_tokens(system_prompt_reflect + user_prompt_reflect)
+                            
+                            update_operation_ai_metrics(
+                                model_used=model,
+                                input_tokens=input_tokens,
+                                output_tokens=0,
+                                estimated_dev_hours_saved=0.0
+                            )
+                        except:
+                            pass  # Ignore dashboard errors during error handling
+                    raise
         except Exception as e:
             get_logger().info(f"Could not reflect on suggestions, error: {e}")
             return ""

@@ -98,7 +98,26 @@ class LangChainOpenAIHandler(BaseAiHandler):
                 resp = await llm.ainvoke(input=messages)
 
             finish_reason = "completed"
-            return resp.content, finish_reason
+            
+            # Extract token usage information if available
+            token_usage = None
+            if hasattr(resp, 'usage_metadata') and resp.usage_metadata:
+                usage = resp.usage_metadata
+                token_usage = {
+                    'input_tokens': getattr(usage, 'input_tokens', 0),
+                    'output_tokens': getattr(usage, 'output_tokens', 0)
+                }
+            elif hasattr(resp, 'response_metadata') and 'token_usage' in resp.response_metadata:
+                usage = resp.response_metadata['token_usage']
+                token_usage = {
+                    'input_tokens': usage.get('prompt_tokens', 0),
+                    'output_tokens': usage.get('completion_tokens', 0)
+                }
+            
+            if token_usage:
+                get_logger().debug(f"Token usage: {token_usage}")
+            
+            return resp.content, finish_reason, token_usage
 
         except openai.RateLimitError as e:
             get_logger().error(f"Rate limit error during LLM inference: {e}")

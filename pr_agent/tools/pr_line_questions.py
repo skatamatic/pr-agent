@@ -161,6 +161,6 @@ class PR_LineQuestions:
             print(f"\nSystem prompt:\n{system_prompt}")
             print(f"\nUser prompt:\n{user_prompt}")
 
-        response, finish_reason = await self.ai_handler.chat_completion(
+        response, finish_reason, token_usage = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
         return response

@@ -252,18 +252,44 @@ class LogService:
             module=log_data.get('module'),
             function=log_data.get('function'),
             line=log_data.get('line'),
+            
+            # FIXED: Set job_id and operation_id fields
+            job_id=log_data.get('job_id'),
+            operation_id=log_data.get('operation_id'),
+            
+            # Context information
             pr_url=log_data.get('pr_url'),
             command=log_data.get('command'),
+            installation_id=log_data.get('installation_id'),
             repo=log_data.get('repo'),
+            sender=log_data.get('sender'),
+            request_id=log_data.get('request_id'),
+            sub_feature=log_data.get('sub_feature'),
+            
+            # Status and analytics
             status=log_data.get('status'),
+            analytics=log_data.get('analytics', False),
+            
+            # Artifacts and error info
             artifact=log_data.get('artifact'),
+            artifacts=log_data.get('artifacts'),
             error=log_data.get('error'),
+            
+            # Application metadata
+            app_name=log_data.get('app_name'),
+            build_number=log_data.get('build_number'),
+            git_provider=log_data.get('git_provider'),
             received_at=datetime.utcnow().isoformat()
         )
         
-        db.add(log_entry)
-        db.commit()
-        db.refresh(log_entry)
+        try:
+            db.add(log_entry)
+            db.flush()  # Flush to get the ID without committing
+            db.refresh(log_entry)  # Refresh to get the generated ID
+            db.commit()  # Now commit the transaction
+        except Exception as e:
+            db.rollback()
+            raise e
         
         # Process log with registered processors
         for processor in self.log_processors:

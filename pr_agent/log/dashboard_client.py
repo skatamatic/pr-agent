@@ -1,0 +1,294 @@
+"""
+Dashboard Client - Interface for PR-Agent to communicate with the Dashboard API
+Provides simple methods for job and operation management
+"""
+import asyncio
+import json
+from typing import Dict, Any, Optional, List
+from datetime import datetime
+
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None
+
+try:
+    from loguru import logger
+except ImportError:
+    logger = None
+
+from pr_agent.config_loader import get_settings
+
+
+class DashboardClient:
+    """Client for communicating with the PR-Agent Dashboard API"""
+    
+    def __init__(self, dashboard_url: Optional[str] = None, api_key: Optional[str] = None):
+        self.dashboard_url = dashboard_url or get_settings().get("DASHBOARD.URL")
+        self.api_key = api_key or get_settings().get("DASHBOARD.API_KEY")
+        self.session = None
+        self._enabled = bool(self.dashboard_url)
+        
+    async def _get_session(self):
+        """Get or create aiohttp session"""
+        if not self.session:
+            if aiohttp is None:
+                raise ImportError("aiohttp is required for dashboard client")
+            self.session = aiohttp.ClientSession()
+        return self.session
+    
+    async def _make_request(self, method: str, endpoint: str, data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Make HTTP request to dashboard API"""
+        if not self._enabled:
+            return None
+            
+        try:
+            session = await self._get_session()
+            
+            headers = {"Content-Type": "application/json"}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            
+            url = f"{self.dashboard_url.rstrip('/')}/{endpoint.lstrip('/')}"
+            
+            async with session.request(
+                method,
+                url,
+                json=data,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    if logger:
+                        logger.warning(f"Dashboard API request failed: {response.status} - {endpoint}")
+                    return None
+                    
+        except Exception as e:
+            if logger:
+                logger.warning(f"Dashboard API request error: {e}")
+            return None
+    
+    async def create_job(self, 
+                        job_type: str,
+                        source: str,
+                        repository: Optional[str] = None,
+                        pr_url: Optional[str] = None,
+                        trigger_user: Optional[str] = None,
+                        trigger_event: Optional[str] = None,
+                        installation_id: Optional[str] = None,
+                        request_id: Optional[str] = None,
+                        webhook_payload: Optional[Dict[str, Any]] = None,
+                        job_id: Optional[str] = None) -> Optional[str]:
+        """Create a new job and return its job_id"""
+        job_data = {
+            'job_type': job_type,
+            'source': source,
+            'repository': repository,
+            'pr_url': pr_url,
+            'trigger_user': trigger_user,
+            'trigger_event': trigger_event,
+            'installation_id': installation_id,
+            'request_id': request_id,
+            'webhook_payload': webhook_payload,
+            'job_id': job_id
+        }
+        
+        # Remove None values
+        job_data = {k: v for k, v in job_data.items() if v is not None}
+        
+        response = await self._make_request('POST', '/api/jobs/create', job_data)
+        if response and response.get('data'):
+            return response['data'].get('job_id')
+        return None
+    
+    async def update_job_status(self, 
+                               job_id: str, 
+                               status: str, 
+                               error_details: Optional[str] = None,
+                               result_summary: Optional[Dict[str, Any]] = None) -> bool:
+        """Update job status"""
+        status_data = {
+            'status': status,
+            'error_details': error_details,
+            'result_summary': result_summary
+        }
+        
+        # Remove None values
+        status_data = {k: v for k, v in status_data.items() if v is not None}
+        
+        response = await self._make_request('POST', f'/api/jobs/{job_id}/status', status_data)
+        return response is not None
+    
+    async def create_operation(self,
+                              job_id: str,
+                              operation_type: str,
+                              command: Optional[str] = None,
+                              repo: Optional[str] = None,
+                              pr_url: Optional[str] = None,
+                              installation_id: Optional[str] = None,
+                              sender: Optional[str] = None,
+                              request_id: Optional[str] = None,
+                              operation_id: Optional[str] = None) -> Optional[str]:
+        """Create a new operation and return its operation_id"""
+        operation_data = {
+            'job_id': job_id,
+            'operation_type': operation_type,
+            'command': command,
+            'repo': repo,
+            'pr_url': pr_url,
+            'installation_id': installation_id,
+            'sender': sender,
+            'request_id': request_id,
+            'operation_id': operation_id
+        }
+        
+        # Remove None values
+        operation_data = {k: v for k, v in operation_data.items() if v is not None}
+        
+        response = await self._make_request('POST', '/api/operations/create', operation_data)
+        if response and response.get('data'):
+            return response['data'].get('operation_id')
+        return None
+    
+    async def update_operation_status(self,
+                                     operation_id: str,
+                                     status: str,
+                                     error_details: Optional[str] = None,
+                                     result_data: Optional[Dict[str, Any]] = None) -> bool:
+        """Update operation status"""
+        status_data = {
+            'status': status,
+            'error_details': error_details,
+            'result_data': result_data
+        }
+        
+        # Remove None values
+        status_data = {k: v for k, v in status_data.items() if v is not None}
+        
+        response = await self._make_request('POST', f'/api/operations/{operation_id}/status', status_data)
+        return response is not None
+    
+    async def update_operation_ai_metrics(self,
+                                         operation_id: str,
+                                         model_used: Optional[str] = None,
+                                         input_tokens: Optional[int] = None,
+                                         output_tokens: Optional[int] = None,
+                                         estimated_dev_hours_saved: Optional[float] = None) -> bool:
+        """Update operation AI/LLM metrics"""
+        metrics_data = {
+            'model_used': model_used,
+            'input_tokens': input_tokens,
+            'output_tokens': output_tokens,
+            'estimated_dev_hours_saved': estimated_dev_hours_saved
+        }
+        
+        # Remove None values
+        metrics_data = {k: v for k, v in metrics_data.items() if v is not None}
+        
+        if not metrics_data:
+            return True  # Nothing to update
+        
+        response = await self._make_request('POST', f'/api/operations/{operation_id}/ai-metrics', metrics_data)
+        return response is not None
+    
+    async def send_log(self, log_data: Dict[str, Any]) -> bool:
+        """Send a single log entry to the dashboard"""
+        if not self._enabled:
+            return False
+            
+        response = await self._make_request('POST', '/logs/immediate', log_data)
+        return response is not None
+    
+    async def send_logs_batch(self, logs: List[Dict[str, Any]]) -> bool:
+        """Send a batch of log entries to the dashboard"""
+        if not self._enabled or not logs:
+            return False
+            
+        batch_data = {'logs': logs}
+        response = await self._make_request('POST', '/logs/batch', batch_data)
+        return response is not None
+    
+    async def close(self):
+        """Close the client session"""
+        if self.session:
+            await self.session.close()
+            self.session = None
+
+
+# Global dashboard client instance
+_dashboard_client = None
+
+# Check if dashboard integration is available
+try:
+    DASHBOARD_AVAILABLE = True
+except Exception:
+    DASHBOARD_AVAILABLE = False
+
+def get_dashboard_client() -> Optional[DashboardClient]:
+    """Get the global dashboard client instance"""
+    return _dashboard_client
+
+def setup_dashboard_client(dashboard_url: Optional[str] = None, api_key: Optional[str] = None) -> Optional[DashboardClient]:
+    """Setup the global dashboard client with error resilience"""
+    global _dashboard_client
+    
+    if _dashboard_client:
+        return _dashboard_client
+    
+    try:
+        _dashboard_client = DashboardClient(dashboard_url, api_key)
+        
+        # Test if dashboard integration is enabled
+        if _dashboard_client._enabled:
+            if logger:
+                logger.info(f"Dashboard client initialized - URL: {_dashboard_client.dashboard_url}")
+        else:
+            if logger:
+                logger.info("Dashboard integration disabled - no URL configured")
+                
+        return _dashboard_client
+        
+    except Exception as e:
+        if logger:
+            logger.warning(f"Failed to setup dashboard client: {e}")
+        # Create a disabled client to prevent None checks everywhere
+        _dashboard_client = DashboardClient(None, None)
+        return _dashboard_client
+
+# Convenience functions for common operations
+async def create_job_from_context(job_type: str, source: str, **kwargs) -> Optional[str]:
+    """Create a job using the global client"""
+    client = get_dashboard_client()
+    if client:
+        return await client.create_job(job_type, source, **kwargs)
+    return None
+
+async def update_job_status_from_context(job_id: str, status: str, **kwargs) -> bool:
+    """Update job status using the global client"""
+    client = get_dashboard_client()
+    if client:
+        return await client.update_job_status(job_id, status, **kwargs)
+    return False
+
+async def create_operation_from_context(job_id: str, operation_type: str, **kwargs) -> Optional[str]:
+    """Create an operation using the global client"""
+    client = get_dashboard_client()
+    if client:
+        return await client.create_operation(job_id, operation_type, **kwargs)
+    return None
+
+async def update_operation_status_from_context(operation_id: str, status: str, **kwargs) -> bool:
+    """Update operation status using the global client"""
+    client = get_dashboard_client()
+    if client:
+        return await client.update_operation_status(operation_id, status, **kwargs)
+    return False
+
+async def update_operation_ai_metrics_from_context(operation_id: str, **kwargs) -> bool:
+    """Update operation AI metrics using the global client"""
+    client = get_dashboard_client()
+    if client:
+        return await client.update_operation_ai_metrics(operation_id, **kwargs)
+    return False 

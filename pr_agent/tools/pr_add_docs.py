@@ -15,6 +15,16 @@ from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 
+# Dashboard integration imports
+try:
+    from pr_agent.log.job_context import (
+        operation_context, OperationType, update_operation_status, 
+        update_operation_ai_metrics, extract_repository_from_url
+    )
+    DASHBOARD_AVAILABLE = True
+except ImportError:
+    DASHBOARD_AVAILABLE = False
+
 
 class PRAddDocs:
     def __init__(self, pr_url: str, cli_mode=False, args: list = None,
@@ -48,6 +58,68 @@ class PRAddDocs:
                                           get_settings().pr_add_docs_prompt.user)
 
     async def run(self):
+        # Extract repository information for dashboard tracking
+        repository = None
+        pr_url = self.git_provider.get_pr_url()
+        if DASHBOARD_AVAILABLE:
+            try:
+                repository = extract_repository_from_url(pr_url)
+            except Exception as e:
+                get_logger().debug(f"Failed to extract repository from URL: {e}")
+
+        # Create operation context for dashboard tracking (error resilient)
+        if DASHBOARD_AVAILABLE:
+            try:
+                with operation_context(
+                    operation_type=OperationType.ADDING_DOCUMENTATION,
+                    command="add_docs",
+                    repo=repository,
+                    pr_url=pr_url,
+                    installation_id=getattr(self.git_provider, 'installation_id', None),
+                    sender=getattr(self.git_provider, 'sender', None)
+                ) as operation_id:
+                    get_logger().info(f"PR add docs operation started with ID: {operation_id}")
+                    return await self._run_with_tracking(operation_id)
+            except Exception as e:
+                get_logger().warning(f"Dashboard operation tracking failed, continuing without tracking: {e}")
+                # Fall through to execute without tracking
+        
+        # Execute without operation tracking (fallback or dashboard disabled)
+        get_logger().info("Executing PR add docs without dashboard tracking")
+        return await self._run_without_tracking()
+
+    async def _run_with_tracking(self, operation_id: str):
+        """Execute PR add docs with dashboard operation tracking"""
+        try:
+            update_operation_status("processing")
+            
+            result = await self._execute_add_docs()
+            
+            # Count documentation suggestions added
+            docs_count = 0
+            if hasattr(self, 'prediction') and self.prediction:
+                data = self._prepare_pr_code_docs()
+                if data and 'Code Documentation' in data:
+                    docs_count = len(data['Code Documentation'])
+            
+            update_operation_status("completed", result_data={
+                "docs_added": docs_count,
+                "language": self.main_language,
+                "cli_mode": self.cli_mode
+            })
+            
+            return result
+            
+        except Exception as e:
+            update_operation_status("failed", error_details=str(e))
+            raise
+
+    async def _run_without_tracking(self):
+        """Execute PR add docs without dashboard tracking (fallback)"""
+        return await self._execute_add_docs()
+
+    async def _execute_add_docs(self):
+        """Core PR add docs execution logic"""
         try:
             get_logger().info('Generating code Docs for PR...')
             if get_settings().config.publish_output:
@@ -89,10 +161,76 @@ class PRAddDocs:
         if get_settings().config.verbosity_level >= 2:
             get_logger().info(f"\nSystem prompt:\n{system_prompt}")
             get_logger().info(f"\nUser prompt:\n{user_prompt}")
-        response, finish_reason = await self.ai_handler.chat_completion(
-            model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
-
-        return response
+        
+        # Track AI metrics for dashboard (error resilient)
+        from pr_agent.algo.token_handler import TokenUsageTracker
+        
+        token_tracker = TokenUsageTracker()
+        
+        try:
+            response, finish_reason, token_usage = await self.ai_handler.chat_completion(
+                model=model,
+                temperature=get_settings().config.temperature,
+                system=system_prompt,
+                user=user_prompt
+            )
+            
+            # Track token usage from successful call
+            token_tracker.add_usage(token_usage, call_failed=False)
+            
+            # Update dashboard metrics if available
+            if DASHBOARD_AVAILABLE:
+                try:
+                    totals = token_tracker.get_totals()
+                    input_tokens = totals['input_tokens']
+                    output_tokens = totals['output_tokens']
+                    
+                    # Use accurate token counts if available, otherwise estimate
+                    if not token_tracker.has_usage():
+                        get_logger().warning("No accurate token usage available, falling back to estimation")
+                        # Fallback to tiktoken estimation
+                        from pr_agent.algo.token_handler import TokenHandler
+                        token_handler = TokenHandler()
+                        input_tokens = token_handler.get_token_count_from_string(system_prompt + user_prompt)
+                        output_tokens = token_handler.get_token_count_from_string(response)
+                    
+                    # Update AI metrics (no time estimation for adding docs)
+                    update_operation_ai_metrics(
+                        model_used=model,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        estimated_dev_hours_saved=0.15  # Small fixed amount for adding docs
+                    )
+                    
+                    get_logger().info(f"AI metrics updated - Input: {input_tokens}, Output: {output_tokens}, "
+                                    f"Calls: {totals['call_count']}, Failed: {totals['failed_calls']}")
+                    
+                except Exception as e:
+                    get_logger().debug(f"Failed to track AI metrics for add docs: {e}")
+            
+            return response
+            
+        except Exception as e:
+            # Track failed AI call
+            token_tracker.add_usage(None, call_failed=True)
+            
+            # Track failed AI call if dashboard is available
+            if DASHBOARD_AVAILABLE:
+                try:
+                    # Estimate tokens for failed call
+                    from pr_agent.algo.token_handler import TokenHandler
+                    token_handler = TokenHandler()
+                    input_tokens = token_handler.get_token_count_from_string(system_prompt + user_prompt)
+                    
+                    update_operation_ai_metrics(
+                        model_used=model,
+                        input_tokens=input_tokens,
+                        output_tokens=0,
+                        estimated_dev_hours_saved=0.0
+                    )
+                except:
+                    pass  # Ignore dashboard errors during error handling
+            raise
 
     def _prepare_pr_code_docs(self) -> Dict:
         docs = self.prediction.strip()

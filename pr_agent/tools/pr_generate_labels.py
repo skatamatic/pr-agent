@@ -15,6 +15,16 @@ from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 
+# Dashboard integration imports
+try:
+    from pr_agent.log.job_context import (
+        operation_context, OperationType, update_operation_status, 
+        update_operation_ai_metrics, extract_repository_from_url
+    )
+    DASHBOARD_AVAILABLE = True
+except ImportError:
+    DASHBOARD_AVAILABLE = False
+
 
 class PRGenerateLabels:
     def __init__(self, pr_url: str, args: list = None,
@@ -66,6 +76,69 @@ class PRGenerateLabels:
         """
         Generates a PR labels using an AI model and publishes it to the PR.
         """
+        # Extract repository information for dashboard tracking
+        repository = None
+        pr_url = self.git_provider.get_pr_url()
+        if DASHBOARD_AVAILABLE:
+            try:
+                repository = extract_repository_from_url(pr_url)
+            except Exception as e:
+                get_logger().debug(f"Failed to extract repository from URL: {e}")
+
+        # Create operation context for dashboard tracking (error resilient)
+        if DASHBOARD_AVAILABLE:
+            try:
+                with operation_context(
+                    operation_type=OperationType.GENERATING_LABELS,
+                    command="generate_labels",
+                    repo=repository,
+                    pr_url=pr_url,
+                    installation_id=getattr(self.git_provider, 'installation_id', None),
+                    sender=getattr(self.git_provider, 'sender', None)
+                ) as operation_id:
+                    get_logger().info(f"PR generate labels operation started with ID: {operation_id}")
+                    return await self._run_with_tracking(operation_id)
+            except Exception as e:
+                get_logger().warning(f"Dashboard operation tracking failed, continuing without tracking: {e}")
+                # Fall through to execute without tracking
+        
+        # Execute without operation tracking (fallback or dashboard disabled)
+        get_logger().info("Executing PR generate labels without dashboard tracking")
+        return await self._run_without_tracking()
+
+    async def _run_with_tracking(self, operation_id: str):
+        """Execute PR generate labels with dashboard operation tracking"""
+        try:
+            update_operation_status("processing")
+            
+            result = await self._execute_generate_labels()
+            
+            # Count labels generated
+            labels_count = 0
+            if hasattr(self, 'data') and self.data and 'labels' in self.data:
+                if isinstance(self.data['labels'], list):
+                    labels_count = len(self.data['labels'])
+                elif isinstance(self.data['labels'], str):
+                    labels_count = len(self.data['labels'].split(','))
+            
+            update_operation_status("completed", result_data={
+                "labels_generated": labels_count,
+                "pr_id": self.pr_id,
+                "language": self.main_pr_language
+            })
+            
+            return result
+            
+        except Exception as e:
+            update_operation_status("failed", error_details=str(e))
+            raise
+
+    async def _run_without_tracking(self):
+        """Execute PR generate labels without dashboard tracking (fallback)"""
+        return await self._execute_generate_labels()
+
+    async def _execute_generate_labels(self):
+        """Core PR generate labels execution logic"""
 
         try:
             get_logger().info(f"Generating a PR labels {self.pr_id}")
@@ -141,20 +214,79 @@ class PRGenerateLabels:
         system_prompt = environment.from_string(get_settings().pr_custom_labels_prompt.system).render(self.variables)
         user_prompt = environment.from_string(get_settings().pr_custom_labels_prompt.user).render(self.variables)
 
-        response, finish_reason = await self.ai_handler.chat_completion(
-            model=model,
-            temperature=get_settings().config.temperature,
-            system=system_prompt,
-            user=user_prompt
-        )
-
-        return response
+        # Track AI metrics for dashboard (error resilient)
+        from pr_agent.algo.token_handler import TokenUsageTracker
+        
+        token_tracker = TokenUsageTracker()
+        
+        try:
+            response, finish_reason, token_usage = await self.ai_handler.chat_completion(
+                model=model,
+                temperature=get_settings().config.temperature,
+                system=system_prompt,
+                user=user_prompt
+            )
+            
+            # Track token usage from successful call
+            token_tracker.add_usage(token_usage, call_failed=False)
+            
+            # Update dashboard metrics if available
+            if DASHBOARD_AVAILABLE:
+                try:
+                    totals = token_tracker.get_totals()
+                    input_tokens = totals['input_tokens']
+                    output_tokens = totals['output_tokens']
+                    
+                    # Use accurate token counts if available, otherwise estimate
+                    if not token_tracker.has_usage():
+                        get_logger().warning("No accurate token usage available, falling back to estimation")
+                        # Fallback to tiktoken estimation
+                        from pr_agent.algo.token_handler import TokenHandler
+                        token_handler = TokenHandler()
+                        input_tokens = token_handler.get_token_count_from_string(system_prompt + user_prompt)
+                        output_tokens = token_handler.get_token_count_from_string(response)
+                    
+                    # Update AI metrics (no time estimation for label generation)
+                    update_operation_ai_metrics(
+                        model_used=model,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        estimated_dev_hours_saved=0.05  # Small fixed amount for label generation
+                    )
+                    
+                    get_logger().info(f"AI metrics updated - Input: {input_tokens}, Output: {output_tokens}, "
+                                    f"Calls: {totals['call_count']}, Failed: {totals['failed_calls']}")
+                    
+                except Exception as e:
+                    get_logger().debug(f"Failed to track AI metrics for generate labels: {e}")
+            
+            return response
+            
+        except Exception as e:
+            # Track failed AI call
+            token_tracker.add_usage(None, call_failed=True)
+            
+            # Track failed AI call if dashboard is available
+            if DASHBOARD_AVAILABLE:
+                try:
+                    # Estimate tokens for failed call
+                    from pr_agent.algo.token_handler import TokenHandler
+                    token_handler = TokenHandler()
+                    input_tokens = token_handler.get_token_count_from_string(system_prompt + user_prompt)
+                    
+                    update_operation_ai_metrics(
+                        model_used=model,
+                        input_tokens=input_tokens,
+                        output_tokens=0,
+                        estimated_dev_hours_saved=0.0
+                    )
+                except:
+                    pass  # Ignore dashboard errors during error handling
+            raise
 
     def _prepare_data(self):
         # Load the AI prediction data into a dictionary
         self.data = load_yaml(self.prediction.strip())
-
-
 
     def _prepare_labels(self) -> List[str]:
         pr_types = []

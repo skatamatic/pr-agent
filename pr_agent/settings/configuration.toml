@@ -398,3 +398,8 @@ pr_commands = [
     "/review",
     "/improve",
 ]
+
+[DASHBOARD]
+URL = "http://localhost:8000/"
+ENABLED = true
+API_KEY = ""

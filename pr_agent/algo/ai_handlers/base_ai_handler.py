@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Tuple, Dict, Optional
 
 
 class BaseAiHandler(ABC):
@@ -16,7 +17,7 @@ class BaseAiHandler(ABC):
         pass
 
     @abstractmethod
-    async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
+    async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None) -> Tuple[str, str, Optional[Dict[str, int]]]:
         """
         This method should be implemented to return a chat completion from the AI model.
         Args:
@@ -24,5 +25,12 @@ class BaseAiHandler(ABC):
             system (str): the system message string to use for the chat completion
             user (str): the user message string to use for the chat completion
             temperature (float): the temperature to use for the chat completion
+            img_path (str): optional image path for vision models
+        
+        Returns:
+            Tuple[str, str, Optional[Dict[str, int]]]: 
+                - response content
+                - finish reason
+                - token usage dict with keys 'input_tokens', 'output_tokens' (None if not available)
         """
         pass

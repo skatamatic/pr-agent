@@ -62,7 +62,7 @@ async def test():
         print('Handler created')
         
         # Basic functionality test
-        response = await handler.chat_completion(
+        response, finish_reason, token_usage = await handler.chat_completion(
             model='gpt-3.5-turbo',
             system='You are a helpful assistant',
             user='Hello',

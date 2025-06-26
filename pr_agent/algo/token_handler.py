@@ -1,6 +1,10 @@
 from threading import Lock
 from math import ceil
 import re
+import copy
+import math
+import tiktoken
+from typing import Optional, Dict
 
 from jinja2 import Environment, StrictUndefined
 from tiktoken import encoding_for_model, get_encoding
@@ -8,15 +12,78 @@ from tiktoken import encoding_for_model, get_encoding
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
+from pr_agent.algo import MAX_TOKENS
+
+
+class TokenUsageTracker:
+    """
+    Tracks cumulative token usage across multiple AI calls for accurate cost calculation.
+    Handles retries, failures, and multiple prompts within a single operation.
+    """
+    
+    def __init__(self):
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.call_count = 0
+        self.failed_calls = 0
+        
+    def add_usage(self, token_usage: Optional[Dict[str, int]], call_failed: bool = False):
+        """
+        Add token usage from an AI call.
+        
+        Args:
+            token_usage: Dict with 'input_tokens' and 'output_tokens' keys, or None
+            call_failed: Whether this AI call failed (still counts for cost)
+        """
+        if token_usage:
+            self.total_input_tokens += token_usage.get('input_tokens', 0)
+            self.total_output_tokens += token_usage.get('output_tokens', 0)
+            
+        self.call_count += 1
+        if call_failed:
+            self.failed_calls += 1
+            
+        get_logger().debug(f"Token usage updated: input={self.total_input_tokens}, "
+                          f"output={self.total_output_tokens}, calls={self.call_count}, "
+                          f"failed={self.failed_calls}")
+    
+    def get_totals(self) -> Dict[str, int]:
+        """Get total accumulated token usage."""
+        return {
+            'input_tokens': self.total_input_tokens,
+            'output_tokens': self.total_output_tokens,
+            'total_tokens': self.total_input_tokens + self.total_output_tokens,
+            'call_count': self.call_count,
+            'failed_calls': self.failed_calls
+        }
+    
+    def has_usage(self) -> bool:
+        """Check if any token usage has been recorded."""
+        return self.total_input_tokens > 0 or self.total_output_tokens > 0
+
 
 class ModelTypeValidator:
     @staticmethod
     def is_openai_model(model_name: str) -> bool:
-        return 'gpt' in model_name or re.match(r"^o[1-9](-mini|-preview)?$", model_name)
+        openai_patterns = [
+            r'^gpt-',
+            r'^o\d+',
+            r'^o\d+-',
+            r'^text-',
+            r'^davinci',
+            r'^curie',
+            r'^babbage',
+            r'^ada',
+        ]
+        return any(re.match(pattern, model_name.lower()) for pattern in openai_patterns)
     
     @staticmethod
     def is_anthropic_model(model_name: str) -> bool:
-        return 'claude' in model_name
+        anthropic_patterns = [
+            r'^claude-',
+            r'claude',
+        ]
+        return any(re.search(pattern, model_name.lower()) for pattern in anthropic_patterns)
 
 
 class TokenEncoder:
@@ -169,3 +236,77 @@ class TokenHandler:
             return encoder_estimate
 
         return self._get_token_count_by_model_type(patch, encoder_estimate)
+
+    def get_token_count_from_string(self, prompt: str) -> int:
+        """
+        Get the token count for a string using the tiktoken encoder.
+        
+        Args:
+            prompt: The text to count tokens for.
+            
+        Returns:
+            int: The token count.
+        """
+        return len(self.encoder.encode(prompt, disallowed_special=()))
+
+    def get_token_count_from_string_legacy(self, prompt: str) -> int:
+        """
+        Legacy method for token counting using simple split.
+        This is kept for backwards compatibility but should be avoided.
+        
+        Args:
+            prompt: The text to count tokens for.
+            
+        Returns:
+            int: The estimated token count.
+        """
+        get_logger().warning("Using legacy split() token counting - this is inaccurate")
+        return len(prompt.split())
+
+    def clip_tokens(self, text: str, max_tokens: int, add_three_dots=True) -> str:
+        """
+        Clip a text string to a maximum number of tokens.
+
+        Args:
+        - text: The text string to clip.
+        - max_tokens: The maximum number of tokens allowed.
+        - add_three_dots: Whether to add "..." at the end of the clipped text.
+
+        Returns:
+        The clipped text string.
+        """
+        if not text:
+            return ""
+
+        tokens = self.encoder.encode(text, disallowed_special=())
+        if len(tokens) <= max_tokens:
+            return text
+
+        clipped_tokens = tokens[:max_tokens]
+        clipped_text = self.encoder.decode(clipped_tokens)
+
+        if add_three_dots and clipped_text != text:
+            clipped_text += "..."
+
+        return clipped_text
+
+    def get_max_tokens(self, model: str) -> int:
+        """
+        Get the maximum number of tokens for a given model.
+
+        Args:
+        - model: The model name.
+
+        Returns:
+        The maximum number of tokens for the model.
+        """
+        try:
+            max_tokens_model = MAX_TOKENS.get(model, 4096)
+            max_tokens_model = min(max_tokens_model, get_settings().config.max_model_tokens)
+            custom_model_max_tokens = get_settings().config.custom_model_max_tokens
+            if custom_model_max_tokens != -1:
+                max_tokens_model = custom_model_max_tokens
+            return max_tokens_model
+        except Exception as e:
+            get_logger().warning(f"Failed to get max tokens for model {model}: {e}")
+            return 4096

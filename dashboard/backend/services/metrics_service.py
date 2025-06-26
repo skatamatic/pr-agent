@@ -124,6 +124,7 @@ class MetricsService:
             input_tokens = operation_data.get('input_tokens', 0)
             output_tokens = operation_data.get('output_tokens', 0)
             estimated_dev_hours = operation_data.get('estimated_dev_hours_saved', 0.0)
+            job_id = operation_data.get('job_id')
             
             # Skip if no metrics data
             if not any([model_used, input_tokens, output_tokens, estimated_dev_hours]):
@@ -143,6 +144,12 @@ class MetricsService:
                 aggregate.total_output_tokens += output_tokens
             if estimated_dev_hours:
                 aggregate.total_estimated_dev_hours += estimated_dev_hours
+            
+            # Update job count (count distinct job_ids)
+            if job_id:
+                from models import OperationDB
+                total_jobs = db.query(OperationDB.job_id).distinct().count()
+                aggregate.total_jobs = total_jobs
             
             # Update model usage breakdown
             if model_used:
@@ -168,6 +175,58 @@ class MetricsService:
         except Exception as e:
             logger.error(f"Error updating metrics from operation: {e}")
             db.rollback()
+            raise
+
+    async def update_aggregates_from_operation(self, db: Session, operation: OperationDB):
+        """Update metrics aggregates from a completed operation"""
+        try:
+            # Skip if no metrics data
+            if not any([operation.model_used, operation.input_tokens, operation.output_tokens, operation.estimated_dev_hours_saved]):
+                return
+            
+            # Get or create aggregate
+            aggregate = db.query(MetricsAggregateDB).first()
+            if not aggregate:
+                aggregate = MetricsAggregateDB()
+                db.add(aggregate)
+            
+            # Update totals
+            aggregate.total_operations += 1
+            if operation.input_tokens:
+                aggregate.total_input_tokens += operation.input_tokens
+            if operation.output_tokens:
+                aggregate.total_output_tokens += operation.output_tokens
+            if operation.estimated_dev_hours_saved:
+                aggregate.total_estimated_dev_hours += operation.estimated_dev_hours_saved
+            
+            # Update job count (count distinct job_ids)
+            if operation.job_id:
+                total_jobs = db.query(OperationDB.job_id).distinct().count()
+                aggregate.total_jobs = total_jobs
+            
+            # Update model usage breakdown
+            if operation.model_used:
+                model_usage = aggregate.model_usage or {}
+                if operation.model_used not in model_usage:
+                    model_usage[operation.model_used] = {
+                        'operations_count': 0,
+                        'input_tokens': 0,
+                        'output_tokens': 0,
+                        'estimated_dev_hours': 0.0
+                    }
+                
+                model_usage[operation.model_used]['operations_count'] += 1
+                model_usage[operation.model_used]['input_tokens'] += operation.input_tokens or 0
+                model_usage[operation.model_used]['output_tokens'] += operation.output_tokens or 0
+                model_usage[operation.model_used]['estimated_dev_hours'] += operation.estimated_dev_hours_saved or 0.0
+                
+                aggregate.model_usage = model_usage
+            
+            aggregate.last_updated = datetime.utcnow()
+            # Don't commit here - let the calling function handle the transaction
+            
+        except Exception as e:
+            logger.error(f"Error updating aggregates from operation: {e}")
             raise
     
     async def recalculate_metrics_from_operations(self, db: Session):

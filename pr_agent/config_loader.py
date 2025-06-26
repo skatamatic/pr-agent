@@ -24,6 +24,7 @@ global_settings = Dynaconf(
         "settings/code_suggestions/pr_code_suggestions_reflect_prompts.toml",
         "settings/pr_information_from_user_prompts.toml",
         "settings/pr_update_changelog_prompts.toml",
+        "settings/pr_dev_time_estimation_prompts.toml",
         "settings/pr_custom_labels.toml",
         "settings/pr_add_docs.toml",
         "settings/custom_labels.toml",

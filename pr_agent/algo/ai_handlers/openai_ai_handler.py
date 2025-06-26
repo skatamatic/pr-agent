@@ -58,9 +58,18 @@ class OpenAIHandler(BaseAiHandler):
             resp = chat_completion.choices[0].message.content
             finish_reason = chat_completion.choices[0].finish_reason
             usage = chat_completion.usage
+            
+            # Extract token usage information
+            token_usage = None
+            if usage:
+                token_usage = {
+                    'input_tokens': getattr(usage, 'prompt_tokens', 0),
+                    'output_tokens': getattr(usage, 'completion_tokens', 0)
+                }
+            
             get_logger().info("AI response", response=resp, messages=messages, finish_reason=finish_reason,
                               model=model, usage=usage)
-            return resp, finish_reason
+            return resp, finish_reason, token_usage
         except openai.RateLimitError as e:
             get_logger().error(f"Rate limit error during LLM inference: {e}")
             raise

@@ -106,6 +106,13 @@ class ConfigService:
                 "openai": "",
                 "anthropic": "",
                 "google": ""
+            },
+            "pr_dev_time_estimation": {
+                "enabled": True,
+                "model": "",
+                "fallback_to_heuristic": True,
+                "estimation_timeout_seconds": 30,
+                "confidence_threshold": "medium"
             }
         }
     
@@ -347,6 +354,16 @@ class ConfigService:
                         "enabled": {"type": "boolean", "default": False, "description": "Enable context service"},
                         "url": {"type": "string", "description": "Context service URL"},
                         "timeout": {"type": "integer", "default": 30, "description": "Request timeout in seconds"}
+                    }
+                },
+                "pr_dev_time_estimation": {
+                    "title": "Developer Time Estimation",
+                    "fields": {
+                        "enabled": {"type": "boolean", "default": True, "description": "Enable AI-powered developer time estimation"},
+                        "model": {"type": "string", "default": "", "description": "AI model to use for time estimation (leave empty to use same as tool)"},
+                        "fallback_to_heuristic": {"type": "boolean", "default": True, "description": "Fall back to heuristic estimation if AI fails"},
+                        "estimation_timeout_seconds": {"type": "integer", "default": 30, "description": "Timeout for AI estimation calls"},
+                        "confidence_threshold": {"type": "select", "options": ["low", "medium", "high"], "default": "medium", "description": "Minimum confidence level to accept AI estimates"}
                     }
                 }
             }

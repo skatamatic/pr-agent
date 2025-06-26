@@ -29,9 +29,10 @@ class JobService:
                    trigger_event: Optional[str] = None,
                    installation_id: Optional[str] = None,
                    request_id: Optional[str] = None,
-                   webhook_payload: Optional[Dict[str, Any]] = None) -> str:
+                   webhook_payload: Optional[Dict[str, Any]] = None,
+                   job_id: Optional[str] = None) -> str:
         """Create a new job and return its job_id"""
-        job_id = str(uuid.uuid4())
+        job_id = job_id or str(uuid.uuid4())
         
         with next(get_db()) as db:
             job = JobDB(
@@ -64,9 +65,10 @@ class JobService:
                         pr_url: Optional[str] = None,
                         installation_id: Optional[str] = None,
                         sender: Optional[str] = None,
-                        request_id: Optional[str] = None) -> str:
+                        request_id: Optional[str] = None,
+                        operation_id: Optional[str] = None) -> str:
         """Create a new operation within a job"""
-        operation_id = str(uuid.uuid4())
+        operation_id = operation_id or str(uuid.uuid4())
         
         with next(get_db()) as db:
             operation = OperationDB(

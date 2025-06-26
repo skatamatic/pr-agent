@@ -51,7 +51,7 @@ class PRHelpMessage:
             environment = Environment(undefined=StrictUndefined)
             system_prompt = environment.from_string(get_settings().pr_help_prompts.system).render(variables)
             user_prompt = environment.from_string(get_settings().pr_help_prompts.user).render(variables)
-            response, finish_reason = await self.ai_handler.chat_completion(
+            response, finish_reason, token_usage = await self.ai_handler.chat_completion(
                 model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
             return response
         except Exception as e:

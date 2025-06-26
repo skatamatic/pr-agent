@@ -9,12 +9,22 @@ from jinja2 import Environment, StrictUndefined
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
-from pr_agent.algo.token_handler import TokenHandler
+from pr_agent.algo.token_handler import TokenHandler, TokenUsageTracker
 from pr_agent.algo.utils import ModelType, show_relevant_configurations
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import GithubProvider, get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
+
+# Dashboard integration imports
+try:
+    from pr_agent.log.job_context import (
+        operation_context, OperationType, update_operation_status, 
+        update_operation_ai_metrics, extract_repository_from_url
+    )
+    DASHBOARD_AVAILABLE = True
+except ImportError:
+    DASHBOARD_AVAILABLE = False
 
 CHANGELOG_LINES = 50
 
@@ -53,6 +63,65 @@ class PRUpdateChangelog:
                                           get_settings().pr_update_changelog_prompt.user)
 
     async def run(self):
+        # Extract repository information for dashboard tracking
+        repository = None
+        pr_url = self.git_provider.get_pr_url()
+        if DASHBOARD_AVAILABLE:
+            try:
+                repository = extract_repository_from_url(pr_url)
+            except Exception as e:
+                get_logger().debug(f"Failed to extract repository from URL: {e}")
+
+        # Create operation context for dashboard tracking (error resilient)
+        if DASHBOARD_AVAILABLE:
+            try:
+                with operation_context(
+                    operation_type=OperationType.UPDATING_CHANGELOG,
+                    command="update_changelog",
+                    repo=repository,
+                    pr_url=pr_url,
+                    installation_id=getattr(self.git_provider, 'installation_id', None),
+                    sender=getattr(self.git_provider, 'sender', None)
+                ) as operation_id:
+                    get_logger().info(f"PR update changelog operation started with ID: {operation_id}")
+                    return await self._run_with_tracking(operation_id)
+            except Exception as e:
+                get_logger().warning(f"Dashboard operation tracking failed, continuing without tracking: {e}")
+                # Fall through to execute without tracking
+        
+        # Execute without operation tracking (fallback or dashboard disabled)
+        get_logger().info("Executing PR update changelog without dashboard tracking")
+        return await self._run_without_tracking()
+
+    async def _run_with_tracking(self, operation_id: str):
+        """Execute PR update changelog with dashboard operation tracking"""
+        try:
+            update_operation_status("processing")
+            
+            result = await self._execute_update_changelog()
+            
+            # Determine if changelog was actually updated
+            changelog_updated = self.commit_changelog and hasattr(self, 'prediction') and self.prediction
+            
+            update_operation_status("completed", result_data={
+                "changelog_updated": changelog_updated,
+                "commit_changelog": self.commit_changelog,
+                "language": self.main_language,
+                "cli_mode": self.cli_mode
+            })
+            
+            return result
+            
+        except Exception as e:
+            update_operation_status("failed", error_details=str(e))
+            raise
+
+    async def _run_without_tracking(self):
+        """Execute PR update changelog without dashboard tracking (fallback)"""
+        return await self._execute_update_changelog()
+
+    async def _execute_update_changelog(self):
+        """Core PR update changelog execution logic"""
         get_logger().info('Updating the changelog...')
         relevant_configs = {'pr_update_changelog': dict(get_settings().pr_update_changelog),
                             'config': dict(get_settings().config)}
@@ -108,19 +177,81 @@ class PRUpdateChangelog:
         environment = Environment(undefined=StrictUndefined)
         system_prompt = environment.from_string(get_settings().pr_update_changelog_prompt.system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_update_changelog_prompt.user).render(variables)
-        response, finish_reason = await self.ai_handler.chat_completion(
-            model=model, system=system_prompt, user=user_prompt, temperature=get_settings().config.temperature)
-
-        # post-process the response
-        response = response.strip()
-        if not response:
-            return ""
-        if response.startswith("```"):
-            response_lines = response.splitlines()
-            response_lines = response_lines[1:]
-            response = "\n".join(response_lines)
-        response = response.strip("`")
-        return response
+        
+        # Track AI metrics for dashboard (error resilient)
+        token_tracker = TokenUsageTracker()
+        
+        try:
+            response, finish_reason, token_usage = await self.ai_handler.chat_completion(
+                model=model,
+                temperature=get_settings().config.temperature,
+                system=system_prompt,
+                user=user_prompt
+            )
+            
+            # Track token usage from successful call
+            token_tracker.add_usage(token_usage, call_failed=False)
+            
+            # Update dashboard metrics if available
+            if DASHBOARD_AVAILABLE:
+                try:
+                    totals = token_tracker.get_totals()
+                    input_tokens = totals['input_tokens']
+                    output_tokens = totals['output_tokens']
+                    
+                    # Use accurate token counts if available, otherwise estimate
+                    if not token_tracker.has_usage():
+                        get_logger().warning("No accurate token usage available, falling back to estimation")
+                        # Fallback to tiktoken estimation
+                        token_handler = TokenHandler()
+                        input_tokens = token_handler.get_token_count_from_string(system_prompt + user_prompt)
+                        output_tokens = token_handler.get_token_count_from_string(response)
+                    
+                    # Update AI metrics (no time estimation for changelog updates)
+                    update_operation_ai_metrics(
+                        model_used=model,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        estimated_dev_hours_saved=0.1  # Small fixed amount for changelog updates
+                    )
+                    
+                    get_logger().info(f"AI metrics updated - Input: {input_tokens}, Output: {output_tokens}, "
+                                    f"Calls: {totals['call_count']}, Failed: {totals['failed_calls']}")
+                    
+                except Exception as e:
+                    get_logger().debug(f"Failed to track AI metrics for changelog: {e}")
+            
+            # post-process the response
+            response = response.strip()
+            if not response:
+                return ""
+            if response.startswith("```"):
+                response_lines = response.splitlines()
+                response_lines = response_lines[1:]
+                response = "\n".join(response_lines)
+            response = response.strip("`")
+            return response
+            
+        except Exception as e:
+            # Track failed AI call
+            token_tracker.add_usage(None, call_failed=True)
+            
+            # Track failed AI call if dashboard is available
+            if DASHBOARD_AVAILABLE:
+                try:
+                    # Estimate tokens for failed call
+                    token_handler = TokenHandler()
+                    input_tokens = token_handler.get_token_count_from_string(system_prompt + user_prompt)
+                    
+                    update_operation_ai_metrics(
+                        model_used=model,
+                        input_tokens=input_tokens,
+                        output_tokens=0,
+                        estimated_dev_hours_saved=0.0
+                    )
+                except:
+                    pass  # Ignore dashboard errors during error handling
+            raise
 
     def _prepare_changelog_update(self) -> Tuple[str, str]:
         answer = self.prediction.strip().strip("```").strip()  # noqa B005

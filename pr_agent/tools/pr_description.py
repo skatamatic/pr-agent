@@ -29,6 +29,16 @@ from pr_agent.tools.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets, extract_ticket_links_from_pr_description,
     extract_tickets)
 
+# Dashboard integration imports
+try:
+    from pr_agent.log.job_context import (
+        operation_context, OperationType, update_operation_status, 
+        update_operation_ai_metrics, extract_repository_from_url
+    )
+    DASHBOARD_AVAILABLE = True
+except ImportError:
+    DASHBOARD_AVAILABLE = False
+
 
 class PRDescription:
     def __init__(self, pr_url: str, args: list = None,
@@ -92,6 +102,71 @@ class PRDescription:
         self.file_label_dict = None
 
     async def run(self):
+        # Extract repository information for dashboard tracking
+        repository = None
+        pr_url = self.git_provider.get_pr_url()
+        if DASHBOARD_AVAILABLE:
+            try:
+                repository = extract_repository_from_url(pr_url)
+            except Exception as e:
+                get_logger().debug(f"Failed to extract repository from URL: {e}")
+
+        # Create operation context for dashboard tracking (error resilient)
+        if DASHBOARD_AVAILABLE:
+            try:
+                with operation_context(
+                    operation_type=OperationType.GENERATING_DESCRIPTION,
+                    command="describe",
+                    repo=repository,
+                    pr_url=pr_url,
+                    installation_id=getattr(self.git_provider, 'installation_id', None),
+                    sender=getattr(self.git_provider, 'sender', None)
+                ) as operation_id:
+                    get_logger().info(f"PR description operation started with ID: {operation_id}")
+                    return await self._run_with_tracking(operation_id)
+            except Exception as e:
+                get_logger().warning(f"Dashboard operation tracking failed, continuing without tracking: {e}")
+                # Fall through to execute without tracking
+        
+        # Execute without operation tracking (fallback or dashboard disabled)
+        get_logger().info("Executing PR description without dashboard tracking")
+        return await self._run_without_tracking()
+
+    async def _run_with_tracking(self, operation_id: str):
+        """Run PR description with dashboard operation tracking"""
+        try:
+            # Update operation status to processing
+            update_operation_status("processing")
+            
+            # Execute the main description logic
+            result = await self._execute_description_logic()
+            
+            # Update operation status based on result
+            if result is not None:
+                update_operation_status("completed", result_data={
+                    "description_generated": True,
+                    "files_processed": len(self.git_provider.get_files()) if self.git_provider.get_files() else 0,
+                    "used_markers": get_settings().pr_description.use_description_markers
+                })
+                get_logger().info(f"PR description operation {operation_id} completed successfully")
+            else:
+                update_operation_status("failed", error_details="Description generation returned no result")
+                get_logger().warning(f"PR description operation {operation_id} completed with no result")
+            
+            return result
+            
+        except Exception as e:
+            # Update operation status to failed
+            update_operation_status("failed", error_details=str(e))
+            get_logger().error(f"PR description operation {operation_id} failed: {e}")
+            raise
+
+    async def _run_without_tracking(self):
+        """Run PR description without dashboard tracking (fallback)"""
+        return await self._execute_description_logic()
+
+    async def _execute_description_logic(self):
+        """Main PR description logic (extracted for reuse with/without tracking)"""
         try:
             get_logger().info(f"Generating a PR description for pr_id: {self.pr_id}")
             relevant_configs = {'pr_description': dict(get_settings().pr_description),
@@ -188,15 +263,15 @@ class PRDescription:
                             update_comment = f"**[PR Description]({pr_url})** updated to latest commit ({latest_commit_url})"
                             self.git_provider.publish_comment(update_comment)
                 self.git_provider.remove_initial_comment()
+                return pr_body
             else:
                 get_logger().info('PR description, but not published since publish_output is False.')
                 get_settings().data = {"artifact": pr_body}
-                return
+                return pr_body
         except Exception as e:
             get_logger().error(f"Error generating PR description {self.pr_id}: {e}",
                                artifact={"traceback": traceback.format_exc()})
-
-        return ""
+            raise
 
     async def _prepare_prediction(self, model: str) -> None:
         if get_settings().pr_description.use_description_markers and 'pr_agent:' not in self.user_description:
@@ -430,14 +505,200 @@ class PRDescription:
         system_prompt = environment.from_string(get_settings().get(prompt, {}).get("system", "")).render(self.variables)
         user_prompt = environment.from_string(get_settings().get(prompt, {}).get("user", "")).render(self.variables)
 
-        response, finish_reason = await self.ai_handler.chat_completion(
-            model=model,
-            temperature=get_settings().config.temperature,
-            system=system_prompt,
-            user=user_prompt
-        )
+        # Track AI metrics for dashboard (error resilient)
+        from pr_agent.algo.token_handler import TokenUsageTracker
+        
+        token_tracker = TokenUsageTracker()
+        
+        try:
+            response, finish_reason, token_usage = await self.ai_handler.chat_completion(
+                model=model,
+                temperature=get_settings().config.temperature,
+                system=system_prompt,
+                user=user_prompt
+            )
+            
+            # Track token usage from successful call
+            token_tracker.add_usage(token_usage, call_failed=False)
+            
+            # Update dashboard metrics if available
+            if DASHBOARD_AVAILABLE:
+                try:
+                    totals = token_tracker.get_totals()
+                    input_tokens = totals['input_tokens']
+                    output_tokens = totals['output_tokens']
+                    
+                    # Use accurate token counts if available, otherwise estimate
+                    if not token_tracker.has_usage():
+                        get_logger().warning("No accurate token usage available, falling back to estimation")
+                        # Fallback to tiktoken estimation
+                        from pr_agent.algo.token_handler import TokenHandler
+                        token_handler = TokenHandler()
+                        input_tokens = token_handler.get_token_count_from_string(system_prompt + user_prompt)
+                        output_tokens = token_handler.get_token_count_from_string(response)
+                    
+                    # Estimate developer time saved for description operation using AI analysis
+                    try:
+                        estimated_hours = await self._estimate_description_dev_hours_saved_ai(
+                            model=model,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            files_count=len(self.git_provider.get_files()) if self.git_provider.get_files() else 0,
+                            prompt_type=prompt,
+                            diff=self.patches_diff,
+                            description_content=response
+                        )
+                    except Exception as e:
+                        get_logger().debug(f"AI time estimation failed, using fallback: {e}")
+                        estimated_hours = self._estimate_description_dev_hours_saved(
+                            model=model,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            files_count=len(self.git_provider.get_files()) if self.git_provider.get_files() else 0,
+                            prompt_type=prompt
+                        )
+                    
+                    # Update AI metrics
+                    update_operation_ai_metrics(
+                        model_used=model,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        estimated_dev_hours_saved=estimated_hours
+                    )
+                    
+                    get_logger().info(f"AI metrics updated - Input: {input_tokens}, Output: {output_tokens}, "
+                                    f"Calls: {totals['call_count']}, Failed: {totals['failed_calls']}, Prompt: {prompt}")
+                    
+                except Exception as e:
+                    get_logger().debug(f"Failed to track AI metrics for description: {e}")
+            
+            return response
+            
+        except Exception as e:
+            # Track failed AI call
+            token_tracker.add_usage(None, call_failed=True)
+            
+            # Track failed AI call if dashboard is available
+            if DASHBOARD_AVAILABLE:
+                try:
+                    # Estimate tokens for failed call
+                    from pr_agent.algo.token_handler import TokenHandler
+                    token_handler = TokenHandler()
+                    input_tokens = token_handler.get_token_count_from_string(system_prompt + user_prompt)
+                    
+                    update_operation_ai_metrics(
+                        model_used=model,
+                        input_tokens=input_tokens,
+                        output_tokens=0,
+                        estimated_dev_hours_saved=0.0
+                    )
+                except:
+                    pass  # Ignore dashboard errors during error handling
+            raise
 
-        return response
+    def _estimate_description_dev_hours_saved(self, model: str, input_tokens: int = None, 
+                                            output_tokens: int = None, files_count: int = 0,
+                                            prompt_type: str = "pr_description_prompt") -> float:
+        """
+        Estimate developer hours saved for PR description operation
+        """
+        try:
+            # Base time for manual PR description writing (varies by complexity)
+            if prompt_type == "pr_description_prompt":
+                base_description_hours = 0.25  # 15 minutes base for full description
+            elif "only_files" in prompt_type:
+                base_description_hours = 0.1   # 6 minutes for file descriptions only
+            elif "only_description" in prompt_type:
+                base_description_hours = 0.15  # 9 minutes for description headers only
+            else:
+                base_description_hours = 0.25  # Default
+            
+            # Adjust based on number of files
+            if files_count > 15:
+                base_description_hours = 0.5   # 30 minutes for large PRs
+            elif files_count > 8:
+                base_description_hours = 0.33  # 20 minutes for medium PRs
+            elif files_count > 3:
+                base_description_hours = 0.25  # 15 minutes for small-medium PRs
+            
+            # Adjust based on token complexity (if available)
+            complexity_multiplier = 1.0
+            if input_tokens and output_tokens:
+                total_tokens = input_tokens + output_tokens
+                if total_tokens > 2500:
+                    complexity_multiplier = 1.4  # Complex description
+                elif total_tokens > 1200:
+                    complexity_multiplier = 1.2  # Medium complexity
+                elif total_tokens < 400:
+                    complexity_multiplier = 0.8  # Simple description
+            
+            # Adjust based on model capability
+            model_multiplier = 1.0
+            model_lower = model.lower()
+            if any(name in model_lower for name in ['gpt-4', 'claude-3-opus', 'claude-3-5-sonnet']):
+                model_multiplier = 1.2  # High-quality models save more time
+            elif any(name in model_lower for name in ['gpt-3.5', 'claude-3-sonnet']):
+                model_multiplier = 1.0  # Standard models
+            else:
+                model_multiplier = 0.8  # Lower capability models
+            
+            # Calculate final estimate
+            estimated_hours = base_description_hours * complexity_multiplier * model_multiplier
+            
+            # Cap at reasonable bounds
+            return max(0.08, min(2.0, estimated_hours))
+            
+        except Exception as e:
+            get_logger().debug(f"Failed to estimate description dev hours: {e}")
+            return 0.25  # Default fallback
+
+    async def _estimate_description_dev_hours_saved_ai(self, model: str, input_tokens: int = None, 
+                                                      output_tokens: int = None, files_count: int = 0,
+                                                      prompt_type: str = "pr_description_prompt", 
+                                                      diff: str = None, description_content: str = None) -> float:
+        """
+        Estimate developer hours saved using AI-powered analysis of the description
+        """
+        try:
+            if diff and description_content:
+                from pr_agent.algo.dev_time_estimator import DevTimeEstimator
+                
+                estimator = DevTimeEstimator(self.ai_handler, self.token_handler)
+                
+                # Extract line counts from diff
+                lines_added = 0
+                lines_deleted = 0
+                if diff:
+                    for line in diff.split('\n'):
+                        if line.startswith('+') and not line.startswith('+++'):
+                            lines_added += 1
+                        elif line.startswith('-') and not line.startswith('---'):
+                            lines_deleted += 1
+                
+                estimation_result = await estimator.estimate_description_time_savings(
+                    diff=diff,
+                    ai_description_content=description_content,
+                    language=self.main_pr_language,
+                    files_changed=files_count,
+                    lines_added=lines_added,
+                    lines_deleted=lines_deleted,
+                    model=model
+                )
+                
+                if estimation_result and 'final_assessment' in estimation_result:
+                    estimated_hours = estimation_result['final_assessment'].get('total_developer_hours_saved', 0.25)
+                    confidence = estimation_result['final_assessment'].get('confidence_level', 'medium')
+                    
+                    get_logger().info(f"AI-powered description time estimation: {estimated_hours} hours (confidence: {confidence})", 
+                                    artifacts={'estimation_details': estimation_result})
+                    return float(estimated_hours)
+            
+            # Fall back to heuristic estimation
+            return self._estimate_description_dev_hours_saved(model, input_tokens, output_tokens, files_count, prompt_type)
+            
+        except Exception as e:
+            get_logger().debug(f"AI time estimation failed: {e}")
+            return self._estimate_description_dev_hours_saved(model, input_tokens, output_tokens, files_count, prompt_type)
 
     def _prepare_data(self):
         # Load the AI prediction data into a dictionary
@@ -774,7 +1035,7 @@ def insert_br_after_x_chars(text: str, x=70):
     text = replace_code_tags(text)
 
     # convert list items to <li>
-    if text.startswith("- ") or text.startswith("* "):
+    if text.startswith("- ") or text.startswith('* '):
         text = "<li>" + text[2:]
     text = text.replace("\n- ", '<br><li> ').replace("\n - ", '<br><li> ')
     text = text.replace("\n* ", '<br><li> ').replace("\n * ", '<br><li> ')

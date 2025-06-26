@@ -34,9 +34,9 @@ class DashboardSink:
         self.session = None
         self._flush_task = None
         
-    async def __call__(self, message):
+    def __call__(self, message):
         """
-        Loguru sink function - called for each log message
+        Loguru sink function - called for each log message (MUST be synchronous)
         """
         try:
             record = message.record
@@ -45,17 +45,32 @@ class DashboardSink:
             # Add to buffer
             self.log_buffer.append(log_entry)
             
-            # Send immediately for errors or status updates
-            if record["level"].name in ["ERROR", "CRITICAL"] or self._is_status_update(record):
-                await self._send_immediately(log_entry)
-            
-            # Batch send for other logs
-            if len(self.log_buffer) >= self.batch_size:
-                await self._flush_buffer()
+            # Try to handle async operations
+            async_handled = False
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Send immediately for errors or status updates
+                    if record["level"].name in ["ERROR", "CRITICAL"] or self._is_status_update(record):
+                        asyncio.create_task(self._send_immediately(log_entry))
+                    
+                    # Batch send for other logs
+                    if len(self.log_buffer) >= self.batch_size:
+                        asyncio.create_task(self._flush_buffer())
+                    
+                    async_handled = True
+                else:
+                    # No event loop running, try to create one for this operation
+                    self._manual_flush_if_needed()
+            except RuntimeError:
+                # No event loop available, use manual flush
+                self._manual_flush_if_needed()
                 
         except Exception as e:
             # Don't let dashboard logging break the main application
             print(f"Dashboard sink error: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _format_log_entry(self, record: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -272,62 +287,40 @@ class DashboardSink:
         """
         Send log entry immediately (for errors and status updates)
         """
-        if not self.dashboard_url:
-            return
-            
         try:
-            if not self.session:
-                self.session = aiohttp.ClientSession()
-                
-            headers = {"Content-Type": "application/json"}
-            if self.api_key:
-                headers["Authorization"] = f"Bearer {self.api_key}"
-                
-            async with self.session.post(
-                f"{self.dashboard_url}/logs/immediate",
-                json=log_entry,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as response:
-                if response.status != 200:
-                    print(f"Dashboard immediate send failed: {response.status}")
+            # Use dashboard client instead of direct HTTP
+            from pr_agent.log.dashboard_client import get_dashboard_client
+            
+            client = get_dashboard_client()
+            if client:
+                await client.send_log(log_entry)
                     
         except Exception as e:
-            print(f"Dashboard immediate send error: {e}")
+            # Silent failure - don't break the main application
+            pass
     
     async def _flush_buffer(self):
         """
         Send buffered logs to dashboard
         """
-        if not self.log_buffer or not self.dashboard_url:
+        if not self.log_buffer:
             return
             
         try:
-            if not self.session:
-                self.session = aiohttp.ClientSession()
-                
-            headers = {"Content-Type": "application/json"}
-            if self.api_key:
-                headers["Authorization"] = f"Bearer {self.api_key}"
-                
-            payload = {
-                "logs": self.log_buffer.copy(),
-                "timestamp": asyncio.get_event_loop().time()
-            }
+            # Use dashboard client instead of direct HTTP
+            from pr_agent.log.dashboard_client import get_dashboard_client
             
-            async with self.session.post(
-                f"{self.dashboard_url}/logs/batch",
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as response:
-                if response.status == 200:
+            client = get_dashboard_client()
+            if client:
+                logs_to_send = self.log_buffer.copy()
+                
+                success = await client.send_logs_batch(logs_to_send)
+                if success:
                     self.log_buffer.clear()
-                else:
-                    print(f"Dashboard batch send failed: {response.status}")
                     
         except Exception as e:
-            print(f"Dashboard batch send error: {e}")
+            # Silent failure - don't break the main application
+            pass
     
     async def start_flush_timer(self):
         """
@@ -351,6 +344,47 @@ class DashboardSink:
         
         if self.session:
             await self.session.close()
+
+    def _manual_flush_if_needed(self):
+        """Manual flush when no event loop is available"""
+        try:
+            # If buffer is getting full or we have important logs, try to flush
+            if len(self.log_buffer) >= self.batch_size:
+                # Try to run the flush using synchronous requests
+                try:
+                    # Use requests library for synchronous HTTP when no event loop is available
+                    import requests
+                    import json
+                    from pr_agent.log.dashboard_client import get_dashboard_client
+                    
+                    client = get_dashboard_client()
+                    if client and client._enabled:
+                        logs_to_send = self.log_buffer.copy()
+                        
+                        # Use synchronous requests instead of aiohttp
+                        headers = {"Content-Type": "application/json"}
+                        if client.api_key:
+                            headers["Authorization"] = f"Bearer {client.api_key}"
+                        
+                        url = f"{client.dashboard_url.rstrip('/')}/logs/batch"
+                        batch_data = {'logs': logs_to_send}
+                        
+                        response = requests.post(
+                            url,
+                            json=batch_data,
+                            headers=headers,
+                            timeout=10
+                        )
+                        
+                        if response.status_code == 200:
+                            self.log_buffer.clear()
+                        
+                except Exception as e:
+                    # Silent failure - don't break the main application
+                    pass
+        except Exception as e:
+            # Silent failure - don't break the main application
+            pass
 
 
 # Global dashboard sink instance

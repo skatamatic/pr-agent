@@ -385,7 +385,24 @@ class LiteLLMAIHandler(BaseAiHandler):
         else:
             resp = response["choices"][0]['message']['content']
             finish_reason = response["choices"][0]["finish_reason"]
+            
+            # Extract token usage information
+            token_usage = None
+            if hasattr(response, 'usage') and response.usage:
+                token_usage = {
+                    'input_tokens': getattr(response.usage, 'prompt_tokens', 0),
+                    'output_tokens': getattr(response.usage, 'completion_tokens', 0)
+                }
+            elif isinstance(response, dict) and 'usage' in response:
+                usage = response['usage']
+                token_usage = {
+                    'input_tokens': usage.get('prompt_tokens', 0),
+                    'output_tokens': usage.get('completion_tokens', 0)
+                }
+            
             get_logger().debug(f"\nAI response:\n{resp}")
+            if token_usage:
+                get_logger().debug(f"Token usage: {token_usage}")
 
             # log the full response for debugging
             response_log = self.prepare_logs(response, system, user, resp, finish_reason)
@@ -394,5 +411,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             # for CLI debugging
             if get_settings().config.verbosity_level >= 2:
                 get_logger().info(f"\nAI response:\n{resp}")
+                if token_usage:
+                    get_logger().info(f"Token usage: {token_usage}")
 
-        return resp, finish_reason
+        return resp, finish_reason, token_usage

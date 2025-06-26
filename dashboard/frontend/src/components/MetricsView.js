@@ -415,6 +415,11 @@ const MetricsView = () => {
   };
 
   const createPieSlicePath = (centerX, centerY, radius, startAngle, endAngle) => {
+    // Handle full circle case (single data point)
+    if (endAngle - startAngle >= 360) {
+      return `M ${centerX - radius} ${centerY} A ${radius} ${radius} 0 1 1 ${centerX + radius} ${centerY} A ${radius} ${radius} 0 1 1 ${centerX - radius} ${centerY}`;
+    }
+    
     const start = {
       x: centerX + radius * Math.cos((startAngle - 90) * Math.PI / 180),
       y: centerY + radius * Math.sin((startAngle - 90) * Math.PI / 180)

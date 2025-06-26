@@ -314,8 +314,129 @@ class DashboardApplication:
         
         @self.app.get("/api/jobs/{job_id}/operations")
         async def get_job_operations(job_id: str):
+            """Get operations for a specific job"""
             operations = self.job_service.get_operations_by_job(job_id)
-            return APIResponse(data=operations, total=len(operations))
+            return APIResponse(data={"operations": operations})
+
+        # NEW: Job and Operation Management API Endpoints for PR-Agent Integration
+        @self.app.post("/api/jobs/create")
+        async def create_job(job_data: dict):
+            """Create a new job from PR-Agent"""
+            try:
+                from models import JobType
+                job_type = JobType(job_data.get('job_type', 'manual'))
+                job_id = self.job_service.create_job(
+                    job_type=job_type,
+                    source=job_data.get('source', 'unknown'),
+                    repository=job_data.get('repository'),
+                    pr_url=job_data.get('pr_url'),
+                    trigger_user=job_data.get('trigger_user'),
+                    trigger_event=job_data.get('trigger_event'),
+                    installation_id=job_data.get('installation_id'),
+                    request_id=job_data.get('request_id'),
+                    webhook_payload=job_data.get('webhook_payload'),
+                    job_id=job_data.get('job_id')  # Accept pre-existing job_id
+                )
+                return APIResponse(data={"job_id": job_id}, message="Job created successfully")
+            except Exception as e:
+                logger.error(f"Failed to create job: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to create job: {str(e)}")
+
+        @self.app.post("/api/jobs/{job_id}/status")
+        async def update_job_status(job_id: str, status_data: dict):
+            """Update job status from PR-Agent"""
+            try:
+                from models import JobStatus
+                status = JobStatus(status_data.get('status'))
+                self.job_service.update_job_status(
+                    job_id=job_id,
+                    status=status,
+                    error_details=status_data.get('error_details'),
+                    result_summary=status_data.get('result_summary')
+                )
+                return APIResponse(data={"status": "updated"}, message="Job status updated successfully")
+            except Exception as e:
+                logger.error(f"Failed to update job status: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update job status: {str(e)}")
+
+        @self.app.post("/api/operations/create")
+        async def create_operation(operation_data: dict):
+            """Create a new operation from PR-Agent"""
+            try:
+                from models import OperationType
+                operation_type = OperationType(operation_data.get('operation_type', 'starting'))
+                operation_id = self.job_service.create_operation(
+                    job_id=operation_data.get('job_id'),
+                    operation_type=operation_type,
+                    command=operation_data.get('command'),
+                    repo=operation_data.get('repo'),
+                    pr_url=operation_data.get('pr_url'),
+                    installation_id=operation_data.get('installation_id'),
+                    sender=operation_data.get('sender'),
+                    request_id=operation_data.get('request_id'),
+                    operation_id=operation_data.get('operation_id')
+                )
+                return APIResponse(data={"operation_id": operation_id}, message="Operation created successfully")
+            except Exception as e:
+                logger.error(f"Failed to create operation: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to create operation: {str(e)}")
+
+        @self.app.post("/api/operations/{operation_id}/status")
+        async def update_operation_status(operation_id: str, status_data: dict):
+            """Update operation status from PR-Agent"""
+            try:
+                from models import OperationStatus
+                status = OperationStatus(status_data.get('status'))
+                self.job_service.update_operation_status(
+                    operation_id=operation_id,
+                    status=status,
+                    error_details=status_data.get('error_details'),
+                    result_data=status_data.get('result_data')
+                )
+                return APIResponse(data={"status": "updated"}, message="Operation status updated successfully")
+            except Exception as e:
+                logger.error(f"Failed to update operation status: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update operation status: {str(e)}")
+
+        @self.app.post("/api/operations/{operation_id}/ai-metrics")
+        async def update_operation_ai_metrics(operation_id: str, metrics_data: dict, db: Session = Depends(get_db)):
+            """Update operation AI metrics from PR-Agent"""
+            import asyncio
+            
+            try:
+                # Retry logic to handle race condition with operation creation
+                operation = None
+                max_retries = 3
+                retry_delay = 0.5  # seconds
+                
+                for attempt in range(max_retries):
+                    operation = db.query(OperationDB).filter(OperationDB.operation_id == operation_id).first()
+                    if operation:
+                        break
+                    
+                    if attempt < max_retries - 1:  # Don't wait on the last attempt
+                        logger.debug(f"Operation {operation_id} not found, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                
+                if operation:
+                    operation.model_used = metrics_data.get('model_used')
+                    operation.input_tokens = metrics_data.get('input_tokens')
+                    operation.output_tokens = metrics_data.get('output_tokens')
+                    operation.estimated_dev_hours_saved = metrics_data.get('estimated_dev_hours_saved')
+                    operation.last_updated = datetime.utcnow()
+                    db.commit()
+                    
+                    # Update metrics aggregates
+                    await self.metrics_service.update_aggregates_from_operation(db, operation)
+                    
+                    return APIResponse(data={"status": "updated"}, message="AI metrics updated successfully")
+                else:
+                    logger.warning(f"Operation {operation_id} not found after {max_retries} retries")
+                    raise HTTPException(status_code=404, detail="Operation not found")
+            except Exception as e:
+                logger.error(f"Failed to update AI metrics: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update AI metrics: {str(e)}")
         
         # Logs endpoints
         @self.app.get("/api/logs")

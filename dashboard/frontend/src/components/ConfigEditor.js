@@ -11,7 +11,8 @@ import {
   AlertCircle,
   Info,
   X,
-  Edit
+  Edit,
+  Clock
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
@@ -168,6 +169,15 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           extra_instructions: configData.pr_code_suggestions?.extra_instructions || ''
         },
         
+        // Developer Time Estimation settings
+        pr_dev_time_estimation: {
+          enabled: configData.pr_dev_time_estimation?.enabled !== false,
+          model: configData.pr_dev_time_estimation?.model || '',
+          fallback_to_heuristic: configData.pr_dev_time_estimation?.fallback_to_heuristic !== false,
+          estimation_timeout_seconds: configData.pr_dev_time_estimation?.estimation_timeout_seconds || 30,
+          confidence_threshold: configData.pr_dev_time_estimation?.confidence_threshold || 'medium'
+        },
+        
         // API keys (don't expose actual values for security)
         api_keys: {
           openai: configData.api_keys?.openai ? '***' : '',
@@ -205,6 +215,13 @@ const ConfigEditor = ({ navigationTarget = null }) => {
         },
         pr_code_suggestions: {
           extra_instructions: ''
+        },
+        pr_dev_time_estimation: {
+          enabled: false,
+          model: '',
+          fallback_to_heuristic: false,
+          estimation_timeout_seconds: 30,
+          confidence_threshold: 'medium'
         },
         api_keys: {
           openai: '',
@@ -274,6 +291,19 @@ const ConfigEditor = ({ navigationTarget = null }) => {
         } catch {
           errors['csharp_code_context_service.url'] = 'Please enter a valid URL (e.g., https://localhost:7138)';
         }
+      }
+    }
+
+    // Validate time estimation settings
+    if (config.pr_dev_time_estimation?.enabled) {
+      const timeout = config.pr_dev_time_estimation?.estimation_timeout_seconds;
+      if (timeout && (timeout < 10 || timeout > 120)) {
+        errors['pr_dev_time_estimation.estimation_timeout_seconds'] = 'Timeout must be between 10 and 120 seconds';
+      }
+      
+      const confidence = config.pr_dev_time_estimation?.confidence_threshold;
+      if (confidence && !['low', 'medium', 'high'].includes(confidence)) {
+        errors['pr_dev_time_estimation.confidence_threshold'] = 'Confidence threshold must be low, medium, or high';
       }
     }
 
@@ -496,6 +526,17 @@ const ConfigEditor = ({ navigationTarget = null }) => {
         >
           <CheckSquare className="h-4 w-4 mr-2" />
           Enabled Actions
+        </button>
+        <button
+          onClick={() => setActiveTab('time-estimation')}
+          className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+            activeTab === 'time-estimation'
+              ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
+              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+          }`}
+        >
+          <Clock className="h-4 w-4 mr-2" />
+          Time Estimation
         </button>
         <button
           onClick={() => setActiveTab('advanced')}
@@ -811,6 +852,141 @@ const ConfigEditor = ({ navigationTarget = null }) => {
             </SectionHeader>
           </div>
         )}
+
+                 {/* Time Estimation Tab */}
+         {activeTab === 'time-estimation' && (
+           <div className="space-y-8 animate-in slide-in-from-right-4 fade-in duration-300">
+             <SectionHeader title="Developer Time Estimation" icon={Clock}>
+               <div className="space-y-6 pt-4">
+                 <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-4">
+                   <div className="flex items-center">
+                     <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2" />
+                     <span className="text-blue-800 dark:text-blue-200 text-sm">
+                       AI-powered time estimation analyzes code complexity and review quality to estimate developer time savings. 
+                       Configure the model and settings to balance cost vs. accuracy.
+                     </span>
+                   </div>
+                 </div>
+
+                 {/* Enable/Disable Time Estimation */}
+                 <div className="flex items-center space-x-3">
+                   <input
+                     type="checkbox"
+                     id="time-estimation-enabled"
+                     checked={config.pr_dev_time_estimation?.enabled || false}
+                     onChange={(e) => updateConfig('pr_dev_time_estimation.enabled', e.target.checked)}
+                     disabled={!editing}
+                     className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                   />
+                   <label htmlFor="time-estimation-enabled" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                     Enable AI-Powered Time Estimation
+                   </label>
+                 </div>
+
+                 {/* Model Selection */}
+                 <div>
+                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                     Time Estimation Model
+                     <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                       Leave empty to use the same model as the tool being executed. Use a cheaper model to reduce costs.
+                     </span>
+                   </label>
+                   <select
+                     value={config.pr_dev_time_estimation?.model || ''}
+                     onChange={(e) => updateConfig('pr_dev_time_estimation.model', e.target.value)}
+                     disabled={!editing || !config.pr_dev_time_estimation?.enabled}
+                     className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                   >
+                     <option value="">Use same model as tool (recommended for accuracy)</option>
+                     {Object.entries(availableModels).map(([category, modelList]) => (
+                       <optgroup key={category} label={`${category.charAt(0).toUpperCase() + category.slice(1)} Models`}>
+                         {modelList.map(model => (
+                           <option key={model} value={model}>{model}</option>
+                         ))}
+                       </optgroup>
+                     ))}
+                   </select>
+                 </div>
+
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                   <div>
+                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                       Confidence Threshold
+                       <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                         Only use AI estimates with this confidence level or higher
+                       </span>
+                     </label>
+                     <select
+                       value={config.pr_dev_time_estimation?.confidence_threshold || 'medium'}
+                       onChange={(e) => updateConfig('pr_dev_time_estimation.confidence_threshold', e.target.value)}
+                       disabled={!editing || !config.pr_dev_time_estimation?.enabled}
+                       className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                     >
+                       <option value="low">Low - Accept all AI estimates</option>
+                       <option value="medium">Medium - Balanced (recommended)</option>
+                       <option value="high">High - Only high-confidence estimates</option>
+                     </select>
+                   </div>
+
+                   <div>
+                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                       Estimation Timeout (seconds)
+                       <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                         Maximum time to wait for AI estimation
+                       </span>
+                     </label>
+                     <input
+                       type="number"
+                       value={config.pr_dev_time_estimation?.estimation_timeout_seconds || 30}
+                       onChange={(e) => updateConfig('pr_dev_time_estimation.estimation_timeout_seconds', parseInt(e.target.value))}
+                       min="10"
+                       max="120"
+                       disabled={!editing || !config.pr_dev_time_estimation?.enabled}
+                       className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                     />
+                   </div>
+                 </div>
+
+                 {/* Fallback Options */}
+                 <div className="flex items-center space-x-3">
+                   <input
+                     type="checkbox"
+                     id="fallback-to-heuristic"
+                     checked={config.pr_dev_time_estimation?.fallback_to_heuristic || false}
+                     onChange={(e) => updateConfig('pr_dev_time_estimation.fallback_to_heuristic', e.target.checked)}
+                     disabled={!editing || !config.pr_dev_time_estimation?.enabled}
+                     className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                   />
+                   <label htmlFor="fallback-to-heuristic" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                     Fall back to heuristic estimation if AI fails
+                     <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                       If disabled, failed AI estimations will return zero time savings
+                     </span>
+                   </label>
+                 </div>
+
+                 {/* Cost Information */}
+                 <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-md p-4">
+                   <div className="flex items-start">
+                     <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400 mr-2 mt-0.5" />
+                     <div className="text-yellow-800 dark:text-yellow-200 text-sm">
+                       <p className="font-medium mb-1">Cost Considerations:</p>
+                       <ul className="list-disc list-inside space-y-1 text-xs">
+                         <li>Each time estimation requires an additional AI call</li>
+                         <li><strong>Budget models:</strong> GPT-4o Mini, GPT-3.5 Turbo (~$0.001 per estimation)</li>
+                         <li><strong>Standard models:</strong> GPT-4o, Claude 3.5 Sonnet (~$0.01 per estimation)</li>
+                         <li><strong>Premium models:</strong> o1, o3, Claude Opus 4 (~$0.10+ per estimation)</li>
+                         <li><strong>Reasoning models:</strong> o1, o3, Claude 3.7 Sonnet (~$0.50+ per estimation)</li>
+                         <li>Using the same model as the tool provides best accuracy but highest cost</li>
+                         <li>Recommended: Use budget models for cost-effective estimation</li>
+                       </ul>
+                     </div>
+                   </div>
+                 </div>
+               </div>
+             </SectionHeader>
+           </div>
+         )}
 
         {/* Advanced Settings Tab */}
         {activeTab === 'advanced' && (

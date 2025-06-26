@@ -31,6 +31,7 @@ import RunningIndicator from './RunningIndicator';
 
 const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOperationId }) => {
   const [jobs, setJobs] = useState([]);
+  const [allJobs, setAllJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expandedJobs, setExpandedJobs] = useState(new Set());
   const [selectedFilters, setSelectedFilters] = useState({
@@ -123,6 +124,15 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
   const fetchJobs = async () => {
     try {
       setLoading(true);
+      
+      // Fetch ALL jobs for accurate tab counts
+      const allJobsResponse = await api.getJobs({
+        limit: 100,
+        include_operations: true
+      });
+      setAllJobs(allJobsResponse.data?.data || []);
+      
+      // Fetch filtered jobs for display
       const params = {
         limit: 100,
         include_operations: true
@@ -138,6 +148,7 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
       console.error('Failed to fetch jobs:', error);
       showError('Failed to Load Jobs', 'Unable to fetch jobs data');
       setJobs([]);
+      setAllJobs([]);
     } finally {
       setLoading(false);
     }
@@ -145,7 +156,14 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
 
   const fetchJobsPreservingState = async () => {
     try {
-      // Fetch data without showing loading state to preserve UI
+      // Fetch ALL jobs for accurate tab counts
+      const allJobsResponse = await api.getJobs({
+        limit: 100,
+        include_operations: true
+      });
+      setAllJobs(allJobsResponse.data?.data || []);
+      
+      // Fetch filtered jobs for display without showing loading state to preserve UI
       const params = {
         limit: 100,
         include_operations: true
@@ -468,7 +486,7 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
         {statusTabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = selectedFilters.status === tab.id;
-          const jobCount = tab.id === 'all' ? jobs.length : jobs.filter(job => job.status === tab.id).length;
+          const jobCount = tab.id === 'all' ? allJobs.length : allJobs.filter(job => job.status === tab.id).length;
           
           return (
             <button
