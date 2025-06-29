@@ -12,7 +12,13 @@ import {
   Info,
   X,
   Edit,
-  Clock
+  Clock,
+  MessageSquare,
+  FileText,
+  Lightbulb,
+  Github,
+  Gauge,
+  Shield
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
@@ -164,9 +170,62 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           pr_update_changelog: false
         },
         
+        // PR Reviewer settings
+        pr_reviewer: {
+          num_max_findings: configData.pr_reviewer?.num_max_findings || 15,
+          extra_instructions: configData.pr_reviewer?.extra_instructions || ''
+        },
+        
+        // PR Description settings
+        pr_description: {
+          extra_instructions: configData.pr_description?.extra_instructions || '',
+          publish_labels: configData.pr_description?.publish_labels || false,
+          generate_ai_title: configData.pr_description?.generate_ai_title || false,
+          enable_large_pr_handling: configData.pr_description?.enable_large_pr_handling || true
+        },
+        
         // PR Code Suggestions settings
         pr_code_suggestions: {
-          extra_instructions: configData.pr_code_suggestions?.extra_instructions || ''
+          extra_instructions: configData.pr_code_suggestions?.extra_instructions || '',
+          focus_only_on_problems: configData.pr_code_suggestions?.focus_only_on_problems || false,
+          suggestions_score_threshold: configData.pr_code_suggestions?.suggestions_score_threshold || 0,
+          commitable_code_suggestions: configData.pr_code_suggestions?.commitable_code_suggestions || true,
+          dual_publishing_score_threshold: configData.pr_code_suggestions?.dual_publishing_score_threshold || -1
+        },
+        
+        // GitHub settings
+        github: {
+          bot_user: configData.github?.bot_user || 'github-actions[bot]',
+          override_deployment_type: configData.github?.override_deployment_type || true,
+          pr_commands: configData.github?.pr_commands || [
+            '/describe --pr_description.final_update_message=false',
+            '/review',
+            '/improve'
+          ]
+        },
+        
+        // Best Practices settings
+        best_practices: {
+          content: configData.best_practices?.content || '',
+          organization_name: configData.best_practices?.organization_name || '',
+          max_lines_allowed: configData.best_practices?.max_lines_allowed || 800,
+          enable_global_best_practices: configData.best_practices?.enable_global_best_practices || false
+        },
+        
+        // Auto Best Practices settings
+        auto_best_practices: {
+          enable_auto_best_practices: configData.auto_best_practices?.enable_auto_best_practices || true,
+          utilize_auto_best_practices: configData.auto_best_practices?.utilize_auto_best_practices || true,
+          extra_instructions: configData.auto_best_practices?.extra_instructions || '',
+          content: configData.auto_best_practices?.content || '',
+          max_patterns: configData.auto_best_practices?.max_patterns || 5
+        },
+        
+        // Dashboard settings
+        dashboard: {
+          URL: configData.dashboard?.URL || configData.DASHBOARD?.URL || 'http://localhost:8000/',
+          ENABLED: configData.dashboard?.ENABLED !== false && configData.DASHBOARD?.ENABLED !== false,
+          API_KEY: configData.dashboard?.API_KEY || configData.DASHBOARD?.API_KEY || ''
         },
         
         // Developer Time Estimation settings
@@ -213,8 +272,49 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           pr_add_docs: false,
           pr_update_changelog: false
         },
-        pr_code_suggestions: {
+        pr_reviewer: {
+          num_max_findings: 15,
           extra_instructions: ''
+        },
+        pr_description: {
+          extra_instructions: '',
+          publish_labels: false,
+          generate_ai_title: false,
+          enable_large_pr_handling: true
+        },
+        pr_code_suggestions: {
+          extra_instructions: '',
+          focus_only_on_problems: false,
+          suggestions_score_threshold: 0,
+          commitable_code_suggestions: true,
+          dual_publishing_score_threshold: -1
+        },
+        github: {
+          bot_user: 'github-actions[bot]',
+          override_deployment_type: true,
+          pr_commands: [
+            '/describe --pr_description.final_update_message=false',
+            '/review',
+            '/improve'
+          ]
+        },
+        best_practices: {
+          content: '',
+          organization_name: '',
+          max_lines_allowed: 800,
+          enable_global_best_practices: false
+        },
+        auto_best_practices: {
+          enable_auto_best_practices: true,
+          utilize_auto_best_practices: true,
+          extra_instructions: '',
+          content: '',
+          max_patterns: 5
+        },
+        dashboard: {
+          URL: 'http://localhost:8000/',
+          ENABLED: true,
+          API_KEY: ''
         },
         pr_dev_time_estimation: {
           enabled: false,
@@ -307,6 +407,61 @@ const ConfigEditor = ({ navigationTarget = null }) => {
       }
     }
 
+    // Validate PR reviewer settings
+    if (config.pr_reviewer?.num_max_findings) {
+      const findings = config.pr_reviewer.num_max_findings;
+      if (findings < 1 || findings > 50) {
+        errors['pr_reviewer.num_max_findings'] = 'Max findings must be between 1 and 50';
+      }
+    }
+
+    // Validate PR code suggestions settings
+    if (config.pr_code_suggestions?.suggestions_score_threshold !== undefined) {
+      const threshold = config.pr_code_suggestions.suggestions_score_threshold;
+      if (threshold < 0 || threshold > 10) {
+        errors['pr_code_suggestions.suggestions_score_threshold'] = 'Score threshold must be between 0 and 10';
+      }
+    }
+
+    if (config.pr_code_suggestions?.dual_publishing_score_threshold !== undefined) {
+      const threshold = config.pr_code_suggestions.dual_publishing_score_threshold;
+      if (threshold < -1 || threshold > 10) {
+        errors['pr_code_suggestions.dual_publishing_score_threshold'] = 'Dual publishing threshold must be between -1 and 10';
+      }
+    }
+
+    // Validate GitHub settings
+    if (config.github?.bot_user && config.github.bot_user.trim() === '') {
+      errors['github.bot_user'] = 'Bot user cannot be empty';
+    }
+
+    // Validate best practices settings
+    if (config.best_practices?.max_lines_allowed) {
+      const maxLines = config.best_practices.max_lines_allowed;
+      if (maxLines < 100 || maxLines > 2000) {
+        errors['best_practices.max_lines_allowed'] = 'Max lines must be between 100 and 2000';
+      }
+    }
+
+    if (config.auto_best_practices?.max_patterns) {
+      const maxPatterns = config.auto_best_practices.max_patterns;
+      if (maxPatterns < 1 || maxPatterns > 20) {
+        errors['auto_best_practices.max_patterns'] = 'Max patterns must be between 1 and 20';
+      }
+    }
+
+    // Validate dashboard settings
+    if (config.dashboard?.ENABLED && config.dashboard?.URL) {
+      const url = config.dashboard.URL.trim();
+      if (url && url !== '') {
+        try {
+          new URL(url);
+        } catch {
+          errors['dashboard.URL'] = 'Please enter a valid URL (e.g., http://localhost:8000/)';
+        }
+      }
+    }
+
     return errors;
   };
 
@@ -357,6 +512,22 @@ const ConfigEditor = ({ navigationTarget = null }) => {
       }
       return newErrors;
     });
+  }, []);
+
+  // Smart checkbox styling that makes checked disabled checkboxes more obvious
+  const getCheckboxClasses = useCallback((checked, disabled) => {
+    const baseClasses = "h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 transition-all duration-200";
+    
+    if (disabled && checked) {
+      // Checked but disabled - make it obvious
+      return `${baseClasses} opacity-100 bg-blue-500 border-blue-500 text-white cursor-not-allowed`;
+    } else if (disabled) {
+      // Unchecked and disabled - make it subtle
+      return `${baseClasses} opacity-40 cursor-not-allowed`;
+    } else {
+      // Enabled - normal styling
+      return `${baseClasses} hover:border-primary-400 dark:hover:border-primary-500`;
+    }
   }, []);
 
   const ModelSelector = useCallback(({ label, value, onChange, models, description, editing }) => (
@@ -492,67 +663,138 @@ const ConfigEditor = ({ navigationTarget = null }) => {
         </div>
       )}
 
-      {/* Tab Navigation */}
-      <div className="flex space-x-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1 mb-8">
-        <button
-          onClick={() => setActiveTab('models')}
-          className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-            activeTab === 'models'
-              ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
-              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-          }`}
-        >
-          <Brain className="h-4 w-4 mr-2" />
-          AI Models
-        </button>
-        <button
-          onClick={() => setActiveTab('context')}
-          className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-            activeTab === 'context'
-              ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
-              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-          }`}
-        >
-          <Database className="h-4 w-4 mr-2" />
-          Code Context
-        </button>
-        <button
-          onClick={() => setActiveTab('actions')}
-          className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-            activeTab === 'actions'
-              ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
-              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-          }`}
-        >
-          <CheckSquare className="h-4 w-4 mr-2" />
-          Enabled Actions
-        </button>
-        <button
-          onClick={() => setActiveTab('time-estimation')}
-          className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-            activeTab === 'time-estimation'
-              ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
-              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-          }`}
-        >
-          <Clock className="h-4 w-4 mr-2" />
-          Time Estimation
-        </button>
-        <button
-          onClick={() => setActiveTab('advanced')}
-          className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-            activeTab === 'advanced'
-              ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
-              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-          }`}
-        >
-          <Settings className="h-4 w-4 mr-2" />
-          Advanced
-        </button>
-      </div>
+      {/* Main Layout with Sidebar */}
+      <div className="flex gap-3">
+        {/* Sidebar Navigation */}
+        <div className="w-48 flex-shrink-0">
+          <nav className="space-y-1 sticky top-6">
+              <button
+                onClick={() => setActiveTab('models')}
+                className={`w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === 'models'
+                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                }`}
+              >
+                <Brain className="h-4 w-4 mr-3 flex-shrink-0" />
+                <span className="truncate">AI Models</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('context')}
+                className={`w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === 'context'
+                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                }`}
+              >
+                <Database className="h-4 w-4 mr-3 flex-shrink-0" />
+                <span className="truncate">Code Context</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('actions')}
+                className={`w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === 'actions'
+                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                }`}
+              >
+                <CheckSquare className="h-4 w-4 mr-3 flex-shrink-0" />
+                <span className="truncate">Enabled Actions</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('pr-reviewer')}
+                className={`w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === 'pr-reviewer'
+                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                }`}
+              >
+                <MessageSquare className="h-4 w-4 mr-3 flex-shrink-0" />
+                <span className="truncate">PR Reviewer</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('pr-description')}
+                className={`w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === 'pr-description'
+                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                }`}
+              >
+                <FileText className="h-4 w-4 mr-3 flex-shrink-0" />
+                <span className="truncate">PR Description</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('pr-code-suggestions')}
+                className={`w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === 'pr-code-suggestions'
+                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                }`}
+              >
+                <Lightbulb className="h-4 w-4 mr-3 flex-shrink-0" />
+                <span className="truncate">Code Suggestions</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('github')}
+                className={`w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === 'github'
+                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                }`}
+              >
+                <Github className="h-4 w-4 mr-3 flex-shrink-0" />
+                <span className="truncate">GitHub</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('best-practices')}
+                className={`w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === 'best-practices'
+                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                }`}
+              >
+                <Shield className="h-4 w-4 mr-3 flex-shrink-0" />
+                <span className="truncate">Best Practices</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('dashboard')}
+                className={`w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === 'dashboard'
+                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                }`}
+              >
+                <Gauge className="h-4 w-4 mr-3 flex-shrink-0" />
+                <span className="truncate">Dashboard</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('time-estimation')}
+                className={`w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === 'time-estimation'
+                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                }`}
+              >
+                <Clock className="h-4 w-4 mr-3 flex-shrink-0" />
+                <span className="truncate">Time Estimation</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('advanced')}
+                className={`w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === 'advanced'
+                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                }`}
+              >
+                <Settings className="h-4 w-4 mr-3 flex-shrink-0" />
+                <span className="truncate">Advanced</span>
+              </button>
+            </nav>
+        </div>
 
-      {/* Tab Content */}
-      <div className="space-y-6">
+        {/* Main Content Area */}
+        <div className="flex-1 min-w-0">
+          <div className="space-y-6">
         {/* AI Models Tab */}
         {activeTab === 'models' && (
           <div className="space-y-8 animate-in slide-in-from-right-4 fade-in duration-300">
@@ -715,7 +957,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                       checked={config.csharp_code_context_service?.enabled || false}
                       onChange={(e) => updateConfig('csharp_code_context_service.enabled', e.target.checked)}
                       disabled={!editing}
-                      className={`h-5 w-5 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed ${
+                      className={`${getCheckboxClasses(config.csharp_code_context_service?.enabled || false, !editing)} ${
                         animatingCheckbox === 'context-enabled' 
                           ? 'ring-4 ring-blue-500 ring-opacity-75 animate-pulse scale-125 shadow-lg' 
                           : ''
@@ -847,6 +1089,276 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                       </div>
                     );
                   })}
+                </div>
+              </div>
+            </SectionHeader>
+          </div>
+        )}
+
+        {/* PR Reviewer Tab */}
+        {activeTab === 'pr-reviewer' && (
+          <div className="space-y-8 animate-in slide-in-from-right-4 fade-in duration-300">
+            <SectionHeader title="PR Reviewer Settings" icon={MessageSquare}>
+              <div className="space-y-6 pt-4">
+                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-4">
+                  <div className="flex items-center">
+                    <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2" />
+                    <span className="text-blue-800 dark:text-blue-200 text-sm">
+                      Configure how PR-Agent performs automated code reviews. These settings control the depth and quality of review output.
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Maximum Findings per Review
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Limits the number of issues reported to prevent overwhelming reviews. Higher values provide more comprehensive feedback but may be harder to process.
+                      </span>
+                    </label>
+                    <input
+                      type="number"
+                      value={config.pr_reviewer?.num_max_findings || 15}
+                      onChange={(e) => updateConfig('pr_reviewer.num_max_findings', parseInt(e.target.value))}
+                      min="1"
+                      max="50"
+                      disabled={!editing}
+                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Recommended: 10-20 findings for balanced reviews
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Extra Instructions for Reviewer
+                    <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                      Additional guidance for the AI reviewer. Specify what to focus on, coding standards, or areas to ignore.
+                    </span>
+                  </label>
+                  <textarea
+                    value={config.pr_reviewer?.extra_instructions || ''}
+                    onChange={(e) => updateConfig('pr_reviewer.extra_instructions', e.target.value)}
+                    disabled={!editing}
+                    placeholder="e.g., Focus on security vulnerabilities and performance issues. Ignore minor style issues. Pay special attention to error handling and input validation."
+                    rows={8}
+                    className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed resize-vertical"
+                  />
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    These instructions will guide the AI reviewer's analysis and feedback priorities.
+                  </p>
+                </div>
+              </div>
+            </SectionHeader>
+          </div>
+        )}
+
+        {/* PR Description Tab */}
+        {activeTab === 'pr-description' && (
+          <div className="space-y-8 animate-in slide-in-from-right-4 fade-in duration-300">
+            <SectionHeader title="PR Description Settings" icon={FileText}>
+              <div className="space-y-6 pt-4">
+                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-4">
+                  <div className="flex items-center">
+                    <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2" />
+                    <span className="text-blue-800 dark:text-blue-200 text-sm">
+                      Control how PR-Agent generates and formats pull request descriptions, including titles, labels, and handling of large PRs.
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      id="publish-labels"
+                      checked={config.pr_description?.publish_labels || false}
+                      onChange={(e) => updateConfig('pr_description.publish_labels', e.target.checked)}
+                      disabled={!editing}
+                      className={getCheckboxClasses(config.pr_description?.publish_labels || false, !editing)}
+                    />
+                    <label htmlFor="publish-labels" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Publish AI-generated labels to PR
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Automatically adds semantic labels like "enhancement", "bug", "documentation" based on PR content analysis.
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      id="generate-ai-title"
+                      checked={config.pr_description?.generate_ai_title || false}
+                      onChange={(e) => updateConfig('pr_description.generate_ai_title', e.target.checked)}
+                      disabled={!editing}
+                      className={getCheckboxClasses(config.pr_description?.generate_ai_title || false, !editing)}
+                    />
+                    <label htmlFor="generate-ai-title" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Generate AI-powered PR title
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Replaces the existing PR title with an AI-generated one that summarizes the changes. Use carefully as it overwrites manual titles.
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      id="enable-large-pr-handling"
+                      checked={config.pr_description?.enable_large_pr_handling !== false}
+                      onChange={(e) => updateConfig('pr_description.enable_large_pr_handling', e.target.checked)}
+                      disabled={!editing}
+                      className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <label htmlFor="enable-large-pr-handling" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Enable special handling for large PRs
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Uses optimized processing for PRs with many files or large changes. Breaks down analysis into chunks to avoid token limits.
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Extra Instructions for Description Generation
+                    <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                      Customize how PR descriptions are generated. Specify format preferences, required sections, or content to emphasize.
+                    </span>
+                  </label>
+                  <textarea
+                    value={config.pr_description?.extra_instructions || ''}
+                    onChange={(e) => updateConfig('pr_description.extra_instructions', e.target.value)}
+                    disabled={!editing}
+                    placeholder="e.g., Always include a 'Breaking Changes' section if applicable. Use technical language and include performance implications. Focus on business impact."
+                    rows={8}
+                    className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed resize-vertical"
+                  />
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    These instructions will influence the style and content of generated PR descriptions.
+                  </p>
+                </div>
+              </div>
+            </SectionHeader>
+          </div>
+        )}
+
+        {/* PR Code Suggestions Tab */}
+        {activeTab === 'pr-code-suggestions' && (
+          <div className="space-y-8 animate-in slide-in-from-right-4 fade-in duration-300">
+            <SectionHeader title="Code Suggestions Settings" icon={Lightbulb}>
+              <div className="space-y-6 pt-4">
+                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-4">
+                  <div className="flex items-center">
+                    <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2" />
+                    <span className="text-blue-800 dark:text-blue-200 text-sm">
+                      Configure AI-powered code suggestions and improvements. Control quality thresholds, focus areas, and suggestion types.
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      id="focus-only-on-problems"
+                      checked={config.pr_code_suggestions?.focus_only_on_problems || false}
+                      onChange={(e) => updateConfig('pr_code_suggestions.focus_only_on_problems', e.target.checked)}
+                      disabled={!editing}
+                      className={getCheckboxClasses(config.pr_code_suggestions?.focus_only_on_problems || false, !editing)}
+                    />
+                    <label htmlFor="focus-only-on-problems" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Focus only on problems (not enhancements)
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        When enabled, AI will prioritize bugs, security issues, and critical problems over style improvements and optimizations.
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      id="commitable-code-suggestions"
+                      checked={config.pr_code_suggestions?.commitable_code_suggestions !== false}
+                      onChange={(e) => updateConfig('pr_code_suggestions.commitable_code_suggestions', e.target.checked)}
+                      disabled={!editing}
+                      className={getCheckboxClasses(config.pr_code_suggestions?.commitable_code_suggestions !== false, !editing)}
+                    />
+                    <label htmlFor="commitable-code-suggestions" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Enable commitable code suggestions
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Allows developers to commit suggestions directly from PR comments. Provides one-click code improvements.
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Suggestions Score Threshold
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Minimum quality score (0-10) for suggestions to be shown. Higher values mean fewer but higher-quality suggestions.
+                      </span>
+                    </label>
+                    <input
+                      type="number"
+                      value={config.pr_code_suggestions?.suggestions_score_threshold || 0}
+                      onChange={(e) => updateConfig('pr_code_suggestions.suggestions_score_threshold', parseInt(e.target.value))}
+                      min="0"
+                      max="10"
+                      disabled={!editing}
+                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      0 = Show all suggestions, 10 = Only critical improvements
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Dual Publishing Score Threshold
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Minimum score for suggestions to be made commitable. -1 disables dual publishing.
+                      </span>
+                    </label>
+                    <input
+                      type="number"
+                      value={config.pr_code_suggestions?.dual_publishing_score_threshold ?? -1}
+                      onChange={(e) => updateConfig('pr_code_suggestions.dual_publishing_score_threshold', parseInt(e.target.value))}
+                      min="-1"
+                      max="10"
+                      disabled={!editing}
+                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      -1 = Disabled, 0+ = Minimum score for commitable suggestions
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Extra Instructions for Code Suggestions
+                    <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                      Detailed instructions to guide the AI's code analysis and suggestion generation. Be specific about priorities and standards.
+                    </span>
+                  </label>
+                  <textarea
+                    value={config.pr_code_suggestions?.extra_instructions || ''}
+                    onChange={(e) => updateConfig('pr_code_suggestions.extra_instructions', e.target.value)}
+                    disabled={!editing}
+                    placeholder="e.g., Prioritize security and performance. Focus on SOLID principles. Suggest modern async patterns. Include performance complexity analysis (O notation) when suggesting algorithmic changes."
+                    rows={12}
+                    className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed resize-vertical"
+                  />
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    These instructions are critical for getting high-quality, targeted code suggestions that match your team's standards.
+                  </p>
                 </div>
               </div>
             </SectionHeader>
@@ -1002,28 +1514,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   </div>
                 </div>
 
-                {/* PR Code Suggestions Extra Instructions */}
-                {config.enabled_actions?.pr_code_suggestions && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Code Suggestions Extra Instructions
-                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                        Optional instructions to guide the AI model for code suggestions. Use bullet points or numbered lists for clarity.
-                      </span>
-                    </label>
-                    <textarea
-                      value={config.pr_code_suggestions?.extra_instructions || ''}
-                      onChange={(e) => updateConfig('pr_code_suggestions.extra_instructions', e.target.value)}
-                      disabled={!editing}
-                      placeholder="e.g., - Focus on performance optimizations&#10;- Ignore style-only suggestions&#10;- Emphasize security best practices&#10;- Avoid suggesting changes to test files&#10;- Prioritize readability over brevity"
-                      rows={20}
-                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed resize-vertical"
-                    />
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                      These instructions will be included in the AI prompt when generating code suggestions.
-                    </p>
-                  </div>
-                )}
+
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
@@ -1087,6 +1578,363 @@ const ConfigEditor = ({ navigationTarget = null }) => {
             </SectionHeader>
           </div>
         )}
+
+        {/* GitHub Tab */}
+        {activeTab === 'github' && (
+          <div className="space-y-8 animate-in slide-in-from-right-4 fade-in duration-300">
+            <SectionHeader title="GitHub Integration Settings" icon={Github}>
+              <div className="space-y-6 pt-4">
+                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-4">
+                  <div className="flex items-center">
+                    <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2" />
+                    <span className="text-blue-800 dark:text-blue-200 text-sm">
+                      Configure GitHub-specific settings including bot behavior, deployment preferences, and default PR commands.
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Bot User
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        The GitHub user or bot account that will post PR-Agent comments and interactions.
+                      </span>
+                    </label>
+                    <input
+                      type="text"
+                      value={config.github?.bot_user || 'github-actions[bot]'}
+                      onChange={(e) => updateConfig('github.bot_user', e.target.value)}
+                      disabled={!editing}
+                      placeholder="github-actions[bot]"
+                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Typically "github-actions[bot]" for GitHub Actions or your bot's username
+                    </p>
+                  </div>
+
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      id="override-deployment-type"
+                      checked={config.github?.override_deployment_type !== false}
+                      onChange={(e) => updateConfig('github.override_deployment_type', e.target.checked)}
+                      disabled={!editing}
+                      className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <label htmlFor="override-deployment-type" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Override deployment type
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Allow GitHub-specific configuration to override global deployment settings for this git provider.
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Default PR Commands
+                    <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                      Commands that will be automatically executed when a new PR is opened. One command per line.
+                    </span>
+                  </label>
+                  <textarea
+                    value={config.github?.pr_commands?.join('\n') || '/describe --pr_description.final_update_message=false\n/review\n/improve'}
+                    onChange={(e) => updateConfig('github.pr_commands', e.target.value.split('\n').filter(cmd => cmd.trim()))}
+                    disabled={!editing}
+                    placeholder="/describe --pr_description.final_update_message=false&#10;/review&#10;/improve"
+                    rows={6}
+                    className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed resize-vertical"
+                  />
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Common commands: /describe (generate description), /review (code review), /improve (code suggestions)
+                  </p>
+                </div>
+              </div>
+            </SectionHeader>
+          </div>
+        )}
+
+        {/* Best Practices Tab */}
+        {activeTab === 'best-practices' && (
+          <div className="space-y-8 animate-in slide-in-from-right-4 fade-in duration-300">
+            <SectionHeader title="Best Practices Settings" icon={Shield}>
+              <div className="space-y-6 pt-4">
+                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-4">
+                  <div className="flex items-center">
+                    <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2" />
+                    <span className="text-blue-800 dark:text-blue-200 text-sm">
+                      Configure organizational best practices and automated pattern detection to ensure code quality and consistency.
+                    </span>
+                  </div>
+                </div>
+
+                {/* Global Best Practices */}
+                <div className="space-y-4">
+                  <h4 className="text-md font-medium text-gray-900 dark:text-white">Global Best Practices</h4>
+                  
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      id="enable-global-best-practices"
+                      checked={config.best_practices?.enable_global_best_practices || false}
+                      onChange={(e) => updateConfig('best_practices.enable_global_best_practices', e.target.checked)}
+                      disabled={!editing}
+                      className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <label htmlFor="enable-global-best-practices" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Enable global best practices enforcement
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Apply organization-wide coding standards and practices across all repositories.
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Organization Name
+                        <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                          Your organization's name for customized best practice recommendations.
+                        </span>
+                      </label>
+                      <input
+                        type="text"
+                        value={config.best_practices?.organization_name || ''}
+                        onChange={(e) => updateConfig('best_practices.organization_name', e.target.value)}
+                        disabled={!editing}
+                        placeholder="e.g., Acme Corp"
+                        className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Max Lines Allowed
+                        <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                          Maximum lines for best practices content to prevent token limit issues.
+                        </span>
+                      </label>
+                      <input
+                        type="number"
+                        value={config.best_practices?.max_lines_allowed || 800}
+                        onChange={(e) => updateConfig('best_practices.max_lines_allowed', parseInt(e.target.value))}
+                        min="100"
+                        max="2000"
+                        disabled={!editing}
+                        className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Best Practices Content
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Define your organization's specific coding standards, patterns, and practices that AI should enforce.
+                      </span>
+                    </label>
+                    <textarea
+                      value={config.best_practices?.content || ''}
+                      onChange={(e) => updateConfig('best_practices.content', e.target.value)}
+                      disabled={!editing}
+                      placeholder="e.g., Always use async/await instead of .Result on async methods. Prefer dependency injection over static dependencies. Use early returns to reduce nesting..."
+                      rows={8}
+                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed resize-vertical"
+                    />
+                  </div>
+                </div>
+
+                {/* Auto Best Practices */}
+                <div className="space-y-4 border-t border-gray-200 dark:border-gray-700 pt-6">
+                  <h4 className="text-md font-medium text-gray-900 dark:text-white">Automated Best Practices</h4>
+                  
+                  <div className="space-y-3">
+                    <div className="flex items-center space-x-3">
+                      <input
+                        type="checkbox"
+                        id="enable-auto-best-practices"
+                        checked={config.auto_best_practices?.enable_auto_best_practices !== false}
+                        onChange={(e) => updateConfig('auto_best_practices.enable_auto_best_practices', e.target.checked)}
+                        disabled={!editing}
+                        className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                      />
+                      <label htmlFor="enable-auto-best-practices" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Enable automatic best practices detection
+                        <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                          AI will automatically identify and suggest adherence to common coding best practices.
+                        </span>
+                      </label>
+                    </div>
+
+                    <div className="flex items-center space-x-3">
+                      <input
+                        type="checkbox"
+                        id="utilize-auto-best-practices"
+                        checked={config.auto_best_practices?.utilize_auto_best_practices !== false}
+                        onChange={(e) => updateConfig('auto_best_practices.utilize_auto_best_practices', e.target.checked)}
+                        disabled={!editing}
+                        className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                      />
+                      <label htmlFor="utilize-auto-best-practices" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Utilize auto-detected best practices in reviews
+                        <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                          Apply automatically detected patterns and practices when reviewing code.
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Max Patterns to Detect
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Maximum number of patterns to automatically detect and apply per analysis.
+                      </span>
+                    </label>
+                    <input
+                      type="number"
+                      value={config.auto_best_practices?.max_patterns || 5}
+                      onChange={(e) => updateConfig('auto_best_practices.max_patterns', parseInt(e.target.value))}
+                      min="1"
+                      max="20"
+                      disabled={!editing}
+                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Auto Best Practices Instructions
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Additional instructions for automated best practice detection and application.
+                      </span>
+                    </label>
+                    <textarea
+                      value={config.auto_best_practices?.extra_instructions || ''}
+                      onChange={(e) => updateConfig('auto_best_practices.extra_instructions', e.target.value)}
+                      disabled={!editing}
+                      placeholder="e.g., Focus on performance and security patterns. Prioritize SOLID principles. Look for common anti-patterns in our codebase..."
+                      rows={6}
+                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed resize-vertical"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Auto Best Practices Content
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Specific patterns and practices content for automated detection.
+                      </span>
+                    </label>
+                    <textarea
+                      value={config.auto_best_practices?.content || ''}
+                      onChange={(e) => updateConfig('auto_best_practices.content', e.target.value)}
+                      disabled={!editing}
+                      placeholder="e.g., Repository-specific patterns that should be automatically detected and enforced..."
+                      rows={6}
+                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed resize-vertical"
+                    />
+                  </div>
+                </div>
+              </div>
+            </SectionHeader>
+          </div>
+        )}
+
+        {/* Dashboard Tab */}
+        {activeTab === 'dashboard' && (
+          <div className="space-y-8 animate-in slide-in-from-right-4 fade-in duration-300">
+            <SectionHeader title="Dashboard Settings" icon={Gauge}>
+              <div className="space-y-6 pt-4">
+                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-4">
+                  <div className="flex items-center">
+                    <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2" />
+                    <span className="text-blue-800 dark:text-blue-200 text-sm">
+                      Configure the PR-Agent dashboard for monitoring AI operations, costs, and performance metrics.
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-3">
+                  <input
+                    type="checkbox"
+                    id="dashboard-enabled"
+                    checked={config.dashboard?.ENABLED !== false}
+                    onChange={(e) => updateConfig('dashboard.ENABLED', e.target.checked)}
+                    disabled={!editing}
+                    className={getCheckboxClasses(config.dashboard?.ENABLED !== false, !editing)}
+                  />
+                  <label htmlFor="dashboard-enabled" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Enable Dashboard Integration
+                    <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                      Allows PR-Agent to send metrics and logs to the dashboard for monitoring and analysis.
+                    </span>
+                  </label>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Dashboard URL
+                    <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                      The URL where your PR-Agent dashboard is hosted. Include the protocol (http/https).
+                    </span>
+                  </label>
+                  <input
+                    type="url"
+                    value={config.dashboard?.URL || 'http://localhost:8000/'}
+                    onChange={(e) => updateConfig('dashboard.URL', e.target.value)}
+                    disabled={!editing}
+                    placeholder="http://localhost:8000/"
+                    className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Default: http://localhost:8000/ for local development
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Dashboard API Key
+                    <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                      Optional API key for authenticated dashboard access. Leave empty if authentication is not required.
+                    </span>
+                  </label>
+                  <input
+                    type="password"
+                    value={config.dashboard?.API_KEY || ''}
+                    onChange={(e) => updateConfig('dashboard.API_KEY', e.target.value)}
+                    disabled={!editing}
+                    placeholder="Enter API key (optional)"
+                    className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Keep this secure and don't share it. Used for authenticating PR-Agent with your dashboard.
+                  </p>
+                </div>
+
+                <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md p-4">
+                  <div className="flex items-start">
+                    <CheckSquare className="h-5 w-5 text-green-600 dark:text-green-400 mr-2 mt-0.5" />
+                    <div className="text-green-800 dark:text-green-200 text-sm">
+                      <p className="font-medium mb-1">Dashboard Benefits:</p>
+                      <ul className="list-disc list-inside space-y-1 text-xs">
+                        <li>Real-time monitoring of AI operations and costs</li>
+                        <li>Performance metrics and usage analytics</li>
+                        <li>Error tracking and debugging capabilities</li>
+                        <li>Historical data for optimization insights</li>
+                        <li>Cost management and budget tracking</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </SectionHeader>
+          </div>
+        )}
+          </div>
+        </div>
       </div>
     </div>
   );

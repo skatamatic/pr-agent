@@ -273,13 +273,16 @@ class JobContext:
             try:
                 client = get_dashboard_client()
                 if client and client._enabled:
+                    # Capture job_id BEFORE creating async task to avoid thread-local context issues
+                    current_job_id = cls.get_current_job_id()
+                    
                     try:
                         loop = asyncio.get_event_loop()
                         if loop.is_running():
                             # Create operation creation task and track it
                             task = asyncio.create_task(client.create_operation(
                                 operation_id=operation_id,
-                                job_id=cls.get_current_job_id(),
+                                job_id=current_job_id,  # Use captured job_id
                                 operation_type=operation_metadata.get('operation_type', 'starting'),
                                 command=operation_metadata.get('command'),
                                 repo=operation_metadata.get('repo'),
@@ -292,7 +295,7 @@ class JobContext:
                             # Track this specific operation creation task
                             cls._operation_creation_tasks[operation_id] = task
                             if logger:
-                                logger.debug(f"Dashboard operation creation queued for operation {operation_id}")
+                                logger.debug(f"Dashboard operation creation queued for operation {operation_id} with job_id {current_job_id}")
                         else:
                             # Event loop exists but not running, use sync fallback
                             raise RuntimeError("Event loop not running")
@@ -301,7 +304,7 @@ class JobContext:
                         try:
                             import requests
                             operation_data = {
-                                'job_id': cls.get_current_job_id(),
+                                'job_id': current_job_id,  # Use captured job_id
                                 'operation_type': operation_metadata.get('operation_type', 'starting'),
                                 'command': operation_metadata.get('command'),
                                 'repo': operation_metadata.get('repo'),
@@ -322,7 +325,7 @@ class JobContext:
                             
                             if response.status_code == 200:
                                 if logger:
-                                    logger.debug(f"Dashboard operation creation successful (sync) for operation {operation_id}")
+                                    logger.debug(f"Dashboard operation creation successful (sync) for operation {operation_id} with job_id {current_job_id}")
                             else:
                                 if logger:
                                     logger.debug(f"Dashboard operation creation failed (sync): {response.status_code}")

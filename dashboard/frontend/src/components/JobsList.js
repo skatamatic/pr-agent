@@ -56,27 +56,32 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
     { id: 'all', label: 'All Jobs', icon: BarChart3 }
   ];
 
-  // Initial data fetch and filter changes
+  // Initial data fetch
   useEffect(() => {
-    fetchJobs();
-  }, [selectedFilters]);
+    fetchAllJobs();
+  }, []);
 
   // Handle manual refresh triggers only (not automatic periodic updates)
   useEffect(() => {
     if (refreshTrigger && refreshTrigger !== lastRefreshTrigger) {
       setLastRefreshTrigger(refreshTrigger);
-      fetchJobs();
+      fetchAllJobs();
     }
   }, [refreshTrigger, lastRefreshTrigger]);
 
   // Set up periodic refresh that preserves UI state
   useEffect(() => {
     const intervalId = setInterval(() => {
-      fetchJobsPreservingState();
+      fetchAllJobsPreservingState();
     }, 5000);
 
     return () => clearInterval(intervalId);
-  }, [selectedFilters]);
+  }, []);
+
+  // Client-side filtering when filters change - instant, no loading
+  useEffect(() => {
+    applyClientSideFilters();
+  }, [selectedFilters, allJobs]);
 
   // Clean up expanded jobs when jobs list changes
   useEffect(() => {
@@ -113,37 +118,112 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
       setExpandedJobs(prev => new Set([...prev, jobId]));
     };
 
+    // Listen for real-time job updates
+    const handleLiveJobUpdate = (event) => {
+      const jobData = event.detail;
+      setJobs(prevJobs => {
+        const existingIndex = prevJobs.findIndex(job => job.job_id === jobData.job_id);
+        if (existingIndex >= 0) {
+          // Update existing job without changing order to prevent scrolling
+          const newJobs = [...prevJobs];
+          newJobs[existingIndex] = { ...newJobs[existingIndex], ...jobData };
+          return newJobs;
+        } else {
+          // Check if new job matches current filters before adding
+          const matchesCurrentFilter = selectedFilters.status === 'all' || 
+            selectedFilters.status === jobData.status ||
+            (selectedFilters.status === 'running' && ['running', 'pending'].includes(jobData.status));
+          
+          if (matchesCurrentFilter) {
+            // Add new job to the beginning, but don't change current view if user is scrolled down
+            return [jobData, ...prevJobs];
+          }
+          return prevJobs;
+        }
+      });
+      
+      // Also update allJobs for accurate tab counts
+      setAllJobs(prevAllJobs => {
+        const existingIndex = prevAllJobs.findIndex(job => job.job_id === jobData.job_id);
+        if (existingIndex >= 0) {
+          const newAllJobs = [...prevAllJobs];
+          newAllJobs[existingIndex] = { ...newAllJobs[existingIndex], ...jobData };
+          return newAllJobs;
+        } else {
+          return [jobData, ...prevAllJobs];
+        }
+      });
+    };
+
+    // Listen for real-time operation updates
+    const handleLiveOperationUpdate = (event) => {
+      const operationData = event.detail;
+      setJobs(prevJobs => {
+        return prevJobs.map(job => {
+          if (job.job_id === operationData.job_id) {
+            // Update the operations array within the job without changing job order
+            const updatedOperations = job.operations ? [...job.operations] : [];
+            const existingOpIndex = updatedOperations.findIndex(op => op.operation_id === operationData.operation_id);
+            
+            if (existingOpIndex >= 0) {
+              updatedOperations[existingOpIndex] = { ...updatedOperations[existingOpIndex], ...operationData };
+            } else {
+              updatedOperations.unshift(operationData); // Add new operation to beginning
+            }
+            
+            return { ...job, operations: updatedOperations };
+          }
+          return job;
+        });
+      });
+      
+      // Also update allJobs
+      setAllJobs(prevAllJobs => {
+        return prevAllJobs.map(job => {
+          if (job.job_id === operationData.job_id) {
+            const updatedOperations = job.operations ? [...job.operations] : [];
+            const existingOpIndex = updatedOperations.findIndex(op => op.operation_id === operationData.operation_id);
+            
+            if (existingOpIndex >= 0) {
+              updatedOperations[existingOpIndex] = { ...updatedOperations[existingOpIndex], ...operationData };
+            } else {
+              updatedOperations.unshift(operationData);
+            }
+            
+            return { ...job, operations: updatedOperations };
+          }
+          return job;
+        });
+      });
+    };
+
     window.addEventListener('filterJobsByStatus', handleStatusFilter);
     window.addEventListener('expandJob', handleExpandJob);
+    window.addEventListener('jobUpdate', handleLiveJobUpdate);
+    window.addEventListener('operationUpdate', handleLiveOperationUpdate);
+    
     return () => {
       window.removeEventListener('filterJobsByStatus', handleStatusFilter);
       window.removeEventListener('expandJob', handleExpandJob);
+      window.removeEventListener('jobUpdate', handleLiveJobUpdate);
+      window.removeEventListener('operationUpdate', handleLiveOperationUpdate);
     };
-  }, []);
+  }, [selectedFilters]);
 
-  const fetchJobs = async () => {
+  const fetchAllJobs = async () => {
     try {
       setLoading(true);
       
-      // Fetch ALL jobs for accurate tab counts
-      const allJobsResponse = await api.getJobs({
+      // Fetch ALL jobs with operations - single request for everything
+      const response = await api.getJobs({
         limit: 100,
         include_operations: true
       });
-      setAllJobs(allJobsResponse.data?.data || []);
+      const fetchedJobs = response.data?.data || [];
+      setAllJobs(fetchedJobs);
       
-      // Fetch filtered jobs for display
-      const params = {
-        limit: 100,
-        include_operations: true
-      };
-      
-      if (selectedFilters.status !== 'all') params.status = selectedFilters.status;
-      if (selectedFilters.jobType !== 'all') params.job_type = selectedFilters.jobType;
-      if (selectedFilters.repository !== 'all') params.repository = selectedFilters.repository;
-      
-      const response = await api.getJobs(params);
-      setJobs(response.data?.data || []);
+      // Apply client-side filtering immediately
+      applyClientSideFilters(fetchedJobs);
     } catch (error) {
       console.error('Failed to fetch jobs:', error);
       showError('Failed to Load Jobs', 'Unable to fetch jobs data');
@@ -154,34 +234,52 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
     }
   };
 
-  const fetchJobsPreservingState = async () => {
+  const fetchAllJobsPreservingState = async () => {
     try {
-      // Fetch ALL jobs for accurate tab counts
-      const allJobsResponse = await api.getJobs({
+      // Fetch ALL jobs without showing loading state to preserve UI
+      const response = await api.getJobs({
         limit: 100,
         include_operations: true
       });
-      setAllJobs(allJobsResponse.data?.data || []);
+      const fetchedJobs = response.data?.data || [];
+      setAllJobs(fetchedJobs);
       
-      // Fetch filtered jobs for display without showing loading state to preserve UI
-      const params = {
-        limit: 100,
-        include_operations: true
-      };
-      
-      if (selectedFilters.status !== 'all') params.status = selectedFilters.status;
-      if (selectedFilters.jobType !== 'all') params.job_type = selectedFilters.jobType;
-      if (selectedFilters.repository !== 'all') params.repository = selectedFilters.repository;
-      
-      const response = await api.getJobs(params);
-      const newJobs = response.data?.data || [];
-      
-      // Only update jobs data, preserve expandedJobs state
-      setJobs(newJobs);
+      // Client-side filtering will be triggered by allJobs useEffect
     } catch (error) {
       // Silently handle errors during background refresh to avoid UI disruption
       console.error('Background refresh failed:', error);
     }
+  };
+
+  const applyClientSideFilters = (jobsToFilter = allJobs) => {
+    if (!jobsToFilter || jobsToFilter.length === 0) {
+      setJobs([]);
+      return;
+    }
+
+    let filteredJobs = [...jobsToFilter];
+
+    // Apply status filter
+    if (selectedFilters.status !== 'all') {
+      filteredJobs = filteredJobs.filter(job => {
+        if (selectedFilters.status === 'running') {
+          return ['running', 'pending'].includes(job.status);
+        }
+        return job.status === selectedFilters.status;
+      });
+    }
+
+    // Apply job type filter
+    if (selectedFilters.jobType !== 'all') {
+      filteredJobs = filteredJobs.filter(job => job.job_type === selectedFilters.jobType);
+    }
+
+    // Apply repository filter
+    if (selectedFilters.repository !== 'all') {
+      filteredJobs = filteredJobs.filter(job => job.repository === selectedFilters.repository);
+    }
+
+    setJobs(filteredJobs);
   };
 
   const toggleJobExpansion = (jobId) => {

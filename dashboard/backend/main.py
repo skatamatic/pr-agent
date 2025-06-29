@@ -21,10 +21,12 @@ from services.operation_service import OperationService, LogService
 from services.config_service import ConfigService
 from services.repository_service import RepositoryService
 from services.job_service import JobService
+from services.robust_cached_job_service import get_robust_cached_job_service
 from services.auth_service import AuthService
 from database import DatabaseManager, SessionLocal
 from services.notification_service import NotificationService
 from services.retention_service import RetentionService
+from services.robust_cache_service import initialize_robust_cache_service, shutdown_robust_cache_service
 
 # Configure logging
 logging.basicConfig(
@@ -39,11 +41,15 @@ class DashboardApplication:
     
     def __init__(self):
         try:
+            # Setup lifespan first
+            self._setup_background_tasks_lifespan()
+            
             self.app = FastAPI(
                 title=settings.app_name,
                 description="API for monitoring PR Agent operations and logs",
                 version="1.0.0",
-                debug=settings.debug
+                debug=settings.debug,
+                lifespan=self.lifespan_handler
             )
             
             # Initialize services (Dependency Injection)
@@ -52,27 +58,29 @@ class DashboardApplication:
             self.notification_service = NotificationService(self.database_manager)
             
             # Pass config_service to health service as third parameter
+            self.websocket_manager = WebSocketManager()
+            
+            # Pass config_service to health service as third parameter
             self.health_service = HealthService(
                 self.database_manager, 
                 self.notification_service, 
                 self.config_service
             )
             
-            self.metrics_service = MetricsService()
+            self.metrics_service = MetricsService(self.websocket_manager)
             self.operation_service = OperationService()
             self.log_service = LogService()
             self.repository_service = RepositoryService()
-            self.job_service = JobService(self.database_manager, self.notification_service)
+            self.job_service = get_robust_cached_job_service()  # Use robust cached job service
+            self.cached_job_service = self.job_service  # Keep alias for backward compatibility
             self.retention_service = RetentionService(self.database_manager)
             self.auth_service = AuthService()
-            self.websocket_manager = WebSocketManager()
             self.security = HTTPBearer(auto_error=False)
             
             # Setup application
             self._setup_middleware()
             self._initialize_auth()
             self._setup_routes()
-            self._setup_background_tasks()
             
         except Exception as e:
             logger.error(f"Failed to initialize dashboard application: {e}")
@@ -88,6 +96,8 @@ class DashboardApplication:
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
+            # WebSocket specific headers
+            expose_headers=["*"],
         )
 
     def _initialize_auth(self):
@@ -289,25 +299,19 @@ class DashboardApplication:
             repository: Optional[str] = None,
             ensure_counts: bool = True
         ):
-            jobs = self.job_service.get_jobs(
+            jobs = await self.cached_job_service.get_jobs(
                 limit=limit, 
                 include_operations=include_operations,
+                status=status,
+                job_type=job_type,
+                repository=repository,
                 ensure_counts=ensure_counts
             )
-            filtered_jobs = jobs
-            
-            if status:
-                filtered_jobs = [job for job in filtered_jobs if job.status == status]
-            if job_type:
-                filtered_jobs = [job for job in filtered_jobs if job.job_type == job_type]
-            if repository:
-                filtered_jobs = [job for job in filtered_jobs if job.repository == repository]
-            
-            return APIResponse(data=filtered_jobs, total=len(filtered_jobs))
+            return APIResponse(data=jobs, total=len(jobs))
         
         @self.app.get("/api/jobs/{job_id}")
         async def get_job(job_id: str, include_operations: bool = True):
-            job = self.job_service.get_job_by_id(job_id, include_operations=include_operations)
+            job = await self.cached_job_service.get_job(job_id, include_operations=include_operations)
             if not job:
                 raise HTTPException(status_code=404, detail="Job not found")
             return APIResponse(data=job)
@@ -315,7 +319,7 @@ class DashboardApplication:
         @self.app.get("/api/jobs/{job_id}/operations")
         async def get_job_operations(job_id: str):
             """Get operations for a specific job"""
-            operations = self.job_service.get_operations_by_job(job_id)
+            operations = await self.cached_job_service.get_operations(job_id=job_id)
             return APIResponse(data={"operations": operations})
 
         # NEW: Job and Operation Management API Endpoints for PR-Agent Integration
@@ -323,20 +327,72 @@ class DashboardApplication:
         async def create_job(job_data: dict):
             """Create a new job from PR-Agent"""
             try:
-                from models import JobType
-                job_type = JobType(job_data.get('job_type', 'manual'))
-                job_id = self.job_service.create_job(
-                    job_type=job_type,
-                    source=job_data.get('source', 'unknown'),
-                    repository=job_data.get('repository'),
-                    pr_url=job_data.get('pr_url'),
-                    trigger_user=job_data.get('trigger_user'),
-                    trigger_event=job_data.get('trigger_event'),
-                    installation_id=job_data.get('installation_id'),
-                    request_id=job_data.get('request_id'),
-                    webhook_payload=job_data.get('webhook_payload'),
-                    job_id=job_data.get('job_id')  # Accept pre-existing job_id
-                )
+                from models import JobType, JobStatus
+                from datetime import datetime
+                
+                # If job_id is provided, use create_job_with_data
+                if job_data.get('job_id'):
+                    # Prepare data for create_job_with_data
+                    now = datetime.utcnow()
+                    job_dict = {
+                        'job_id': job_data.get('job_id'),
+                        'job_type': job_data.get('job_type', 'manual'),
+                        'source': job_data.get('source', 'unknown'),
+                        'status': JobStatus.RUNNING.value,
+                        'repository': job_data.get('repository'),
+                        'pr_url': job_data.get('pr_url'),
+                        'trigger_user': job_data.get('trigger_user'),
+                        'trigger_event': job_data.get('trigger_event'),
+                        'installation_id': job_data.get('installation_id'),
+                        'request_id': job_data.get('request_id'),
+                        'webhook_payload': job_data.get('webhook_payload'),
+                        'started_at': job_data.get('started_at', now.isoformat()),
+                        'last_updated': now.isoformat(),
+                        'operations_count': 0,
+                        'completed_operations': 0,
+                        'failed_operations': 0,
+                        'total_logs': 0,
+                        'error_count': 0,
+                        'warning_count': 0,
+                        'pr_number': job_data.get('pr_number'),
+                        'pr_title': job_data.get('pr_title')
+                    }
+                    job_id = await self.cached_job_service.create_job_with_data(job_dict)
+                else:
+                    # Use regular create_job method
+                    job_type = JobType(job_data.get('job_type', 'manual'))
+                    job_id = await self.cached_job_service.create_job(
+                        job_type=job_type,
+                        source=job_data.get('source', 'unknown'),
+                        repository=job_data.get('repository'),
+                        pr_url=job_data.get('pr_url'),
+                        trigger_user=job_data.get('trigger_user'),
+                        trigger_event=job_data.get('trigger_event'),
+                        installation_id=job_data.get('installation_id'),
+                        request_id=job_data.get('request_id'),
+                        webhook_payload=job_data.get('webhook_payload')
+                    )
+                
+                # Broadcast new job via WebSocket
+                try:
+                    broadcast_job_data = {
+                        "job_id": job_id,
+                        "job_type": job_data.get('job_type', 'manual'),
+                        "repository": job_data.get('repository'),
+                        "pr_url": job_data.get('pr_url'),
+                        "trigger_user": job_data.get('trigger_user'),
+                        "status": "running",
+                        "started_at": job_data.get('started_at'),
+                        "pr_number": job_data.get('pr_number'),
+                        "pr_title": job_data.get('pr_title')
+                    }
+                    await self.websocket_manager.broadcast({
+                        "type": "job_update",
+                        "data": broadcast_job_data
+                    })
+                except Exception as ws_error:
+                    logger.warning(f"Failed to broadcast new job: {ws_error}")
+                
                 return APIResponse(data={"job_id": job_id}, message="Job created successfully")
             except Exception as e:
                 logger.error(f"Failed to create job: {e}")
@@ -347,13 +403,70 @@ class DashboardApplication:
             """Update job status from PR-Agent"""
             try:
                 from models import JobStatus
-                status = JobStatus(status_data.get('status'))
-                self.job_service.update_job_status(
+                
+                # COMPREHENSIVE mapping of ALL possible incoming status strings to valid JobStatus enum values
+                status_mapping = {
+                    # Direct enum mappings (exact matches)
+                    'running': JobStatus.RUNNING,
+                    'completed': JobStatus.COMPLETED,
+                    'failed': JobStatus.FAILED,
+                    'cancelled': JobStatus.CANCELLED,
+                    
+                    # Common variations and aliases
+                    'canceled': JobStatus.CANCELLED,           # US spelling
+                    'cancelling': JobStatus.CANCELLED,         # cancelling -> cancelled
+                    'canceling': JobStatus.CANCELLED,          # US spelling
+                    'pending': JobStatus.RUNNING,              # pending -> running
+                    'queued': JobStatus.RUNNING,               # queued -> running
+                    'starting': JobStatus.RUNNING,             # starting -> running
+                    'processing': JobStatus.RUNNING,           # processing -> running
+                    'in_progress': JobStatus.RUNNING,          # in_progress -> running
+                    'active': JobStatus.RUNNING,               # active -> running
+                    'success': JobStatus.COMPLETED,            # success -> completed
+                    'successful': JobStatus.COMPLETED,         # successful -> completed
+                    'done': JobStatus.COMPLETED,               # done -> completed
+                    'finished': JobStatus.COMPLETED,           # finished -> completed
+                    'complete': JobStatus.COMPLETED,           # complete -> completed
+                    'error': JobStatus.FAILED,                 # error -> failed
+                    'errored': JobStatus.FAILED,               # errored -> failed
+                    'failure': JobStatus.FAILED,               # failure -> failed
+                    'aborted': JobStatus.FAILED,               # aborted -> failed
+                    'terminated': JobStatus.FAILED,            # terminated -> failed
+                    'interrupted': JobStatus.FAILED,           # interrupted -> failed
+                    'timeout': JobStatus.FAILED,               # timeout -> failed
+                    'timed_out': JobStatus.FAILED,             # timed_out -> failed
+                    'stopped': JobStatus.CANCELLED,            # stopped -> cancelled
+                    'stop': JobStatus.CANCELLED,               # stop -> cancelled
+                    'abort': JobStatus.CANCELLED,              # abort -> cancelled
+                }
+                
+                incoming_status = status_data.get('status', '').lower()
+                status = status_mapping.get(incoming_status, JobStatus.RUNNING)
+                
+                await self.cached_job_service.update_job_status(
                     job_id=job_id,
                     status=status,
                     error_details=status_data.get('error_details'),
                     result_summary=status_data.get('result_summary')
                 )
+                
+                # Broadcast job update via WebSocket
+                try:
+                    job_data = {
+                        "job_id": job_id,
+                        "status": status_data.get('status'),
+                        "error_details": status_data.get('error_details'),
+                        "result_summary": status_data.get('result_summary'),
+                        "completed_at": status_data.get('completed_at'),
+                        "duration": status_data.get('duration')
+                    }
+                    await self.websocket_manager.broadcast({
+                        "type": "job_update",
+                        "data": job_data
+                    })
+                except Exception as ws_error:
+                    logger.warning(f"Failed to broadcast job update: {ws_error}")
+                
                 return APIResponse(data={"status": "updated"}, message="Job status updated successfully")
             except Exception as e:
                 logger.error(f"Failed to update job status: {e}")
@@ -363,19 +476,59 @@ class DashboardApplication:
         async def create_operation(operation_data: dict):
             """Create a new operation from PR-Agent"""
             try:
-                from models import OperationType
-                operation_type = OperationType(operation_data.get('operation_type', 'starting'))
-                operation_id = self.job_service.create_operation(
-                    job_id=operation_data.get('job_id'),
-                    operation_type=operation_type,
-                    command=operation_data.get('command'),
-                    repo=operation_data.get('repo'),
-                    pr_url=operation_data.get('pr_url'),
-                    installation_id=operation_data.get('installation_id'),
-                    sender=operation_data.get('sender'),
-                    request_id=operation_data.get('request_id'),
-                    operation_id=operation_data.get('operation_id')
-                )
+                from models import OperationStatus
+                from datetime import datetime
+                
+                # If operation_id is provided, use create_operation_with_data
+                if operation_data.get('operation_id'):
+                    # Prepare data for create_operation_with_data
+                    now = datetime.utcnow()
+                    operation_dict = {
+                        'operation_id': operation_data.get('operation_id'),
+                        'job_id': operation_data.get('job_id'),
+                        'operation_type': operation_data.get('operation_type', 'starting'),
+                        'command': operation_data.get('command'),
+                        'status': OperationStatus.STARTING.value,
+                        'repo': operation_data.get('repo'),
+                        'pr_url': operation_data.get('pr_url'),
+                        'installation_id': operation_data.get('installation_id'),
+                        'sender': operation_data.get('sender'),
+                        'request_id': operation_data.get('request_id'),
+                        'started_at': operation_data.get('started_at', now.isoformat()),
+                        'last_updated': now.isoformat()
+                    }
+                    operation_id = await self.cached_job_service.create_operation_with_data(operation_dict)
+                else:
+                    # Use regular create_operation method
+                    operation_id = await self.cached_job_service.create_operation(
+                        job_id=operation_data.get('job_id'),
+                        operation_type=operation_data.get('operation_type', 'starting'),
+                        command=operation_data.get('command'),
+                        repo=operation_data.get('repo'),
+                        pr_url=operation_data.get('pr_url'),
+                        installation_id=operation_data.get('installation_id'),
+                        sender=operation_data.get('sender'),
+                        request_id=operation_data.get('request_id')
+                    )
+                
+                # Broadcast new operation via WebSocket
+                try:
+                    broadcast_operation_data = {
+                        "operation_id": operation_id,
+                        "job_id": operation_data.get('job_id'),
+                        "operation_type": operation_data.get('operation_type', 'starting'),
+                        "command": operation_data.get('command'),
+                        "repo": operation_data.get('repo'),
+                        "status": "starting",
+                        "started_at": operation_data.get('started_at')
+                    }
+                    await self.websocket_manager.broadcast({
+                        "type": "operation_update",
+                        "data": broadcast_operation_data
+                    })
+                except Exception as ws_error:
+                    logger.warning(f"Failed to broadcast new operation: {ws_error}")
+                
                 return APIResponse(data={"operation_id": operation_id}, message="Operation created successfully")
             except Exception as e:
                 logger.error(f"Failed to create operation: {e}")
@@ -386,13 +539,81 @@ class DashboardApplication:
             """Update operation status from PR-Agent"""
             try:
                 from models import OperationStatus
-                status = OperationStatus(status_data.get('status'))
-                self.job_service.update_operation_status(
+                
+                # COMPREHENSIVE mapping of ALL possible incoming status strings to valid OperationStatus enum values
+                status_mapping = {
+                    # Direct enum mappings (exact matches)
+                    'starting': OperationStatus.STARTING,
+                    'processing': OperationStatus.PROCESSING,
+                    'fetching_context': OperationStatus.FETCHING_CONTEXT,
+                    'context_completed': OperationStatus.CONTEXT_COMPLETED,
+                    'context_disabled': OperationStatus.CONTEXT_DISABLED,
+                    'context_failed': OperationStatus.CONTEXT_FAILED,
+                    'preparing': OperationStatus.PREPARING,
+                    'self_reflecting': OperationStatus.SELF_REFLECTING,
+                    'publishing': OperationStatus.PUBLISHING,
+                    'completed': OperationStatus.COMPLETED,
+                    'failed': OperationStatus.FAILED,
+                    'skipped': OperationStatus.SKIPPED,
+                    
+                    # Common variations and aliases
+                    'running': OperationStatus.PROCESSING,          # running -> processing
+                    'cancelled': OperationStatus.FAILED,           # cancelled -> failed (no cancelled state for operations)
+                    'canceled': OperationStatus.FAILED,            # US spelling
+                    'cancelling': OperationStatus.FAILED,          # cancelling -> failed
+                    'canceling': OperationStatus.FAILED,           # US spelling
+                    'pending': OperationStatus.STARTING,           # pending -> starting
+                    'queued': OperationStatus.STARTING,            # queued -> starting 
+                    'in_progress': OperationStatus.PROCESSING,     # in_progress -> processing
+                    'success': OperationStatus.COMPLETED,          # success -> completed
+                    'successful': OperationStatus.COMPLETED,       # successful -> completed
+                    'done': OperationStatus.COMPLETED,             # done -> completed
+                    'finished': OperationStatus.COMPLETED,         # finished -> completed
+                    'error': OperationStatus.FAILED,               # error -> failed
+                    'errored': OperationStatus.FAILED,             # errored -> failed
+                    'aborted': OperationStatus.FAILED,             # aborted -> failed
+                    'terminated': OperationStatus.FAILED,          # terminated -> failed
+                    'interrupted': OperationStatus.FAILED,         # interrupted -> failed
+                    'timeout': OperationStatus.FAILED,             # timeout -> failed
+                    'timed_out': OperationStatus.FAILED,           # timed_out -> failed
+                    
+                    # Context-specific mappings
+                    'fetching': OperationStatus.FETCHING_CONTEXT,  # fetching -> fetching_context
+                    'context': OperationStatus.FETCHING_CONTEXT,   # context -> fetching_context
+                    'analyzing': OperationStatus.PROCESSING,       # analyzing -> processing
+                    'generating': OperationStatus.PROCESSING,      # generating -> processing
+                    'reviewing': OperationStatus.PROCESSING,       # reviewing -> processing
+                    'improving': OperationStatus.PROCESSING,       # improving -> processing
+                    'describing': OperationStatus.PROCESSING,      # describing -> processing
+                }
+                
+                incoming_status = status_data.get('status', '').lower()
+                status = status_mapping.get(incoming_status, OperationStatus.PROCESSING)
+                
+                await self.cached_job_service.update_operation_status(
                     operation_id=operation_id,
                     status=status,
                     error_details=status_data.get('error_details'),
                     result_data=status_data.get('result_data')
                 )
+                
+                # Broadcast operation update via WebSocket
+                try:
+                    operation_data = {
+                        "operation_id": operation_id,
+                        "status": status_data.get('status'),
+                        "error_details": status_data.get('error_details'),
+                        "result_data": status_data.get('result_data'),
+                        "completed_at": status_data.get('completed_at'),
+                        "duration": status_data.get('duration')
+                    }
+                    await self.websocket_manager.broadcast({
+                        "type": "operation_update", 
+                        "data": operation_data
+                    })
+                except Exception as ws_error:
+                    logger.warning(f"Failed to broadcast operation update: {ws_error}")
+                
                 return APIResponse(data={"status": "updated"}, message="Operation status updated successfully")
             except Exception as e:
                 logger.error(f"Failed to update operation status: {e}")
@@ -401,39 +622,42 @@ class DashboardApplication:
         @self.app.post("/api/operations/{operation_id}/ai-metrics")
         async def update_operation_ai_metrics(operation_id: str, metrics_data: dict, db: Session = Depends(get_db)):
             """Update operation AI metrics from PR-Agent"""
-            import asyncio
             
             try:
-                # Retry logic to handle race condition with operation creation
-                operation = None
-                max_retries = 3
-                retry_delay = 0.5  # seconds
+                # Use cached service - no race conditions!
+                success = await self.cached_job_service.update_operation_ai_metrics(
+                    operation_id=operation_id,
+                    model_used=metrics_data.get('model_used'),
+                    input_tokens=metrics_data.get('input_tokens'),
+                    output_tokens=metrics_data.get('output_tokens'),
+                    estimated_dev_hours_saved=metrics_data.get('estimated_dev_hours_saved')
+                )
                 
-                for attempt in range(max_retries):
-                    operation = db.query(OperationDB).filter(OperationDB.operation_id == operation_id).first()
-                    if operation:
-                        break
+                if success:
+                    logger.info(f"Operation {operation_id} AI metrics updated successfully in cache")
                     
-                    if attempt < max_retries - 1:  # Don't wait on the last attempt
-                        logger.debug(f"Operation {operation_id} not found, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
-                        await asyncio.sleep(retry_delay)
-                        retry_delay *= 2  # Exponential backoff
-                
-                if operation:
-                    operation.model_used = metrics_data.get('model_used')
-                    operation.input_tokens = metrics_data.get('input_tokens')
-                    operation.output_tokens = metrics_data.get('output_tokens')
-                    operation.estimated_dev_hours_saved = metrics_data.get('estimated_dev_hours_saved')
-                    operation.last_updated = datetime.utcnow()
-                    db.commit()
+                    # CRITICAL: Auto-recalculate all metrics from scratch for accuracy
+                    try:
+                        # Instead of incremental updates (which can get out of sync), 
+                        # just recalculate everything from scratch - it's more reliable!
+                        await self.metrics_service.recalculate_metrics_from_operations(db)
+                        logger.info(f"DEBUG: Metrics recalculated from all operations after {operation_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to recalculate metrics after operation {operation_id}: {e}")
+                        import traceback
+                        logger.error(f"Traceback: {traceback.format_exc()}")
                     
-                    # Update metrics aggregates
-                    await self.metrics_service.update_aggregates_from_operation(db, operation)
+                    # Note: WebSocket broadcast is handled by recalculate_metrics_from_operations()
+                    # No need to broadcast again here to avoid duplicate/conflicting messages
                     
                     return APIResponse(data={"status": "updated"}, message="AI metrics updated successfully")
                 else:
-                    logger.warning(f"Operation {operation_id} not found after {max_retries} retries")
+                    logger.warning(f"Operation {operation_id} not found in cache")
                     raise HTTPException(status_code=404, detail="Operation not found")
+                    
+            except HTTPException:
+                # Re-raise HTTP exceptions as-is
+                raise
             except Exception as e:
                 logger.error(f"Failed to update AI metrics: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update AI metrics: {str(e)}")
@@ -449,21 +673,42 @@ class DashboardApplication:
             operation_id: Optional[str] = None,
             db: Session = Depends(get_db)
         ):
-            return await self.log_service.get_logs(db, limit, level, search, repo, job_id, operation_id)
+            logs = await self.job_service.get_logs(
+                limit=limit,
+                level=level,
+                job_id=job_id,
+                operation_id=operation_id,
+                repository=repo
+            )
+            return APIResponse(data={"logs": logs}, message=f"Retrieved {len(logs)} logs")
         
         @self.app.get("/api/logs/job/{job_id}")
         async def get_logs_by_job(job_id: str, db: Session = Depends(get_db)):
-            return await self.log_service.get_logs_by_job(db, job_id)
+            logs = await self.job_service.get_logs(job_id=job_id, limit=10000)
+            return APIResponse(data={"logs": logs}, message=f"Retrieved {len(logs)} logs for job {job_id}")
         
         @self.app.get("/api/logs/operation/{operation_id}")
         async def get_logs_by_operation(operation_id: str, db: Session = Depends(get_db)):
-            return await self.log_service.get_logs_by_operation(db, operation_id)
+            logs = await self.job_service.get_logs(operation_id=operation_id, limit=10000)
+            return APIResponse(data={"logs": logs}, message=f"Retrieved {len(logs)} logs for operation {operation_id}")
         
         # Log ingestion endpoints
         @self.app.post("/logs/immediate")
         async def receive_immediate_log(log_data: dict, db: Session = Depends(get_db)):
             try:
-                log_entry = await self.log_service.create_log_entry(db, log_data)
+                # Use robust cached job service for logs too
+                log_id = await self.job_service.create_log_entry(
+                    level=log_data.get('level', 'INFO'),
+                    message=log_data.get('message', ''),
+                    source=log_data.get('source') or log_data.get('module', 'unknown'),
+                    job_id=log_data.get('job_id'),
+                    operation_id=log_data.get('operation_id'),
+                    repository=log_data.get('repository') or log_data.get('repo'),
+                    status=log_data.get('status'),
+                    module=log_data.get('module'),
+                    function=log_data.get('function'),
+                    severity="high" if log_data.get('level') in ["ERROR", "CRITICAL"] else "normal"
+                )
                 
                 # Update operation status if needed
                 if log_data.get('status'):
@@ -477,7 +722,7 @@ class DashboardApplication:
                 await self.websocket_manager.broadcast({
                     "type": "log",
                     "data": {
-                        "id": log_entry.id,
+                        "id": log_id,
                         "timestamp": log_data.get('timestamp'),
                         "level": log_data.get('level'),
                         "message": log_data.get('message'),
@@ -495,7 +740,7 @@ class DashboardApplication:
                     }
                 })
                 
-                return {"status": "received", "id": log_entry.id}
+                return {"status": "received", "id": log_id}
                 
             except Exception as e:
                 logger.error(f"Failed to process immediate log: {e}")
@@ -505,7 +750,43 @@ class DashboardApplication:
         async def receive_batch_logs(batch_data: dict, db: Session = Depends(get_db)):
             try:
                 logs = batch_data.get('logs', [])
-                received_logs = await self.log_service.process_batch_logs(db, logs)
+                received_log_ids = []
+                broadcast_logs = []
+                
+                # Process each log using robust cached job service
+                for log_data in logs:
+                    log_id = await self.job_service.create_log_entry(
+                        level=log_data.get('level', 'INFO'),
+                        message=log_data.get('message', ''),
+                        source=log_data.get('source') or log_data.get('module', 'unknown'),
+                        job_id=log_data.get('job_id'),
+                        operation_id=log_data.get('operation_id'),
+                        repository=log_data.get('repository') or log_data.get('repo'),
+                        status=log_data.get('status'),
+                        module=log_data.get('module'),
+                        function=log_data.get('function'),
+                        severity="high" if log_data.get('level') in ["ERROR", "CRITICAL"] else "normal"
+                    )
+                    received_log_ids.append({'id': log_id, 'message': log_data.get('message', '')})
+                    
+                    # Build full log data for broadcast
+                    broadcast_logs.append({
+                        "id": log_id,
+                        "timestamp": log_data.get('timestamp'),
+                        "level": log_data.get('level'),
+                        "message": log_data.get('message'),
+                        "status": log_data.get('status'),
+                        "source": log_data.get('source'),
+                        "job_id": log_data.get('job_id'),
+                        "operation_id": log_data.get('operation_id'),
+                        "repository": log_data.get('repository'),
+                        "repo": log_data.get('repo'),
+                        "command": log_data.get('command'),
+                        "pr_url": log_data.get('pr_url'),
+                        "module": log_data.get('module'),
+                        "function": log_data.get('function'),
+                        "severity": "high" if log_data.get('level') in ["ERROR", "CRITICAL"] else "normal"
+                    })
                 
                 # Update operations for logs with status
                 for log_data in logs:
@@ -516,13 +797,14 @@ class DashboardApplication:
                     if any(key in log_data for key in ['model_used', 'input_tokens', 'output_tokens', 'estimated_dev_hours_saved']):
                         await self.metrics_service.update_metrics_from_operation(db, log_data)
                 
-                # Broadcast to WebSocket clients
-                await self.websocket_manager.broadcast({
-                    "type": "logs_batch",
-                    "data": [{"id": log.id, "message": log.message} for log in received_logs]
-                })
+                # Broadcast FULL log data to WebSocket clients
+                for log_broadcast in broadcast_logs:
+                    await self.websocket_manager.broadcast({
+                        "type": "log",
+                        "data": log_broadcast
+                    })
                 
-                return {"status": "received", "count": len(received_logs)}
+                return {"status": "received", "count": len(received_log_ids)}
                 
             except Exception as e:
                 logger.error(f"Failed to process batch logs: {e}")
@@ -1533,8 +1815,15 @@ class DashboardApplication:
         # WebSocket endpoint
         @self.app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
-            await self.websocket_manager.connect(websocket)
+            client_info = f"{websocket.client.host}:{websocket.client.port}" if websocket.client else "unknown"
+            logger.info(f"WebSocket connection attempt from {client_info}")
+            logger.debug(f"WebSocket headers: {dict(websocket.headers)}")
+            
             try:
+                await self.websocket_manager.connect(websocket)
+                logger.info(f"WebSocket connected successfully: {client_info}")
+                
+                # Keep connection alive
                 while True:
                     await asyncio.sleep(30)
                     # Check if connection is still active before sending ping
@@ -1542,7 +1831,7 @@ class DashboardApplication:
                         try:
                             await websocket.send_json({
                                 "type": "ping", 
-                                "timestamp": datetime.utcnow().isoformat()
+                                "timestamp": datetime.now().isoformat()
                             })
                         except Exception as ping_error:
                             logger.debug(f"Failed to send ping, connection likely closed: {ping_error}")
@@ -1550,12 +1839,13 @@ class DashboardApplication:
                     else:
                         logger.debug("WebSocket connection not in connected state, ending ping loop")
                         break
-            except WebSocketDisconnect:
-                logger.debug("WebSocket disconnected normally")
+            except WebSocketDisconnect as e:
+                logger.info(f"WebSocket disconnected normally: {client_info} (code: {e.code})")
             except Exception as e:
-                logger.error(f"WebSocket error: {e}")
+                logger.error(f"WebSocket error for {client_info}: {e}", exc_info=True)
             finally:
                 self.websocket_manager.disconnect(websocket)
+                logger.info(f"WebSocket cleanup completed for {client_info}")
     
     def _setup_developer_routes(self):
         """Setup developer-only routes (Interface Segregation Principle)"""
@@ -1626,11 +1916,15 @@ class DashboardApplication:
         
         @self.app.post("/api/dev/clear-data")
         async def clear_data():
+            # Clear cache data first
+            await self.cached_job_service.clear_all_data()
+            
+            # Also clear from the test_data module for compatibility
             from test_data import clear_all_data
             result = await clear_all_data()
             
             if result["status"] == "success":
-                return APIResponse(data={}, message=result["message"])
+                return APIResponse(data={}, message=result["message"] + " (cache and database cleared)")
             else:
                 raise HTTPException(status_code=500, detail=result["message"])
         
@@ -1686,13 +1980,22 @@ class DashboardApplication:
                 logger.error(f"Failed to generate AI metrics data: {e}")
                 return APIResponse(data={"status": "error", "error": str(e)}, message="AI metrics generation failed")
     
-    def _setup_background_tasks(self):
+    def _setup_background_tasks_lifespan(self):
         """Setup background monitoring tasks using modern lifespan events"""
         from contextlib import asynccontextmanager
         
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             # Startup
+            
+            # Initialize robust cache service first
+            try:
+                await initialize_robust_cache_service()
+                logger.info("Robust cache service initialized successfully")
+            except Exception as e:
+                logger.error(f"Robust cache service initialization failed: {e}")
+                raise
+            
             try:
                 startup_config = await self._get_startup_config_summary()
                 
@@ -1775,6 +2078,13 @@ class DashboardApplication:
             except Exception as e:
                 logger.warning(f"Failed to log shutdown event: {e}")
             
+            # Shutdown robust cache service
+            try:
+                await shutdown_robust_cache_service()
+                logger.info("Robust cache service shutdown successfully")
+            except Exception as e:
+                logger.error(f"Failed to shutdown robust cache service: {e}")
+            
             logger.info(f"{settings.app_name} stopped")
             cleanup_task.cancel()
             backup_task.cancel()
@@ -1784,8 +2094,8 @@ class DashboardApplication:
             except Exception as e:
                 logger.error(f"Failed to stop health monitoring: {e}")
         
-        # Apply lifespan to the app
-        self.app.router.lifespan_context = lifespan
+        # Store lifespan handler for FastAPI constructor
+        self.lifespan_handler = lifespan
         try:
             self._startup_time = asyncio.get_event_loop().time()
         except RuntimeError:

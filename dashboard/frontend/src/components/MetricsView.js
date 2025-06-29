@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   TrendingUp,
   DollarSign, 
@@ -27,9 +27,121 @@ import {
 import apiService from '../services/api';
 import ViewHeader from './ViewHeader';
 
+// Move AnimatedMetric outside of MetricsView to prevent remounting on every render
+const AnimatedMetric = ({ value, formatter, className = "", duration = 1500, integer = false }) => {
+  const [displayValue, setDisplayValue] = useState(value);
+  const [isAnimating, setIsAnimating] = useState(false);
+  const animationRef = useRef(null);
+  const startTimeRef = useRef(null);
+  const lastValueRef = useRef(value);
+  const mountedRef = useRef(false);
+
+  // Easing function for smooth animation (ease-out cubic)
+  const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+
+  const targetValueRef = useRef(value);
+  const durationRef = useRef(duration);
+  
+  // Update refs when props change
+  targetValueRef.current = value;
+  durationRef.current = duration;
+
+  const animateValue = useCallback((currentTime) => {
+    if (startTimeRef.current === null) {
+      startTimeRef.current = currentTime;
+    }
+
+    const elapsed = currentTime - startTimeRef.current;
+    const progress = Math.min(elapsed / durationRef.current, 1);
+    const easedProgress = easeOutCubic(progress);
+    
+    // Calculate current animated value
+    const startValue = lastValueRef.current;
+    const targetValue = targetValueRef.current;
+    const currentValue = startValue + (targetValue - startValue) * easedProgress;
+    
+    // For integer metrics, only show whole numbers during animation
+    setDisplayValue(integer ? Math.round(currentValue) : currentValue);
+
+    if (progress < 1) {
+      animationRef.current = requestAnimationFrame(animateValue);
+    } else {
+      setIsAnimating(false);
+      setDisplayValue(targetValueRef.current); // Ensure final value is exact
+      lastValueRef.current = targetValueRef.current; // Update the last known value
+      startTimeRef.current = null;
+    }
+  }, []); // No dependencies since we use refs
+
+  useEffect(() => {
+    // Don't animate on initial mount
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      lastValueRef.current = value;
+      setDisplayValue(value);
+      return;
+    }
+
+    // Check if value actually changed
+    if (value === lastValueRef.current) {
+      return;
+    }
+
+    // Calculate difference for animation decision
+    const valueDiff = Math.abs(value - lastValueRef.current);
+    const shouldAnimate = valueDiff > 0.01; // Avoid animating tiny differences
+    
+    if (shouldAnimate) {
+      setIsAnimating(true);
+      startTimeRef.current = null;
+      
+      // Cancel any existing animation
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+      
+      // Start new animation - DON'T update lastValueRef yet, let animation complete
+      animationRef.current = requestAnimationFrame(animateValue);
+    } else {
+      // For very small changes, just set directly
+      setDisplayValue(value);
+      lastValueRef.current = value;
+    }
+
+    // Cleanup function
+    return () => {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+    };
+  }, [value]); // Only depend on value changes
+
+  return (
+    <span 
+      className={`transition-all duration-300 ${isAnimating ? 'scale-105' : 'scale-100'} ${className}`}
+      style={{
+        textShadow: isAnimating ? '0 0 12px rgba(34, 197, 94, 0.4)' : 'none',
+        filter: isAnimating ? 'brightness(1.1)' : 'brightness(1)',
+      }}
+    >
+      {formatter ? formatter(displayValue) : (integer ? Math.round(displayValue) : displayValue)}
+    </span>
+  );
+};
+
 const MetricsView = () => {
   const [activeTab, setActiveTab] = useState('overview');
-  const [metricsData, setMetricsData] = useState(null);
+  const [metricsData, setMetricsData] = useState({
+    total_jobs: 0,
+    total_operations: 0,
+    total_input_tokens: 0,
+    total_output_tokens: 0,
+    total_token_cost: 0,
+    total_dev_hours_saved: 0,
+    total_dev_cost_saved: 0,
+    total_savings: 0,
+    model_breakdown: {}
+  });
   const [operationData, setOperationData] = useState(null);
   const [repositoryData, setRepositoryData] = useState(null);
   const [config, setConfig] = useState(null);
@@ -43,6 +155,14 @@ const MetricsView = () => {
   const [currentOperationIndex, setCurrentOperationIndex] = useState(0);
   const [currentRepositoryIndex, setCurrentRepositoryIndex] = useState(0);
   const [hoveredPieSlice, setHoveredPieSlice] = useState(null);
+  
+
+  
+  // Auto-refresh interval refs and state
+  const autoRefreshIntervalRef = useRef(null);
+  const lastDataChangeRef = useRef(Date.now());
+  const currentIntervalRef = useRef(1000); // Start with 1 second
+  const isRestartingRef = useRef(false);
 
   // Config form state
   const [editableConfig, setEditableConfig] = useState({
@@ -51,14 +171,121 @@ const MetricsView = () => {
     model_costs: {}
   });
 
-  useEffect(() => {
-    fetchData();
+  // Adaptive polling interval calculation
+  const getPollingInterval = () => {
+    const timeSinceLastChange = Date.now() - lastDataChangeRef.current;
+    
+    if (timeSinceLastChange < 10000) {
+      // Less than 10 seconds since last change: poll every 1 second
+      return 1000;
+    } else if (timeSinceLastChange < 30000) {
+      // 10-30 seconds since last change: poll every 5 seconds
+      return 5000;
+    } else {
+      // More than 30 seconds since last change: poll every 30 seconds
+      return 30000;
+    }
+  };
+
+  // Throttled refresh function - prevents spam by limiting to once every 5 seconds
+  const lastRefreshRef = useRef(0);
+  const handleThrottledMetricsUpdate = useCallback(async () => {
+    const now = Date.now();
+    // Only allow refresh if 5 seconds have passed since last refresh
+    if (now - lastRefreshRef.current < 5000) {
+      return;
+    }
+    lastRefreshRef.current = now;
+    
+    try {
+      // Only fetch data, don't force recalculate on every update
+      await fetchData();
+    } catch (error) {
+      console.error('MetricsView: Event-based refresh failed:', error);
+    }
   }, []);
 
+  // Restart the polling interval with adaptive timing
+  const restartAdaptivePolling = useCallback(() => {
+    // Prevent recursion during restart
+    if (isRestartingRef.current) {
+      return;
+    }
+    isRestartingRef.current = true;
+    
+    // Clear existing interval
+    if (autoRefreshIntervalRef.current) {
+      clearInterval(autoRefreshIntervalRef.current);
+    }
+    
+    const newInterval = getPollingInterval();
+    currentIntervalRef.current = newInterval;
+    
+    autoRefreshIntervalRef.current = setInterval(() => {
+      handleThrottledMetricsUpdate();
+      
+      // Check if we need to adjust polling interval
+      const requiredInterval = getPollingInterval();
+      if (requiredInterval !== currentIntervalRef.current && !isRestartingRef.current) {
+        restartAdaptivePolling();
+      }
+    }, newInterval);
+    
+    isRestartingRef.current = false;
+  }, [handleThrottledMetricsUpdate]);
+
+  // Handle new activity - reset to fast polling
+  const handleNewActivity = useCallback(() => {
+    lastDataChangeRef.current = Date.now();
+    restartAdaptivePolling();
+    handleThrottledMetricsUpdate();
+  }, [handleThrottledMetricsUpdate, restartAdaptivePolling]);
+
+  useEffect(() => {
+    // Initial data load
+    fetchData();
+
+    // Listen for WebSocket events that indicate new activity
+    const handleJobUpdate = () => handleNewActivity();
+    const handleOperationUpdate = () => handleNewActivity();
+    const handleWebSocketMetricsUpdate = () => handleThrottledMetricsUpdate();
+
+    // Add event listeners for real-time updates
+    window.addEventListener('jobUpdate', handleJobUpdate);
+    window.addEventListener('operationUpdate', handleOperationUpdate);
+    window.addEventListener('metricsUpdate', handleWebSocketMetricsUpdate);
+    
+    // Start adaptive polling
+    restartAdaptivePolling();
+    
+    return () => {
+      // Remove event listeners
+      window.removeEventListener('jobUpdate', handleJobUpdate);
+      window.removeEventListener('operationUpdate', handleOperationUpdate);
+      window.removeEventListener('metricsUpdate', handleWebSocketMetricsUpdate);
+      
+      // Clear interval
+      if (autoRefreshIntervalRef.current) {
+        clearInterval(autoRefreshIntervalRef.current);
+        autoRefreshIntervalRef.current = null;
+      }
+    };
+  }, [handleNewActivity, handleThrottledMetricsUpdate, restartAdaptivePolling]);
+
   const fetchData = async () => {
+    
     try {
-      setLoading(true);
+      // Only show loading spinner on initial load, not on refresh
+      if (metricsData.total_operations === 0 && !operationData && !repositoryData) {
+        setLoading(true);
+      }
+      
       setError(null);
+      
+      // Store previous data to detect changes
+      const previousMetrics = JSON.stringify(metricsData);
+      const previousOperations = JSON.stringify(operationData);
+      const previousRepositories = JSON.stringify(repositoryData);
       
       const [summaryRes, configRes, operationRes, repositoryRes] = await Promise.all([
         apiService.get('/api/metrics/summary'),
@@ -71,6 +298,21 @@ const MetricsView = () => {
       const configData = configRes.data?.data || configRes.data;
       const operationBreakdown = operationRes.data?.data || operationRes.data;
       const repositoryBreakdown = repositoryRes.data?.data || repositoryRes.data;
+
+      // Check if data actually changed
+      const newMetrics = JSON.stringify(summary);
+      const newOperations = JSON.stringify(operationBreakdown);
+      const newRepositories = JSON.stringify(repositoryBreakdown);
+      
+      const dataChanged = (
+        newMetrics !== previousMetrics ||
+        newOperations !== previousOperations ||
+        newRepositories !== previousRepositories
+      );
+      
+      if (dataChanged) {
+        lastDataChangeRef.current = Date.now();
+      }
 
       // Use the same model structure as AI Config
       const availableModels = [
@@ -94,6 +336,7 @@ const MetricsView = () => {
         'gpt-3.5-turbo'
       ];
 
+      // Apply the new data
       setMetricsData(summary);
       setOperationData(operationBreakdown);
       setRepositoryData(repositoryBreakdown);
@@ -113,11 +356,13 @@ const MetricsView = () => {
     }
   };
 
+  // Note: handleRefresh removed since we have auto-refresh now
+
   const handleRecalculate = async () => {
     try {
       setLoading(true);
       await apiService.post('/api/metrics/recalculate');
-      await fetchData();
+      // fetchData will be called automatically via WebSocket events, no need to duplicate
     } catch (err) {
       console.error('Error recalculating metrics:', err);
       setError('Failed to recalculate metrics');
@@ -130,7 +375,8 @@ const MetricsView = () => {
     try {
       setSaving(true);
       await apiService.post('/api/metrics/config', editableConfig);
-      await fetchData(); // Refresh to get updated calculations
+      // Trigger immediate refresh after config change
+      await fetchData();
     } catch (err) {
       console.error('Error saving config:', err);
       setError('Failed to save configuration');
@@ -184,7 +430,7 @@ const MetricsView = () => {
     return fallbackModels.filter(Boolean);
   };
 
-  const hasData = metricsData && (metricsData.total_operations > 0 || Object.keys(metricsData.model_breakdown || {}).length > 0);
+  const hasData = metricsData.total_operations > 0 || Object.keys(metricsData.model_breakdown || {}).length > 0;
 
   const tabs = [
     { id: 'overview', name: 'Overview', icon: BarChart3 },
@@ -197,19 +443,9 @@ const MetricsView = () => {
   const renderTabContent = () => {
     if (!hasData && activeTab !== 'configuration') {
       return (
-        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8 text-center tab-enter">
-          <Brain className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No Metrics Data Available</h3>
-          <p className="text-gray-600 dark:text-gray-400 mb-4">
-            AI metrics will appear here once PR-Agent operations with AI models are processed.
-          </p>
-          <button
-            onClick={handleRecalculate}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg inline-flex items-center"
-          >
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Check for Data
-          </button>
+        <div className="text-center py-12">
+          <Brain className="h-12 w-12 text-gray-400 dark:text-gray-500 mx-auto mb-4" />
+          <p className="text-gray-500 dark:text-gray-400">AI metrics will appear here once PR-Agent operations with AI models are processed.</p>
         </div>
       );
     }
@@ -251,7 +487,11 @@ const MetricsView = () => {
                   ? 'text-green-600 dark:text-green-400' 
                   : 'text-gray-600 dark:text-gray-400'
               }`}>
-                {formatHours(metricsData.total_dev_hours_saved)}
+                <AnimatedMetric 
+                  value={metricsData.total_dev_hours_saved} 
+                  formatter={formatHours}
+                  duration={2000}
+                />
               </p>
               <p className="text-sm text-gray-600 dark:text-gray-400">
                 Time saved through AI automation
@@ -269,7 +509,11 @@ const MetricsView = () => {
                   ? 'text-green-600 dark:text-green-400' 
                   : 'text-red-600 dark:text-red-400'
               }`}>
-                {formatCurrency(metricsData.total_savings)}
+                <AnimatedMetric 
+                  value={metricsData.total_savings} 
+                  formatter={formatCurrency}
+                  duration={2500}
+                />
               </p>
               <p className="text-sm text-gray-600 dark:text-gray-400">
                 Developer savings minus AI costs
@@ -288,7 +532,12 @@ const MetricsView = () => {
           </div>
           <h3 className="text-lg font-semibold text-blue-900 dark:text-blue-100 mb-2">Total Jobs</h3>
           <p className="text-4xl font-bold text-blue-800 dark:text-blue-200 mb-2">
-            {formatNumber(metricsData.total_jobs)}
+            <AnimatedMetric 
+              value={metricsData.total_jobs} 
+              formatter={formatNumber}
+              duration={1200}
+              integer={true}
+            />
           </p>
           <p className="text-xs text-blue-700 dark:text-blue-300">
             AI jobs processed
@@ -302,7 +551,12 @@ const MetricsView = () => {
           </div>
           <h3 className="text-lg font-semibold text-purple-900 dark:text-purple-100 mb-2">Total Operations</h3>
           <p className="text-4xl font-bold text-purple-800 dark:text-purple-200 mb-2">
-            {formatNumber(metricsData.total_operations)}
+            <AnimatedMetric 
+              value={metricsData.total_operations} 
+              formatter={formatNumber}
+              duration={1400}
+              integer={true}
+            />
           </p>
           <p className="text-xs text-purple-700 dark:text-purple-300">
             AI operations executed
@@ -316,7 +570,11 @@ const MetricsView = () => {
           </div>
           <h3 className="text-lg font-semibold text-orange-900 dark:text-orange-100 mb-2">Token Costs</h3>
           <p className="text-4xl font-bold text-orange-800 dark:text-orange-200 mb-2">
-            {formatCurrency(metricsData.total_token_cost)}
+            <AnimatedMetric 
+              value={metricsData.total_token_cost} 
+              formatter={formatCurrency}
+              duration={1600}
+            />
           </p>
           <p className="text-xs text-orange-700 dark:text-orange-300">
             Total AI model costs
@@ -335,7 +593,12 @@ const MetricsView = () => {
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Input Tokens</p>
               <p className="text-2xl font-bold text-gray-900 dark:text-white">
-                {formatNumber(metricsData.total_input_tokens)}
+                <AnimatedMetric 
+                  value={metricsData.total_input_tokens} 
+                  formatter={formatNumber}
+                  duration={800}
+                  integer={true}
+                />
               </p>
             </div>
           </div>
@@ -350,7 +613,12 @@ const MetricsView = () => {
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Output Tokens</p>
               <p className="text-2xl font-bold text-gray-900 dark:text-white">
-                {formatNumber(metricsData.total_output_tokens)}
+                <AnimatedMetric 
+                  value={metricsData.total_output_tokens} 
+                  formatter={formatNumber}
+                  duration={900}
+                  integer={true}
+                />
               </p>
             </div>
           </div>
@@ -365,7 +633,11 @@ const MetricsView = () => {
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Models Used</p>
               <p className="text-2xl font-bold text-gray-900 dark:text-white">
-                {Object.keys(metricsData.model_breakdown || {}).length}
+                <AnimatedMetric 
+                  value={Object.keys(metricsData.model_breakdown || {}).length} 
+                  duration={1000}
+                  integer={true}
+                />
               </p>
             </div>
           </div>
@@ -380,7 +652,11 @@ const MetricsView = () => {
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Avg Cost/Op</p>
               <p className="text-2xl font-bold text-gray-900 dark:text-white">
-                {metricsData.total_operations > 0 ? formatCurrency(metricsData.total_token_cost / metricsData.total_operations) : '$0.00'}
+                <AnimatedMetric 
+                  value={metricsData.total_operations > 0 ? metricsData.total_token_cost / metricsData.total_operations : 0} 
+                  formatter={formatCurrency}
+                  duration={1100}
+                />
               </p>
             </div>
           </div>
@@ -544,12 +820,9 @@ const MetricsView = () => {
     
     if (modelEntries.length === 0) {
       return (
-        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8 text-center">
-          <Cpu className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No Model Usage Data</h3>
-          <p className="text-gray-600 dark:text-gray-400">
-            Model breakdown will appear here once AI operations are processed.
-          </p>
+        <div className="text-center py-12">
+          <Cpu className="h-12 w-12 text-gray-400 dark:text-gray-500 mx-auto mb-4" />
+          <p className="text-gray-500 dark:text-gray-400">Model breakdown will appear here once AI operations are processed.</p>
         </div>
       );
     }
@@ -849,12 +1122,9 @@ const MetricsView = () => {
     
     if (operationEntries.length === 0) {
       return (
-        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8 text-center">
-          <Zap className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No Operation Data</h3>
-          <p className="text-gray-600 dark:text-gray-400">
-            Operation breakdown will appear here once AI operations are processed.
-          </p>
+        <div className="text-center py-12">
+          <Zap className="h-12 w-12 text-gray-400 dark:text-gray-500 mx-auto mb-4" />
+          <p className="text-gray-500 dark:text-gray-400">Operation breakdown will appear here once AI operations are processed.</p>
         </div>
       );
     }
@@ -1165,12 +1435,9 @@ const MetricsView = () => {
     
     if (repositoryEntries.length === 0) {
       return (
-        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8 text-center">
-          <Star className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No Repository Data</h3>
-          <p className="text-gray-600 dark:text-gray-400">
-            Repository breakdown will appear here once AI operations are processed.
-          </p>
+        <div className="text-center py-12">
+          <Star className="h-12 w-12 text-gray-400 dark:text-gray-500 mx-auto mb-4" />
+          <p className="text-gray-500 dark:text-gray-400">Repository breakdown will appear here once AI operations are processed.</p>
         </div>
       );
     }
@@ -1797,7 +2064,7 @@ const MetricsView = () => {
     );
   };
 
-  if (loading && !metricsData) {
+  if (loading && !hasData) {
     return (
       <div className="space-y-6">
         <ViewHeader 
@@ -1813,14 +2080,13 @@ const MetricsView = () => {
     );
   }
 
-  if (error && !metricsData) {
+  if (error && !hasData) {
     return (
       <div className="space-y-6">
         <ViewHeader 
           title="AI/LLM Metrics"
           subtitle="Track AI model usage, costs, and developer productivity savings"
           icon={TrendingUp}
-          onRefresh={fetchData}
         />
         <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
           <div className="flex items-center">
@@ -1839,17 +2105,6 @@ const MetricsView = () => {
         title="AI/LLM Metrics"
         subtitle={`Track AI model usage, costs, and developer productivity savings${lastUpdated ? ` • Last updated: ${lastUpdated.toLocaleTimeString()}` : ''}`}
         icon={TrendingUp}
-        onRefresh={fetchData}
-        rightComponent={
-          <button
-            onClick={handleRecalculate}
-            disabled={loading}
-            className="flex items-center px-4 py-2 text-sm bg-gray-600 text-white rounded-lg hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500 transition-colors duration-200 shadow-sm disabled:opacity-50"
-          >
-            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-            Recalculate
-          </button>
-        }
       />
 
       {/* Tab Navigation */}

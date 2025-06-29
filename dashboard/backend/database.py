@@ -39,8 +39,22 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
+    except Exception as e:
+        # Only rollback if there's an active transaction
+        try:
+            if db.in_transaction():
+                db.rollback()
+        except Exception as rollback_error:
+            # Log rollback error but don't raise it
+            print(f"Warning: Rollback failed: {rollback_error}")
+        raise e
     finally:
-        db.close()
+        # Safely close the session
+        try:
+            db.close()
+        except Exception as close_error:
+            # Log close error but don't raise it
+            print(f"Warning: Session close failed: {close_error}")
 
 def check_column_exists(engine, table_name, column_name):
     """Check if a column exists in a table"""
@@ -217,6 +231,82 @@ def migrate_database():
                 conn.execute(text("ALTER TABLE repositories ADD COLUMN effective_config JSON"))
                 conn.commit()
             print("Added effective_config column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'has_workflow_config'):
+            print("Adding has_workflow_config column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN has_workflow_config BOOLEAN DEFAULT FALSE"))
+                conn.commit()
+            print("Added has_workflow_config column to repositories table")
+    
+    # Check and fix metrics_aggregate table
+    if check_table_exists(engine, 'metrics_aggregate'):
+        print("Checking metrics_aggregate table for proper defaults...")
+        with engine.connect() as conn:
+            # Check if there are any rows with NULL values and fix them
+            result = conn.execute(text("""
+                SELECT COUNT(*) as count FROM metrics_aggregate 
+                WHERE total_jobs IS NULL 
+                   OR total_operations IS NULL 
+                   OR total_input_tokens IS NULL 
+                   OR total_output_tokens IS NULL 
+                   OR total_estimated_dev_hours IS NULL
+            """))
+            null_count = result.scalar()
+            
+            if null_count > 0:
+                print(f"Found {null_count} rows with NULL values, fixing...")
+                conn.execute(text("""
+                    UPDATE metrics_aggregate 
+                    SET total_jobs = COALESCE(total_jobs, 0),
+                        total_operations = COALESCE(total_operations, 0),
+                        total_input_tokens = COALESCE(total_input_tokens, 0),
+                        total_output_tokens = COALESCE(total_output_tokens, 0),
+                        total_estimated_dev_hours = COALESCE(total_estimated_dev_hours, 0.0),
+                        model_usage = COALESCE(model_usage, '{}')
+                    WHERE total_jobs IS NULL 
+                       OR total_operations IS NULL 
+                       OR total_input_tokens IS NULL 
+                       OR total_output_tokens IS NULL 
+                       OR total_estimated_dev_hours IS NULL
+                       OR model_usage IS NULL
+                """))
+                conn.commit()
+                print("Fixed NULL values in metrics_aggregate table")
+    else:
+        print("Creating metrics_aggregate table with proper defaults...")
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE metrics_aggregate (
+                    id INTEGER PRIMARY KEY,
+                    total_jobs INTEGER DEFAULT 0,
+                    total_operations INTEGER DEFAULT 0,
+                    total_input_tokens INTEGER DEFAULT 0,
+                    total_output_tokens INTEGER DEFAULT 0,
+                    total_estimated_dev_hours FLOAT DEFAULT 0.0,
+                    model_usage JSON DEFAULT '{}',
+                    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.commit()
+        print("Created metrics_aggregate table with proper defaults")
+    
+    # Similarly check metrics_config table
+    if not check_table_exists(engine, 'metrics_config'):
+        print("Creating metrics_config table...")
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE metrics_config (
+                    id INTEGER PRIMARY KEY,
+                    model_costs JSON DEFAULT '{}',
+                    developer_hourly_rate FLOAT DEFAULT 75.0,
+                    hours_multiplier FLOAT DEFAULT 1.0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.commit()
+        print("Created metrics_config table")
     
     print("Database migration completed successfully!")
 

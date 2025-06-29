@@ -167,6 +167,9 @@ class NotificationService:
                 return False
 
             message = self._format_teams_message(event)
+            if message is None:
+                logger.info(f"Skipping Teams notification for event {event['event_type']} - not significant")
+                return True  # Return True to indicate "handled" even though we skipped
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(webhook_url, json=message) as response:
@@ -221,6 +224,9 @@ class NotificationService:
                 return False
 
             message = self._format_slack_message(event, config.get('channel', ''))
+            if message is None:
+                logger.info(f"Skipping Slack notification for event {event['event_type']} - not significant")
+                return True  # Return True to indicate "handled" even though we skipped
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(webhook_url, json=message) as response:
@@ -248,6 +254,9 @@ class NotificationService:
                 return False
 
             message = self._format_email_message(event, config)
+            if message is None:
+                logger.info(f"Skipping Email notification for event {event['event_type']} - not significant")
+                return True  # Return True to indicate "handled" even though we skipped
             
             # Use asyncio to run the synchronous SMTP operation
             result = await asyncio.get_event_loop().run_in_executor(
@@ -278,7 +287,11 @@ class NotificationService:
 
     def _format_teams_message(self, event: dict) -> Dict[str, Any]:
         """Format message for Microsoft Teams"""
-        title, color, summary = self._get_event_details(event)
+        event_details = self._get_event_details(event)
+        if event_details is None:
+            return None  # Skip this notification
+            
+        title, color, summary = event_details
         
         return {
             "@type": "MessageCard",
@@ -295,7 +308,11 @@ class NotificationService:
 
     def _format_slack_message(self, event: dict, channel: str = None) -> Dict[str, Any]:
         """Format message for Slack"""
-        title, color, summary = self._get_event_details(event)
+        event_details = self._get_event_details(event)
+        if event_details is None:
+            return None  # Skip this notification
+            
+        title, color, summary = event_details
         
         message = {
             "text": summary,
@@ -318,7 +335,11 @@ class NotificationService:
 
     def _format_email_message(self, event: dict, config: dict) -> MIMEMultipart:
         """Format email message"""
-        title, color, summary = self._get_event_details(event)
+        event_details = self._get_event_details(event)
+        if event_details is None:
+            return None  # Skip this notification
+            
+        title, color, summary = event_details
         
         msg = MIMEMultipart()
         msg['From'] = config['email_username']
@@ -363,61 +384,215 @@ class NotificationService:
         """Get event title, color, and summary based on event type"""
         event_data = event['event_data']
         
-        if event['event_type'] == 'new_job':
-            return (
-                f"New Job Started: {event_data.get('job_type', 'Unknown')}",
-                "#4CAF50",
-                f"A new {event_data.get('job_type', 'unknown')} job has been started for {event_data.get('repository', 'unknown repository')}"
-            )
-        elif event['event_type'] == 'new_operation':
-            return (
-                f"New Operation: {event_data.get('operation_type', 'Unknown')}",
-                "#2196F3",
-                f"A new {event_data.get('operation_type', 'unknown')} operation has been started"
-            )
-        elif event['event_type'] == 'job_failure':
-            return (
-                f"Job Failed: {event_data.get('job_type', 'Unknown')}",
-                "#F44336",
-                f"A {event_data.get('job_type', 'unknown')} job has failed for {event_data.get('repository', 'unknown repository')}"
-            )
-        elif event['event_type'] == 'system_health_change':
-            status = event_data.get('status', 'unknown')
+        if event['event_type'] == 'NEW_JOB':
+            job_type = event_data.get('job_type', 'Unknown')
+            repository = event_data.get('repository', 'unknown repository')
+            pr_url = event_data.get('pr_url', '')
+            trigger_user = event_data.get('trigger_user', 'System')
+            
+            title = f"🚀 New {job_type.title()} Job Started"
+            if pr_url:
+                pr_number = pr_url.split('/')[-1] if pr_url else 'Unknown'
+                summary = f"**{trigger_user}** started a {job_type} job for **{repository}** (PR #{pr_number})"
+            else:
+                summary = f"**{trigger_user}** started a {job_type} job for **{repository}**"
+            
+            return (title, "#4CAF50", summary)
+            
+        elif event['event_type'] == 'JOB_SUCCESS':
+            job_type = event_data.get('job_type', 'Unknown')
+            repository = event_data.get('repository', 'unknown repository')
+            duration = event_data.get('duration')
+            pr_url = event_data.get('pr_url', '')
+            
+            title = f"✅ {job_type.title()} Job Completed Successfully"
+            duration_text = f" in {self._format_duration(duration)}" if duration else ""
+            if pr_url:
+                pr_number = pr_url.split('/')[-1] if pr_url else 'Unknown'
+                summary = f"Job for **{repository}** (PR #{pr_number}) completed successfully{duration_text}"
+            else:
+                summary = f"Job for **{repository}** completed successfully{duration_text}"
+            
+            return (title, "#4CAF50", summary)
+            
+        elif event['event_type'] == 'JOB_FAILURE':
+            job_type = event_data.get('job_type', 'Unknown')
+            repository = event_data.get('repository', 'unknown repository')
+            error_details = event_data.get('error_details', '')
+            pr_url = event_data.get('pr_url', '')
+            duration = event_data.get('duration')
+            
+            title = f"❌ {job_type.title()} Job Failed"
+            duration_text = f" after {self._format_duration(duration)}" if duration else ""
+            if pr_url:
+                pr_number = pr_url.split('/')[-1] if pr_url else 'Unknown'
+                summary = f"Job for **{repository}** (PR #{pr_number}) failed{duration_text}"
+            else:
+                summary = f"Job for **{repository}** failed{duration_text}"
+            
+            if error_details:
+                summary += f"\n**Error:** {error_details}"
+            
+            return (title, "#F44336", summary)
+            
+        elif event['event_type'] == 'OPERATION_FAILURE':
+            operation_type = event_data.get('operation_type', 'Unknown')
+            repository = event_data.get('repository', 'unknown repository')
+            error_details = event_data.get('error_details', '')
+            
+            title = f"⚠️ {operation_type.title()} Operation Failed"
+            summary = f"**{operation_type}** operation failed for **{repository}**"
+            if error_details:
+                summary += f"\n**Error:** {error_details}"
+            
+            return (title, "#FF9800", summary)
+            
+        elif event['event_type'] == 'SYSTEM_HEALTH_CHANGE':
             service = event_data.get('service', 'unknown service')
-            color = "#FF9800" if status == 'warning' else "#F44336" if status == 'error' else "#4CAF50"
+            status = event_data.get('current_status') or event_data.get('status', 'unknown')
+            error_details = event_data.get('error_details', '')
+            previous_status = event_data.get('previous_status', '')
+            endpoint = event_data.get('endpoint', '')
+            
+            # Don't send notifications for transitions to/from "unknown" unless it's a real issue
+            if status == 'unknown' or previous_status == 'unknown':
+                # Skip notifications for initial "unknown" states or temporary unknowns
+                if not error_details and (not previous_status or previous_status in ['connected', 'healthy']):
+                    return None  # Signal to skip this notification
+            
+            if status in ['error', 'unhealthy', 'unreachable', 'misconfigured']:
+                title = f"🔴 System Health Alert: {service.replace('_', ' ').title()}"
+                color = "#F44336"
+                if previous_status and previous_status not in ['unknown', status]:
+                    summary = f"**{service.replace('_', ' ').title()}** health degraded from **{previous_status}** to **{status}**"
+                else:
+                    summary = f"**{service.replace('_', ' ').title()}** is now **{status}**"
+                
+                if error_details:
+                    summary += f"\n**Issue:** {error_details}"
+                if endpoint:
+                    summary += f"\n**Endpoint:** {endpoint}"
+                
+                summary += f"\n**Action needed:** Check service configuration and connectivity"
+                
+            elif status in ['warning', 'degraded']:
+                title = f"🟡 System Health Warning: {service.replace('_', ' ').title()}"
+                color = "#FF9800"
+                summary = f"**{service.replace('_', ' ').title()}** is experiencing issues (status: **{status}**)"
+                if error_details:
+                    summary += f"\n**Details:** {error_details}"
+                    
+            else:  # healthy, recovered, connected
+                # Only notify about recovery if coming from a problematic state
+                if previous_status and previous_status in ['error', 'unhealthy', 'unreachable', 'warning', 'degraded', 'misconfigured']:
+                    title = f"🟢 System Health Recovered: {service.replace('_', ' ').title()}"
+                    color = "#4CAF50"
+                    summary = f"**{service.replace('_', ' ').title()}** has recovered from **{previous_status}** to **{status}**"
+                else:
+                    # Don't notify for normal healthy states
+                    return None  # Signal to skip this notification
+            
+            return (title, color, summary)
+            
+        elif event['event_type'] in ['TEST_NOTIFICATION', 'TEST']:
             return (
-                f"System Health Change: {service}",
-                color,
-                f"{service} status changed to {status}"
-            )
-        elif event['event_type'] in ['test_notification', 'TEST']:
-            return (
-                f"Test Notification - {event_data.get('service_type', 'Unknown').title()}",
+                f"🧪 Test Notification - {event_data.get('service_type', 'Unknown').title()}",
                 "#2196F3",
-                event_data.get('message', 'Test notification from PR-Agent Dashboard')
+                event_data.get('message', 'Test notification from PR-Agent Dashboard - configuration is working correctly!')
             )
         else:
             return (
-                f"Unknown Event: {event['event_type']}",
+                f"📋 {event['event_type'].replace('_', ' ').title()}",
                 "#9E9E9E",
-                f"An {event['event_type']} event occurred"
+                f"A {event['event_type'].replace('_', ' ').lower()} event occurred"
             )
+    
+    def _format_duration(self, duration):
+        """Format duration in a human-readable way"""
+        if not duration:
+            return "unknown time"
+        
+        seconds = int(duration)
+        if seconds < 60:
+            return f"{seconds}s"
+        elif seconds < 3600:
+            minutes = seconds // 60
+            remaining_seconds = seconds % 60
+            return f"{minutes}m {remaining_seconds}s"
+        else:
+            hours = seconds // 3600
+            remaining_minutes = (seconds % 3600) // 60
+            return f"{hours}h {remaining_minutes}m"
 
     def _get_event_facts(self, event: dict) -> List[Dict[str, str]]:
-        """Get event facts for display"""
+        """Get event facts for display with smart formatting"""
+        event_data = event['event_data']
         facts = [
-            {"name": "Event Type", "value": event['event_type'].replace('_', ' ').title()},
-            {"name": "Timestamp", "value": datetime.fromisoformat(event['timestamp'].replace('Z', '+00:00')).strftime('%Y-%m-%d %H:%M:%S UTC')}
+            {"name": "🕒 Timestamp", "value": datetime.fromisoformat(event['timestamp'].replace('Z', '+00:00')).strftime('%Y-%m-%d %H:%M:%S UTC')}
         ]
         
-        # Add event-specific data
-        for key, value in event['event_data'].items():
-            if key not in ['timestamp']:  # Skip redundant fields
-                display_key = key.replace('_', ' ').title()
-                facts.append({"name": display_key, "value": str(value)})
+        # Event-specific intelligent facts
+        if event['event_type'] in ['NEW_JOB', 'JOB_SUCCESS', 'JOB_FAILURE']:
+            if event_data.get('repository'):
+                facts.append({"name": "📁 Repository", "value": event_data['repository']})
+            if event_data.get('pr_url'):
+                pr_number = event_data['pr_url'].split('/')[-1] if event_data['pr_url'] else 'Unknown'
+                facts.append({"name": "🔀 Pull Request", "value": f"#{pr_number}"})
+                facts.append({"name": "🔗 PR Link", "value": event_data['pr_url']})
+            if event_data.get('trigger_user'):
+                facts.append({"name": "👤 Triggered By", "value": event_data['trigger_user']})
+            if event_data.get('job_type'):
+                facts.append({"name": "⚙️ Job Type", "value": event_data['job_type'].title()})
+            if event_data.get('duration'):
+                facts.append({"name": "⏱️ Duration", "value": self._format_duration(event_data['duration'])})
+            if event_data.get('started_at'):
+                start_time = datetime.fromisoformat(event_data['started_at'].replace('Z', '+00:00'))
+                facts.append({"name": "🚀 Started At", "value": start_time.strftime('%H:%M:%S UTC')})
+            if event_data.get('completed_at'):
+                end_time = datetime.fromisoformat(event_data['completed_at'].replace('Z', '+00:00'))
+                facts.append({"name": "🏁 Completed At", "value": end_time.strftime('%H:%M:%S UTC')})
+                
+        elif event['event_type'] == 'OPERATION_FAILURE':
+            if event_data.get('operation_type'):
+                facts.append({"name": "🔧 Operation", "value": event_data['operation_type'].title()})
+            if event_data.get('repository'):
+                facts.append({"name": "📁 Repository", "value": event_data['repository']})
+            if event_data.get('error_details'):
+                facts.append({"name": "❌ Error Details", "value": event_data['error_details']})
+                
+        elif event['event_type'] == 'SYSTEM_HEALTH_CHANGE':
+            if event_data.get('service'):
+                facts.append({"name": "🔧 Service", "value": event_data['service'].replace('_', ' ').title()})
+            if event_data.get('status'):
+                status_emoji = {"healthy": "🟢", "warning": "🟡", "error": "🔴", "unreachable": "🔴", "disabled": "⚪"}.get(event_data['status'], "⚫")
+                facts.append({"name": "📊 Current Status", "value": f"{status_emoji} {event_data['status'].title()}"})
+            if event_data.get('previous_status'):
+                prev_emoji = {"healthy": "🟢", "warning": "🟡", "error": "🔴", "unreachable": "🔴", "disabled": "⚪"}.get(event_data['previous_status'], "⚫")
+                facts.append({"name": "📈 Previous Status", "value": f"{prev_emoji} {event_data['previous_status'].title()}"})
+            if event_data.get('endpoint'):
+                facts.append({"name": "🌐 Endpoint", "value": event_data['endpoint']})
+            if event_data.get('error_details'):
+                facts.append({"name": "🚨 Error Details", "value": event_data['error_details']})
+            if event_data.get('last_checked'):
+                check_time = datetime.fromisoformat(event_data['last_checked'].replace('Z', '+00:00'))
+                facts.append({"name": "🔍 Last Checked", "value": check_time.strftime('%H:%M:%S UTC')})
+                
+        else:
+            # Fallback to generic facts for unknown event types
+            for key, value in event_data.items():
+                if key not in ['timestamp'] and value is not None:
+                    # Smart key formatting
+                    display_key = key.replace('_', ' ').title()
+                    icon_map = {
+                        'Job Id': '🆔', 'Operation Id': '🆔', 'Repository': '📁', 
+                        'Status': '📊', 'Error Details': '❌', 'Message': '💬',
+                        'Service Type': '🔧', 'Duration': '⏱️'
+                    }
+                    icon = icon_map.get(display_key, '📋')
+                    facts.append({"name": f"{icon} {display_key}", "value": str(value)})
         
         if event.get('repositories'):
-            facts.append({"name": "Repositories", "value": ", ".join(event['repositories'])})
+            facts.append({"name": "📂 Affected Repositories", "value": ", ".join(event['repositories'])})
             
         return facts
 

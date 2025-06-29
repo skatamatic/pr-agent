@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 class MetricsService:
     """Service for managing AI/LLM metrics and cost calculation"""
     
-    def __init__(self):
+    def __init__(self, websocket_manager=None):
+        self.websocket_manager = websocket_manager
         self.default_model_costs = {
             # OpenAI Models (per 1K tokens)
             "gpt-4": {"input": 0.03, "output": 0.06},
@@ -136,6 +137,18 @@ class MetricsService:
                 aggregate = MetricsAggregateDB()
                 db.add(aggregate)
             
+            # Ensure all aggregate fields have default values (handle None values)
+            if aggregate.total_operations is None:
+                aggregate.total_operations = 0
+            if aggregate.total_input_tokens is None:
+                aggregate.total_input_tokens = 0
+            if aggregate.total_output_tokens is None:
+                aggregate.total_output_tokens = 0
+            if aggregate.total_estimated_dev_hours is None:
+                aggregate.total_estimated_dev_hours = 0.0
+            if aggregate.total_jobs is None:
+                aggregate.total_jobs = 0
+            
             # Update totals
             aggregate.total_operations += 1
             if input_tokens:
@@ -190,6 +203,18 @@ class MetricsService:
                 aggregate = MetricsAggregateDB()
                 db.add(aggregate)
             
+            # Ensure all aggregate fields have default values (handle None values)
+            if aggregate.total_operations is None:
+                aggregate.total_operations = 0
+            if aggregate.total_input_tokens is None:
+                aggregate.total_input_tokens = 0
+            if aggregate.total_output_tokens is None:
+                aggregate.total_output_tokens = 0
+            if aggregate.total_estimated_dev_hours is None:
+                aggregate.total_estimated_dev_hours = 0.0
+            if aggregate.total_jobs is None:
+                aggregate.total_jobs = 0
+            
             # Update totals
             aggregate.total_operations += 1
             if operation.input_tokens:
@@ -225,6 +250,13 @@ class MetricsService:
             aggregate.last_updated = datetime.utcnow()
             # Don't commit here - let the calling function handle the transaction
             
+            # Send WebSocket update if available
+            if self.websocket_manager:
+                try:
+                    await self._broadcast_metrics_update(db)
+                except Exception as e:
+                    logger.warning(f"Failed to broadcast metrics update: {e}")
+            
         except Exception as e:
             logger.error(f"Error updating aggregates from operation: {e}")
             raise
@@ -240,20 +272,14 @@ class MetricsService:
                 (OperationDB.estimated_dev_hours_saved.is_not(None))
             ).all()
             
-            # Reset aggregate
-            aggregate = db.query(MetricsAggregateDB).first()
-            if not aggregate:
-                aggregate = MetricsAggregateDB()
-                db.add(aggregate)
+            # Build new values in memory first (atomic approach - no intermediate zeros in DB)
+            new_total_operations = 0
+            new_total_input_tokens = 0
+            new_total_output_tokens = 0
+            new_total_estimated_dev_hours = 0.0
+            new_model_usage = {}
             
-            # Reset values
-            aggregate.total_operations = 0
-            aggregate.total_input_tokens = 0
-            aggregate.total_output_tokens = 0
-            aggregate.total_estimated_dev_hours = 0.0
-            aggregate.model_usage = {}
-            
-            # Process each operation
+            # Process each operation to build complete new values
             for operation in operations:
                 model_used = operation.model_used
                 input_tokens = operation.input_tokens or 0
@@ -261,37 +287,54 @@ class MetricsService:
                 estimated_dev_hours = operation.estimated_dev_hours_saved or 0.0
                 
                 # Update totals
-                aggregate.total_operations += 1
-                aggregate.total_input_tokens += input_tokens
-                aggregate.total_output_tokens += output_tokens
-                aggregate.total_estimated_dev_hours += estimated_dev_hours
+                new_total_operations += 1
+                new_total_input_tokens += input_tokens
+                new_total_output_tokens += output_tokens
+                new_total_estimated_dev_hours += estimated_dev_hours
                 
                 # Update model usage
                 if model_used:
-                    model_usage = aggregate.model_usage or {}
-                    if model_used not in model_usage:
-                        model_usage[model_used] = {
+                    if model_used not in new_model_usage:
+                        new_model_usage[model_used] = {
                             'operations_count': 0,
                             'input_tokens': 0,
                             'output_tokens': 0,
                             'estimated_dev_hours': 0.0
                         }
                     
-                    model_usage[model_used]['operations_count'] += 1
-                    model_usage[model_used]['input_tokens'] += input_tokens
-                    model_usage[model_used]['output_tokens'] += output_tokens
-                    model_usage[model_used]['estimated_dev_hours'] += estimated_dev_hours
-                    
-                    aggregate.model_usage = model_usage
+                    new_model_usage[model_used]['operations_count'] += 1
+                    new_model_usage[model_used]['input_tokens'] += input_tokens
+                    new_model_usage[model_used]['output_tokens'] += output_tokens
+                    new_model_usage[model_used]['estimated_dev_hours'] += estimated_dev_hours
             
             # Count total jobs
-            total_jobs = db.query(OperationDB.job_id).distinct().count()
-            aggregate.total_jobs = total_jobs
+            new_total_jobs = db.query(OperationDB.job_id).distinct().count()
+            
+            # Now atomically update the aggregate with all new values at once
+            aggregate = db.query(MetricsAggregateDB).first()
+            if not aggregate:
+                aggregate = MetricsAggregateDB()
+                db.add(aggregate)
+            
+            # Apply all new values atomically (no intermediate state with zeros)
+            aggregate.total_operations = new_total_operations
+            aggregate.total_input_tokens = new_total_input_tokens
+            aggregate.total_output_tokens = new_total_output_tokens
+            aggregate.total_estimated_dev_hours = new_total_estimated_dev_hours
+            aggregate.total_jobs = new_total_jobs
+            aggregate.model_usage = new_model_usage
             
             aggregate.last_updated = datetime.utcnow()
             db.commit()
             
-            logger.info(f"Recalculated metrics: {aggregate.total_operations} operations, {total_jobs} jobs")
+            logger.info(f"Recalculated metrics: {aggregate.total_operations} operations, {aggregate.total_jobs} jobs")
+            
+            # Send WebSocket update if available
+            if self.websocket_manager:
+                try:
+                    await self._broadcast_metrics_update(db)
+                except Exception as e:
+                    logger.warning(f"Failed to broadcast metrics update: {e}")
             
         except Exception as e:
             logger.error(f"Error recalculating metrics: {e}")
@@ -603,4 +646,32 @@ class MetricsService:
             
         except Exception as e:
             logger.error(f"Error getting metrics summary: {e}")
-            raise 
+            raise
+
+    async def _broadcast_metrics_update(self, db: Session):
+        """Broadcast metrics update via WebSocket"""
+        try:
+            if not self.websocket_manager:
+                return
+            
+            # Get latest metrics data
+            summary = await self.get_metrics_summary(db)
+            operations = await self.get_operation_breakdown(db)
+            repositories = await self.get_repository_breakdown(db)
+            
+            # Convert summary to dict if it's a Pydantic model
+            summary_dict = summary.dict() if hasattr(summary, 'dict') else summary
+            
+            # Broadcast using the standard format
+            await self.websocket_manager.broadcast({
+                "type": "metrics_update",
+                "data": {
+                    "summary": summary_dict,
+                    "operations": operations,
+                    "repositories": repositories
+                }
+            })
+            logger.debug("Broadcasted metrics update via WebSocket")
+            
+        except Exception as e:
+            logger.warning(f"Failed to broadcast metrics update: {e}") 

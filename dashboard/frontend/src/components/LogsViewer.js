@@ -17,8 +17,18 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
   const [showExportDropdown, setShowExportDropdown] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
+  const [newLogsAvailable, setNewLogsAvailable] = useState(0);
+  const [newLogsBuffer, setNewLogsBuffer] = useState([]);
   const exportDropdownRef = useRef(null);
   const itemsPerPage = 30;
+
+  // Auto-refresh when component mounts (navigating to logs view)
+  useEffect(() => {
+    if (onRefresh) {
+      onRefresh();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Intentionally empty - only run on mount to auto-refresh when navigating to logs
 
   // Handle external filtering (from JobsList component)
   useEffect(() => {
@@ -44,8 +54,20 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       setCurrentPage(1);
     };
 
+    // Listen for new logs from WebSocket - don't update display, just count them
+    const handleNewLogAvailable = (event) => {
+      const logData = event.detail;
+      setNewLogsBuffer(prev => [logData, ...prev]);
+      setNewLogsAvailable(prev => prev + 1);
+    };
+
     window.addEventListener('filterLogsByOperation', handleFilterByOperation);
-    return () => window.removeEventListener('filterLogsByOperation', handleFilterByOperation);
+    window.addEventListener('newLogAvailable', handleNewLogAvailable);
+    
+    return () => {
+      window.removeEventListener('filterLogsByOperation', handleFilterByOperation);
+      window.removeEventListener('newLogAvailable', handleNewLogAvailable);
+    };
   }, []);
 
   // Handle clicks outside export dropdown
@@ -384,6 +406,15 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     return filters;
   };
 
+  const handleRefreshWithNewLogs = () => {
+    // Refresh the parent component to fetch new logs, then clear the banner
+    if (onRefresh) {
+      onRefresh();
+    }
+    setNewLogsAvailable(0);
+    setNewLogsBuffer([]);
+  };
+
   // Clear all filters function
   const clearAllFilters = (event) => {
     event.stopPropagation(); // Prevent filter card from toggling
@@ -478,6 +509,42 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
           </div>
         }
       />
+
+      {/* New Logs Available Banner */}
+      {newLogsAvailable > 0 && (
+        <div className="relative bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-xl p-4 shadow-sm overflow-hidden">
+          {/* Animated border overlay */}
+          <div className="absolute inset-0 rounded-xl border-2 border-green-400 dark:border-green-500 opacity-80 animate-pulse"></div>
+          <div className="absolute inset-0 rounded-xl ring-1 ring-green-300 dark:ring-green-600 animate-ping" style={{animationDuration: '2s'}}></div>
+          
+          {/* Content */}
+          <div className="relative flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-lg">
+                <RefreshCw className="h-5 w-5 text-green-600 dark:text-green-400" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-green-900 dark:text-green-200">
+                  New Logs Available
+                </h3>
+                <p className="text-sm text-green-700 dark:text-green-300">
+                  <span className="font-semibold">{newLogsAvailable}</span> new log{newLogsAvailable !== 1 ? 's' : ''} received
+                </p>
+                <p className="text-xs text-green-600 dark:text-green-400 mt-1">
+                  Click refresh to view the latest logs
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={handleRefreshWithNewLogs}
+              className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 transition-colors duration-200 shadow-sm"
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Refresh
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Job/Operation Filter Alert - Show when filtered externally */}
       {(filterId && filterType) && (
@@ -753,8 +820,11 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       {/* Logs table */}
       <div className="bg-white dark:bg-gray-800 shadow-sm border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
         {paginatedLogs.length === 0 ? (
-          <div className="p-8 text-center text-gray-500 dark:text-gray-400">
-            {filteredLogs.length === 0 ? 'No logs found' : 'No logs on this page'}
+          <div className="text-center py-12">
+            <FileText className="h-12 w-12 text-gray-400 dark:text-gray-500 mx-auto mb-4" />
+            <p className="text-gray-500 dark:text-gray-400">
+              {filteredLogs.length === 0 ? 'No logs found matching the selected filters.' : 'No logs on this page.'}
+            </p>
           </div>
         ) : (
           <div className="overflow-x-auto">

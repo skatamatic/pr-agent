@@ -369,7 +369,7 @@ export const ToastProvider = ({ children }) => {
 
       {/* Clear All Button - Floats to the left of the bottom toast when there are multiple toasts */}
       {toasts.filter(toast => toast.type !== 'progress').length > 1 && (
-        <div className="fixed bottom-4 right-80 z-50">
+        <div className="fixed bottom-4 right-96 z-50">
           <button
             onClick={clearAllToasts}
             className="bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-2 rounded-lg shadow-lg backdrop-blur-sm transition-all duration-200 flex items-center space-x-1 border border-gray-600"

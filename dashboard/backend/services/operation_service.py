@@ -59,17 +59,21 @@ class OperationService:
         return db.query(OperationDB).filter(OperationDB.operation_id == operation_id).first()
     
     async def update_operation_status(self, db: Session, log_data: Dict[str, Any]) -> None:
-        """Update or create operation with enhanced tracking and metrics"""
+        """Update existing operation status from log data (no longer creates operations)"""
         try:
-            # Create more robust operation ID
-            operation_id = f"{log_data.get('repo', 'unknown')}_{log_data.get('command', 'unknown')}_{hash(log_data.get('pr_url', 'no-url'))}"
+            # Only update if we have an explicit operation_id from the log data
+            operation_id = log_data.get('operation_id')
+            if not operation_id:
+                # No operation_id in log data, skip operation status update
+                return
             
-            # Find existing operation
+            # Find existing operation by the explicit operation_id
             existing_op = db.query(OperationDB).filter(OperationDB.operation_id == operation_id).first()
             
             if existing_op:
                 # Update existing operation with duration calculation
-                existing_op.status = log_data.get('status')
+                if log_data.get('status'):
+                    existing_op.status = log_data.get('status')
                 existing_op.last_updated = datetime.utcnow()
                 
                 # Calculate duration for completed operations
@@ -82,22 +86,12 @@ class OperationService:
                 # Track error information
                 if log_data.get('status') == "failed" and log_data.get('error'):
                     existing_op.error_details = json.dumps(log_data.get('error'))
-                    
+                
+                db.commit()
             else:
-                # Create new operation with comprehensive tracking
-                operation = OperationDB(
-                    operation_id=operation_id,
-                    command=log_data.get('command'),
-                    repo=log_data.get('repo'),
-                    pr_url=log_data.get('pr_url'),
-                    status=log_data.get('status'),
-                    started_at=datetime.fromisoformat(log_data.get('timestamp', datetime.utcnow().isoformat()).replace('Z', '+00:00')),
-                    last_updated=datetime.utcnow(),
-                    error_details=json.dumps(log_data.get('error')) if log_data.get('error') else None
-                )
-                db.add(operation)
-            
-            db.commit()
+                # Operation not found - this is normal since operations are now created explicitly
+                # through the /api/operations/create endpoint, not from log data
+                pass
             
         except Exception as e:
             db.rollback()

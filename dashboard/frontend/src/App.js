@@ -63,6 +63,10 @@ function Dashboard() {
   });
   const [configNavigationTarget, setConfigNavigationTarget] = useState(null);
   const [previousTab, setPreviousTab] = useState('overview');
+  
+  // Navigation badge counts for new data
+  const [newLogsCount, setNewLogsCount] = useState(0);
+  const [newJobsCount, setNewJobsCount] = useState(0);
 
   const { handleApiError, handleApiSuccess, handleSystemError, handleSystemRestore, clearErrorState } = useContext(ToastContext);
 
@@ -108,15 +112,23 @@ function Dashboard() {
     };
 
     const handleLogUpdate = (logData) => {
-      setLogs(prevLogs => {
-        // Add new log to the beginning of the array
-        const newLogs = [logData, ...prevLogs];
-        // Keep only the latest 1000 logs to prevent memory issues
-        return newLogs.slice(0, 1000);
+      // Don't update logs directly to avoid disrupting user viewing
+      // Instead, notify LogsViewer component about new logs
+      window.dispatchEvent(new CustomEvent('newLogAvailable', { detail: logData }));
+      
+      // Increment new logs badge count only if not currently on logs view
+      setActiveTab(currentTab => {
+        if (currentTab !== 'logs') {
+          setNewLogsCount(prev => prev + 1);
+        }
+        return currentTab; // Don't change the tab, just use it for the check
       });
     };
 
     const handleOperationUpdate = (operationData) => {
+      // Notify JobsList about operation update for live refresh
+      window.dispatchEvent(new CustomEvent('operationUpdate', { detail: operationData }));
+      
       setOperations(prevOperations => {
         const existingIndex = prevOperations.findIndex(op => op.id === operationData.id);
         if (existingIndex >= 0) {
@@ -132,6 +144,17 @@ function Dashboard() {
     };
 
     const handleJobUpdate = (jobData) => {
+      // Notify JobsList about job update for live refresh
+      window.dispatchEvent(new CustomEvent('jobUpdate', { detail: jobData }));
+      
+      // Increment new jobs badge count only if not currently on jobs view
+      setActiveTab(currentTab => {
+        if (currentTab !== 'jobs') {
+          setNewJobsCount(prev => prev + 1);
+        }
+        return currentTab; // Don't change the tab, just use it for the check
+      });
+      
       setJobs(prevJobs => {
         const existingIndex = prevJobs.findIndex(job => job.id === jobData.id);
         if (existingIndex >= 0) {
@@ -146,16 +169,33 @@ function Dashboard() {
       });
     };
 
-    // Set up event listeners
+    const handleMetricsUpdate = (metricsData) => {
+      // Notify MetricsView about metrics update for live refresh
+      window.dispatchEvent(new CustomEvent('metricsUpdate', { detail: metricsData }));
+    };
+
+    // Set up event listeners - remove any existing listeners first to prevent duplicates
+    webSocketService.off('connected', handleWebSocketConnected);
+    webSocketService.off('disconnected', handleWebSocketDisconnected);
+    webSocketService.off('error', handleWebSocketError);
+    webSocketService.off('log', handleLogUpdate);
+    webSocketService.off('operation_update', handleOperationUpdate);
+    webSocketService.off('job_update', handleJobUpdate);
+    webSocketService.off('metrics_update', handleMetricsUpdate);
+    
+    // Now add the listeners
     webSocketService.on('connected', handleWebSocketConnected);
     webSocketService.on('disconnected', handleWebSocketDisconnected);
     webSocketService.on('error', handleWebSocketError);
     webSocketService.on('log', handleLogUpdate);
     webSocketService.on('operation_update', handleOperationUpdate);
     webSocketService.on('job_update', handleJobUpdate);
+    webSocketService.on('metrics_update', handleMetricsUpdate);
 
-    // Connect WebSocket
-    connectWebSocket();
+    // Connect WebSocket with small delay to handle React Strict Mode
+    const connectTimer = setTimeout(() => {
+      connectWebSocket();
+    }, 100);
 
     // Listen for browser back/forward navigation
     const handlePopState = (event) => {
@@ -168,16 +208,18 @@ function Dashboard() {
 
     // Cleanup on unmount
     return () => {
+      clearTimeout(connectTimer);
       webSocketService.off('connected', handleWebSocketConnected);
       webSocketService.off('disconnected', handleWebSocketDisconnected);
       webSocketService.off('error', handleWebSocketError);
       webSocketService.off('log', handleLogUpdate);
       webSocketService.off('operation_update', handleOperationUpdate);
       webSocketService.off('job_update', handleJobUpdate);
+      webSocketService.off('metrics_update', handleMetricsUpdate);
       webSocketService.disconnect();
       window.removeEventListener('popstate', handlePopState);
     };
-  }, []);
+  }, []); // Keep empty dependency array - handlers use functional updates to avoid stale closures
 
   // Smart data fetching with error handling
   const fetchData = async (showLoadingState = false) => {
@@ -433,6 +475,14 @@ function Dashboard() {
     url.searchParams.delete('operation'); // Remove operation if present
     window.history.pushState({ view: 'jobs', job: jobId }, '', url);
     
+    // Force the Jobs tab to show "ALL JOBS" first so the highlighted job is visible
+    setTimeout(() => {
+      const event = new CustomEvent('filterJobsByStatus', { 
+        detail: { status: 'all' } 
+      });
+      window.dispatchEvent(event);
+    }, 100);
+    
     // Set highlight and clear it after 4 seconds
     setHighlightedJobId(jobId);
     setHighlightedOperationId(null);
@@ -471,6 +521,14 @@ function Dashboard() {
     url.searchParams.set('operation', operationId);
     window.history.pushState({ view: 'jobs', job: jobId, operation: operationId }, '', url);
     
+    // Force the Jobs tab to show "ALL JOBS" first so the highlighted job/operation is visible
+    setTimeout(() => {
+      const event = new CustomEvent('filterJobsByStatus', { 
+        detail: { status: 'all' } 
+      });
+      window.dispatchEvent(event);
+    }, 100);
+    
     // Clear any existing highlights
     setHighlightedJobId(null);
     setHighlightedOperationId(null);
@@ -501,6 +559,14 @@ function Dashboard() {
     // Clear highlighted states when changing tabs
     setHighlightedJobId(null);
     setHighlightedOperationId(null);
+    
+    // Clear badge counts when navigating to respective views
+    if (tabId === 'logs') {
+      setNewLogsCount(0);
+    }
+    if (tabId === 'jobs') {
+      setNewJobsCount(0);
+    }
     
     setPreviousTab(activeTab);
     setActiveTab(tabId);
@@ -619,20 +685,41 @@ function Dashboard() {
           <div className="space-y-1">
             {mainTabs.map((tab) => {
               const Icon = tab.icon;
+              
+              // Check if this tab has new activity to show notification badge
+              const hasNewActivity = () => {
+                if (tab.id === 'logs' && newLogsCount > 0 && activeTab !== 'logs') {
+                  return true;
+                }
+                if (tab.id === 'jobs' && newJobsCount > 0 && activeTab !== 'jobs') {
+                  return true;
+                }
+                return false;
+              };
+              
+              const showNotificationBadge = hasNewActivity();
+              
               return (
                 <button
                   key={tab.id}
                   onClick={() => handleTabChange(tab.id)}
-                  className={`w-full flex items-center px-3 py-2.5 text-sm font-medium rounded-lg transition-all duration-200 group ${
+                  className={`w-full flex items-center justify-between px-3 py-2.5 text-sm font-medium rounded-lg transition-all duration-200 group ${
                     activeTab === tab.id
                       ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 shadow-sm'
                       : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-white dark:hover:bg-gray-800 hover:shadow-sm'
                   }`}
                 >
-                  <Icon className={`h-5 w-5 mr-3 transition-transform duration-200 ${
-                    activeTab === tab.id ? 'scale-110' : 'group-hover:scale-105'
-                  }`} />
-                  {tab.name}
+                  <div className="flex items-center">
+                    <Icon className={`h-5 w-5 mr-3 transition-transform duration-200 ${
+                      activeTab === tab.id ? 'scale-110' : 'group-hover:scale-105'
+                    }`} />
+                    {tab.name}
+                  </div>
+                  
+                  {/* Simple notification badge */}
+                  {showNotificationBadge && (
+                    <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                  )}
                 </button>
               );
             })}

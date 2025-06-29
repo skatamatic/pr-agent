@@ -82,6 +82,9 @@ class HealthCacheService:
             cached.details = health_data.get('details', {})
             cached.last_checked = datetime.utcnow()
             cached.is_checking = False
+            # Handle None check_count values
+            if cached.check_count is None:
+                cached.check_count = 0
             cached.check_count += 1
             cached.updated_at = datetime.utcnow()
             

@@ -21,6 +21,12 @@ class WebSocketService {
       return Promise.resolve();
     }
 
+    // Clean up any existing connection before creating new one
+    if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
+      this.ws.close();
+      this.ws = null;
+    }
+
     this.isConnecting = true;
 
     return new Promise((resolve, reject) => {
@@ -63,6 +69,7 @@ class WebSocketService {
 
         this.ws.onerror = (error) => {
           console.error('WebSocket error:', error);
+          console.error('WebSocket state when error occurred:', this.ws ? this.ws.readyState : 'null');
           this.isConnecting = false;
           this.emit('error', error);
           reject(error);
@@ -118,15 +125,24 @@ class WebSocketService {
       case 'log':
         this.emit('log', data);
         break;
+      case 'logs_batch':
+        // Handle batch logs - emit individual log events for each log
+        if (data && Array.isArray(data)) {
+          data.forEach(logInfo => {
+            // Emit a log event for each log in the batch
+            this.emit('log', { id: logInfo.id, message: logInfo.message });
+          });
+        }
+        break;
       case 'operation_update':
         this.emit('operation_update', data);
         break;
       case 'job_update':
         this.emit('job_update', data);
         break;
-      case 'metrics_update':
-        this.emit('metrics_update', data);
-        break;
+              case 'metrics_update':
+          this.emit('metrics_update', data);
+          break;
       case 'system_status':
         this.emit('system_status', data);
         break;
@@ -189,6 +205,7 @@ class WebSocketService {
 
   disconnect() {
     this.shouldReconnect = false;
+    this.isConnecting = false;
     
     // Clear reconnect timeout
     if (this.reconnectTimeout) {
@@ -199,10 +216,15 @@ class WebSocketService {
     this.stopHeartbeat();
     
     if (this.ws) {
+      // Set onclose to null to prevent reconnection logic from triggering
+      this.ws.onclose = null;
+      this.ws.onerror = null;
       this.ws.close(1000, 'Manual disconnect');
       this.ws = null;
     }
-    this.listeners.clear();
+    
+    // Don't clear listeners as they might be needed for reconnection
+    // this.listeners.clear();
   }
 
   isConnected() {

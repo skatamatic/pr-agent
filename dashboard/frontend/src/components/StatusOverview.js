@@ -794,7 +794,7 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
         {/* Total Jobs Card - Redesigned */}
         <div 
           className="group relative overflow-hidden bg-gradient-to-br from-blue-500 via-blue-600 to-indigo-700 rounded-2xl shadow-xl cursor-pointer transform transition-all duration-300 hover:scale-105 hover:shadow-2xl"
-          onClick={() => onNavigateToJobs && onNavigateToJobs()}
+          onClick={() => onNavigateToJobs && onNavigateToJobs('all')}
         >
           <div className="absolute inset-0 bg-black/10"></div>
           <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -translate-y-16 translate-x-16"></div>
