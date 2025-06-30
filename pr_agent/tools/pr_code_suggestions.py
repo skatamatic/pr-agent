@@ -1718,6 +1718,7 @@ class PRCodeSuggestions:
 
         # Process and format suggestions for publishing
         code_suggestions = []
+        detailed_suggestions_data = []  # Collect all suggestion details for combined logging
         formatting_stats = {
             'total_suggestions': len(data['code_suggestions']),
             'successfully_formatted': 0,
@@ -1744,16 +1745,18 @@ class PRCodeSuggestions:
                 label = suggestion['label'].strip()
                 score = suggestion.get('score')
 
-                # Log suggestion details at high verbosity
+                # Collect suggestion details for combined logging
                 if get_settings().config.verbosity_level >= 2:
-                    get_logger().info(f"Detailed suggestion {i+1} data:", 
-                                     artifacts={
-                                         'full_suggestion': suggestion,
-                                         'file': relevant_file,
-                                         'lines': f"{relevant_lines_start}-{relevant_lines_end}",
-                                         'content_preview': content[:100],
-                                         'code_length': len(new_code_snippet)
-                                     })
+                    detailed_suggestions_data.append({
+                        'suggestion_number': i+1,
+                        'full_suggestion': suggestion,
+                        'file': relevant_file,
+                        'lines': f"{relevant_lines_start}-{relevant_lines_end}",
+                        'content_preview': content[:100],
+                        'code_length': len(new_code_snippet),
+                        'label': label,
+                        'score': score
+                    })
 
                 # Apply code deindentation if needed
                 original_code_snippet = new_code_snippet
@@ -1794,6 +1797,15 @@ class PRCodeSuggestions:
                                       'file': suggestion_file
                                   })
 
+        # Log all detailed suggestions data in a single entry
+        if detailed_suggestions_data and get_settings().config.verbosity_level >= 2:
+            get_logger().info(f"Detailed suggestions data for {len(detailed_suggestions_data)} suggestions:", 
+                             artifacts={
+                                 'all_suggestions': detailed_suggestions_data,
+                                 'formatting_stats': formatting_stats,
+                                 'total_processed': len(data['code_suggestions'])
+                             })
+        
         if not code_suggestions:
             get_logger().error("❌ No suggestions were successfully formatted for publication")
             return None
