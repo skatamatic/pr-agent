@@ -45,7 +45,7 @@ except ImportError:
 
 
 class PRCodeSuggestions:
-    def __init__(self, pr_url: str, args: list = None, ai_handler: BaseAiHandler = LiteLLMAIHandler(), cli_mode: bool = False):
+    def __init__(self, pr_url: str, args: list = None, ai_handler: BaseAiHandler = LiteLLMAIHandler, cli_mode: bool = False):
         self.pr_url = pr_url
         self.cli_mode = cli_mode
         
@@ -74,7 +74,13 @@ class PRCodeSuggestions:
 
         num_code_suggestions = int(get_settings().pr_code_suggestions.num_code_suggestions_per_chunk)
 
-        self.ai_handler = ai_handler()
+        # Handle both class and instance cases for ai_handler
+        if isinstance(ai_handler, type):
+            # ai_handler is a class, instantiate it
+            self.ai_handler = ai_handler()
+        else:
+            # ai_handler is already an instance, use it directly
+            self.ai_handler = ai_handler
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
         self.prediction = None
@@ -138,22 +144,28 @@ class PRCodeSuggestions:
         # Create operation context for dashboard tracking (error resilient)
         if DASHBOARD_INTEGRATION_AVAILABLE:
             try:
-                with operation_context(
+                # Only catch operation context setup errors, not operation execution errors
+                operation_context_manager = operation_context(
                     operation_type=OperationType.GENERATING_SUGGESTIONS,
                     command="improve",
                     repo=repository,
                     pr_url=self.pr_url,
                     installation_id=getattr(self.git_provider, 'installation_id', None),
                     sender=getattr(self.git_provider, 'sender', None)
-                ) as operation_id:
-                    get_logger().info(f"Code suggestions operation started with ID: {operation_id}")
-                    return await self._run_with_tracking(operation_id)
+                )
             except Exception as e:
-                get_logger().warning(f"Dashboard operation tracking failed, continuing without tracking: {e}")
+                get_logger().warning(f"Dashboard operation context setup failed, continuing without tracking: {e}")
                 # Fall through to execute without tracking
+                get_logger().info("Executing code suggestions without dashboard tracking (context setup failed)")
+                return await self._run_without_tracking()
+            
+            # Execute with dashboard tracking - let operation failures be tracked
+            with operation_context_manager as operation_id:
+                get_logger().info(f"Code suggestions operation started with ID: {operation_id}")
+                return await self._run_with_tracking(operation_id)
         
-        # Execute without operation tracking (fallback or dashboard disabled)
-        get_logger().info("Executing code suggestions without dashboard tracking")
+        # Execute without operation tracking (dashboard disabled)
+        get_logger().info("Executing code suggestions without dashboard tracking (dashboard disabled)")
         return await self._run_without_tracking()
 
     async def _fetch_context_and_diff(self):

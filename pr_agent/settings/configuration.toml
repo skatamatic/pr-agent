@@ -403,3 +403,10 @@ pr_commands = [
 URL = "http://localhost:8000/"
 ENABLED = true
 API_KEY = ""
+
+[pr_dev_time_estimation]
+enabled = true
+model = "anthropic/claude-sonnet-4-20250514"
+fallback_to_heuristic = true
+estimation_timeout_seconds = 30
+confidence_threshold = "medium"

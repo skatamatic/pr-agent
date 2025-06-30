@@ -107,7 +107,7 @@ async def run_action():
         pr_actions = get_settings().get("GITHUB_ACTION_CONFIG.PR_ACTIONS", ["opened", "reopened", "ready_for_review", "review_requested"])
 
         if action in pr_actions:
-            pr_url = event_payload.get("pull_request", {}).get("url")
+            pr_url = event_payload.get("pull_request", {}).get("html_url")
             if pr_url:
                 # legacy - supporting both GITHUB_ACTION and GITHUB_ACTION_CONFIG
                 auto_review = get_setting_or_env("GITHUB_ACTION.AUTO_REVIEW", None)
@@ -159,59 +159,98 @@ async def run_action():
                             ) as job_id:
                                 get_logger().info(f"GitHub Action job started with ID: {job_id} - Running tools: {[tool[0] for tool in tools_to_run]}")
                                 
+                                final_status = "failed"  # Default to failed, update to completed if successful
+                                error_details = None
+                                result_summary = None
+                                
                                 try:
                                     # Update job status to running
                                     update_job_status("running")
                                     
                                     # Execute each tool sequentially
                                     completed_tools = []
-                                    for tool_name, tool_class in tools_to_run:
+                                    for i, (tool_name, tool_class) in enumerate(tools_to_run):
                                         try:
-                                            get_logger().info(f"Executing {tool_name} tool...")
+                                            get_logger().info(f"Executing {tool_name} tool ({i+1}/{len(tools_to_run)})...")
                                             await tool_class(pr_url).run()
                                             completed_tools.append(tool_name)
-                                            get_logger().info(f"Completed {tool_name} tool")
+                                            get_logger().info(f"Successfully completed {tool_name} tool ({i+1}/{len(tools_to_run)})")
                                         except Exception as e:
-                                            get_logger().error(f"Failed to run {tool_name}: {e}")
+                                            get_logger().error(f"Failed to run {tool_name} tool ({i+1}/{len(tools_to_run)}): {e}")
+                                            get_logger().error(f"Exception type: {type(e).__name__}")
+                                            get_logger().error(f"Continuing to next tool...")
                                             # Continue with other tools but track the failure
                                             completed_tools.append(f"{tool_name}(failed)")
+                                        
+                                        get_logger().info(f"Completed processing {tool_name}, moving to next tool...")
                                     
-                                    # Update job status to completed
-                                    update_job_status("completed", result_summary={
+                                    # All tools completed (some may have failed individually)
+                                    final_status = "completed"
+                                    result_summary = {
                                         "action": action, 
                                         "tools_executed": completed_tools,
                                         "success": True
-                                    })
+                                    }
                                     get_logger().info(f"GitHub Action job {job_id} completed successfully")
                                     
                                 except Exception as e:
-                                    # Update job status to failed
-                                    update_job_status("failed", error_details=str(e))
+                                    # Critical failure that stopped all execution
+                                    final_status = "failed"
+                                    error_details = str(e)
                                     get_logger().error(f"GitHub Action job {job_id} failed: {e}")
-                                    raise
+                                    
+                                finally:
+                                    # CRITICAL: Ensure final status is always set and persisted
+                                    try:
+                                        get_logger().info(f"Setting final job status: {final_status}")
+                                        update_job_status(final_status, error_details=error_details, result_summary=result_summary)
+                                        
+                                        # Wait for all pending dashboard operations to complete
+                                        get_logger().debug("Waiting for pending dashboard operations to complete...")
+                                        from pr_agent.log.job_context import wait_for_pending_tasks
+                                        await wait_for_pending_tasks(timeout=10.0)
+                                        get_logger().debug("Dashboard operations completed")
+                                        
+                                    except Exception as e:
+                                        get_logger().error(f"Failed to finalize job status: {e}")
+                                        # Try one more time with a simpler update
+                                        try:
+                                            update_job_status("failed", error_details=f"Finalization error: {e}")
+                                            await wait_for_pending_tasks(timeout=5.0)
+                                        except Exception as e2:
+                                            get_logger().error(f"Final fallback status update failed: {e2}")
                                     
                         except Exception as e:
                             get_logger().warning(f"Dashboard job tracking failed, continuing without tracking: {e}")
                             # Fall through to execute without job tracking
-                            for tool_name, tool_class in tools_to_run:
+                            get_logger().info("Executing tools without dashboard tracking (fallback mode)")
+                            for i, (tool_name, tool_class) in enumerate(tools_to_run):
                                 try:
-                                    get_logger().info(f"Executing {tool_name} tool without tracking...")
+                                    get_logger().info(f"Executing {tool_name} tool without tracking ({i+1}/{len(tools_to_run)})...")
                                     await tool_class(pr_url).run()
-                                    get_logger().info(f"Completed {tool_name} tool")
+                                    get_logger().info(f"Successfully completed {tool_name} tool without tracking ({i+1}/{len(tools_to_run)})")
                                 except Exception as e:
-                                    get_logger().error(f"Failed to run {tool_name}: {e}")
+                                    get_logger().error(f"Failed to run {tool_name} tool without tracking ({i+1}/{len(tools_to_run)}): {e}")
+                                    get_logger().error(f"Exception type: {type(e).__name__}")
+                                    get_logger().error(f"Continuing to next tool...")
                                     # Continue with other tools
+                                
+                                get_logger().info(f"Completed processing {tool_name} (fallback), moving to next tool...")
                     else:
                         # Execute without job tracking (fallback or dashboard disabled)
-                        get_logger().info("Executing tools without dashboard tracking")
-                        for tool_name, tool_class in tools_to_run:
+                        get_logger().info("Executing tools without dashboard tracking (dashboard disabled)")
+                        for i, (tool_name, tool_class) in enumerate(tools_to_run):
                             try:
-                                get_logger().info(f"Executing {tool_name} tool...")
+                                get_logger().info(f"Executing {tool_name} tool (no tracking) ({i+1}/{len(tools_to_run)})...")
                                 await tool_class(pr_url).run()
-                                get_logger().info(f"Completed {tool_name} tool")
+                                get_logger().info(f"Successfully completed {tool_name} tool (no tracking) ({i+1}/{len(tools_to_run)})")
                             except Exception as e:
-                                get_logger().error(f"Failed to run {tool_name}: {e}")
+                                get_logger().error(f"Failed to run {tool_name} tool (no tracking) ({i+1}/{len(tools_to_run)}): {e}")
+                                get_logger().error(f"Exception type: {type(e).__name__}")
+                                get_logger().error(f"Continuing to next tool...")
                                 # Continue with other tools
+                            
+                            get_logger().info(f"Completed processing {tool_name} (no tracking), moving to next tool...")
                                 
                 except Exception as e:
                     get_logger().error(f"Failed to execute GitHub Action tools: {e}")
@@ -236,14 +275,14 @@ async def run_action():
                 disable_eyes = False
                 # check if issue is pull request
                 if event_payload.get("issue", {}).get("pull_request"):
-                    url = event_payload.get("issue", {}).get("pull_request", {}).get("url")
+                    url = event_payload.get("issue", {}).get("pull_request", {}).get("html_url")
                     is_pr = True
-                elif event_payload.get("comment", {}).get("pull_request_url"):  # for 'pull_request_review_comment
-                    url = event_payload.get("comment", {}).get("pull_request_url")
+                elif event_payload.get("pull_request", {}).get("html_url"):  # for 'pull_request_review_comment'
+                    url = event_payload.get("pull_request", {}).get("html_url")
                     is_pr = True
                     disable_eyes = True
                 else:
-                    url = event_payload.get("issue", {}).get("url")
+                    url = event_payload.get("issue", {}).get("html_url")
 
                 if url:
                     body = comment_body.strip().lower()
@@ -276,6 +315,10 @@ async def run_action():
                                 ) as job_id:
                                     get_logger().info(f"GitHub Action comment job started with ID: {job_id} - Command: {body}")
                                     
+                                    final_status = "failed"  # Default to failed, update to completed if successful
+                                    error_details = None
+                                    result_summary = None
+                                    
                                     try:
                                         # Update job status to running
                                         update_job_status("running")
@@ -291,19 +334,41 @@ async def run_action():
                                         else:
                                             result = await PRAgent().handle_request(url, body)
                                         
-                                        # Update job status based on result
+                                        # Command completed successfully
+                                        final_status = "completed"
                                         if result:
-                                            update_job_status("completed", result_summary={"command": body, "success": True})
+                                            result_summary = {"command": body, "success": True}
                                             get_logger().info(f"GitHub Action comment job {job_id} completed successfully")
                                         else:
-                                            update_job_status("completed", result_summary={"command": body, "success": True, "note": "no explicit result"})
+                                            result_summary = {"command": body, "success": True, "note": "no explicit result"}
                                             get_logger().info(f"GitHub Action comment job {job_id} completed")
                                         
                                     except Exception as e:
-                                        # Update job status to failed
-                                        update_job_status("failed", error_details=str(e))
+                                        # Command failed
+                                        final_status = "failed"
+                                        error_details = str(e)
                                         get_logger().error(f"GitHub Action comment job {job_id} failed: {e}")
-                                        raise
+                                        
+                                    finally:
+                                        # CRITICAL: Ensure final status is always set and persisted
+                                        try:
+                                            get_logger().info(f"Setting final comment job status: {final_status}")
+                                            update_job_status(final_status, error_details=error_details, result_summary=result_summary)
+                                            
+                                            # Wait for all pending dashboard operations to complete
+                                            get_logger().debug("Waiting for pending dashboard operations to complete...")
+                                            from pr_agent.log.job_context import wait_for_pending_tasks
+                                            await wait_for_pending_tasks(timeout=10.0)
+                                            get_logger().debug("Dashboard operations completed")
+                                            
+                                        except Exception as e:
+                                            get_logger().error(f"Failed to finalize comment job status: {e}")
+                                            # Try one more time with a simpler update
+                                            try:
+                                                update_job_status("failed", error_details=f"Finalization error: {e}")
+                                                await wait_for_pending_tasks(timeout=5.0)
+                                            except Exception as e2:
+                                                get_logger().error(f"Final fallback status update failed: {e2}")
                                         
                             except Exception as e:
                                 get_logger().warning(f"Dashboard job tracking failed for comment, continuing without tracking: {e}")
@@ -338,14 +403,27 @@ if __name__ == '__main__':
         try:
             await run_action()
         finally:
-            # Cleanup dashboard tasks BEFORE the event loop closes
+            # CRITICAL: Ensure all dashboard operations complete before exit
             if DASHBOARD_AVAILABLE:
                 try:
-                    get_logger().debug("Starting dashboard cleanup...")
-                    from pr_agent.log.job_context import cleanup_all_dashboard_tasks
+                    get_logger().info("Starting final dashboard cleanup and sync...")
+                    
+                    # First, wait for any remaining pending tasks
+                    from pr_agent.log.job_context import wait_for_pending_tasks, cleanup_all_dashboard_tasks
+                    await wait_for_pending_tasks(timeout=15.0)
+                    get_logger().debug("Final pending tasks completed")
+                    
+                    # Then perform full cleanup
                     await cleanup_all_dashboard_tasks()
-                    get_logger().debug("Dashboard cleanup completed")
+                    get_logger().info("Dashboard cleanup completed successfully")
+                    
                 except Exception as e:
-                    get_logger().debug(f"Dashboard cleanup error: {e}")  # Don't fail the main operation
+                    get_logger().error(f"Dashboard cleanup error: {e}")  # Log as error since this is critical
+                    # Try once more with shorter timeout
+                    try:
+                        await wait_for_pending_tasks(timeout=5.0)
+                        get_logger().debug("Emergency cleanup completed")
+                    except Exception as e2:
+                        get_logger().error(f"Emergency cleanup failed: {e2}")
     
     asyncio.run(main())

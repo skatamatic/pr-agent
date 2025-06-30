@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Search, Download, Filter, AlertCircle, Info, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, RefreshCw, Clock, ExternalLink, X, Eye, CheckCircle, XCircle, Calendar, FileText } from 'lucide-react';
+import { Search, Download, Filter, AlertCircle, Info, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, RefreshCw, Clock, ExternalLink, X, Eye, CheckCircle, XCircle, Calendar, FileText, Star } from 'lucide-react';
 import api from '../services/api';
 import ViewHeader from './ViewHeader';
 
@@ -148,13 +148,9 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     }
   };
 
-  const getLevelIcon = (level) => {
-    switch (level?.toLowerCase()) {
-      case 'error': return AlertCircle;
-      case 'warning': return AlertTriangle;
-      case 'info': return Info;
-      default: return Info;
-    }
+  // Show a star icon only if the log has artifacts
+  const getLogIcon = (log) => {
+    return log.artifacts ? Star : null;
   };
 
   // Helper function to get step display styling (simplified)
@@ -913,7 +909,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
               </thead>
               <tbody className="bg-white dark:bg-gray-800">
                 {paginatedLogs.map((log, index) => {
-                  const LevelIcon = getLevelIcon(log.level);
+                  const LogIcon = getLogIcon(log);
                   const logId = log.id || `${index}-${log.timestamp}`;
                   const isExpanded = expandedLogs.has(logId);
                   
@@ -928,7 +924,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                       >
                         <td className="w-24 px-4 py-4 whitespace-nowrap">
                           <div className="flex items-center">
-                            <LevelIcon className="h-4 w-4 mr-2 text-gray-400 dark:text-gray-500" />
+                            {LogIcon && <LogIcon className="h-4 w-4 mr-2 text-yellow-500 dark:text-yellow-400" fill="currentColor" title="This log has artifacts" />}
                             <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${getLevelColor(log.level)}`}>
                               {log.level?.toUpperCase()}
                             </span>
@@ -951,8 +947,8 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                             );
                           })()}
                         </td>
-                        <td className="flex-1 px-4 py-4 text-sm text-gray-900 dark:text-white">
-                          <div className="truncate" title={log.message}>
+                        <td className="flex-1 px-4 py-4 text-xs text-gray-900 dark:text-white">
+                          <div className="line-clamp-2 break-words" title={log.message}>
                             {log.message}
                           </div>
                         </td>
@@ -1153,38 +1149,10 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                                       )}
                                     </div>
                                   </div>
-                                  
-                                  {/* Artifacts section - AI prompts and responses */}
-                                  {log.artifacts && (
-                                    <div>
-                                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                                        AI Artifacts
-                                      </label>
-                                      <div className="bg-gray-50 dark:bg-gray-700 rounded-md p-3 max-h-96 overflow-y-auto">
-                                        {typeof log.artifacts === 'object' ? (
-                                          <div className="space-y-3">
-                                            {Object.entries(log.artifacts).map(([key, value]) => (
-                                              <div key={key} className="border-b border-gray-200 dark:border-gray-600 pb-2 last:border-b-0">
-                                                <div className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 capitalize">
-                                                  {key.replace(/_/g, ' ')}:
-                                                </div>
-                                                <div className="text-xs font-mono text-gray-600 dark:text-gray-400 whitespace-pre-wrap break-words">
-                                                  {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
-                                                </div>
-                                              </div>
-                                            ))}
-                                          </div>
-                                        ) : (
-                                          <pre className="text-xs font-mono text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">
-                                            {String(log.artifacts)}
-                                          </pre>
-                                        )}
-                                      </div>
-                                    </div>
-                                  )}
+
 
                                   {/* Additional metadata */}
-                                  <div>
+                                  <div className="mt-6">
                                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                                       Metadata
                                     </label>
@@ -1196,6 +1164,36 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                                   </div>
                                 </div>
                               </div>
+
+                              {/* Artifacts section - AI prompts and responses - Full Width */}
+                              {log.artifacts && (
+                                <div className="mt-6">
+                                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 flex items-center">
+                                    AI Artifacts
+                                    <Star className="h-4 w-4 ml-2 text-yellow-500 dark:text-yellow-400" fill="currentColor" title="This log has artifacts" />
+                                  </label>
+                                  <div className="bg-gray-50 dark:bg-gray-700 rounded-md p-3 max-h-96 overflow-y-auto">
+                                    {typeof log.artifacts === 'object' ? (
+                                      <div className="space-y-3">
+                                        {Object.entries(log.artifacts).map(([key, value]) => (
+                                          <div key={key} className="border-b border-gray-200 dark:border-gray-600 pb-2 last:border-b-0">
+                                            <div className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 capitalize">
+                                              {key.replace(/_/g, ' ')}:
+                                            </div>
+                                            <div className="text-xs font-mono text-gray-600 dark:text-gray-400 whitespace-pre-wrap break-words">
+                                              {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <pre className="text-xs font-mono text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">
+                                        {String(log.artifacts)}
+                                      </pre>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
                               </div>
                             </div>
                           </td>
