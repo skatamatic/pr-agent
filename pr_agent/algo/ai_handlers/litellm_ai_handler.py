@@ -364,21 +364,28 @@ class LiteLLMAIHandler(BaseAiHandler):
                     raise ValueError(f"LITELLM.EXTRA_HEADERS contains invalid JSON: {str(e)}")
                 kwargs["extra_headers"] = litellm_extra_headers
 
-            get_logger().debug("Prompts", artifact={"system": system, "user": user})
-
-            if get_settings().config.verbosity_level >= 2:
-                get_logger().info(f"\nSystem prompt:\n{system}")
-                get_logger().info(f"\nUser prompt:\n{user}")
+            # Enhanced AI interaction logging - always log prompts at INFO level for debugging
+            get_logger().info(f"[AI] - AI Model Call: {model}", artifacts={
+                "model": model,
+                "temperature": kwargs.get("temperature", "not_set"),
+                "system_prompt_chars": len(system),
+                "user_prompt_chars": len(user),
+                "combined_prompt": model in self.user_message_only_models or get_settings().config.custom_reasoning_model
+            })
+            
+            # Log full prompts for debugging purposes
+            get_logger().info(f"[AI] - System Prompt ({len(system)} chars)", artifacts={"system_prompt": system})
+            get_logger().info(f"[AI] - User Prompt ({len(user)} chars)", artifacts={"user_prompt": user})
 
             response = await acompletion(**kwargs)
         except openai.RateLimitError as e:
-            get_logger().error(f"Rate limit error during LLM inference: {e}")
+            get_logger().error(f"[AI] - Rate limit error during LLM inference: {e}")
             raise
         except openai.APIError as e:
-            get_logger().warning(f"Error during LLM inference: {e}")
+            get_logger().warning(f"[AI] - Error during LLM inference: {e}")
             raise
         except Exception as e:
-            get_logger().warning(f"Unknown error during LLM inference: {e}")
+            get_logger().warning(f"[AI] - Unknown error during LLM inference: {e}")
             raise openai.APIError from e
         if response is None or len(response["choices"]) == 0:
             raise openai.APIError
@@ -400,18 +407,24 @@ class LiteLLMAIHandler(BaseAiHandler):
                     'output_tokens': usage.get('completion_tokens', 0)
                 }
             
-            get_logger().debug(f"\nAI response:\n{resp}")
+            # Enhanced AI response logging - always log at INFO level for debugging
+            get_logger().info(f"[AI] - AI Response ({len(resp)} chars)", artifacts={
+                "ai_response": resp,
+                "finish_reason": finish_reason,
+                "response_chars": len(resp)
+            })
+            
             if token_usage:
-                get_logger().debug(f"Token usage: {token_usage}")
+                get_logger().info(f"[AI] - Token Usage", artifacts={
+                    "input_tokens": token_usage.get('input_tokens', 0),
+                    "output_tokens": token_usage.get('output_tokens', 0),
+                    "total_tokens": token_usage.get('input_tokens', 0) + token_usage.get('output_tokens', 0)
+                })
+            else:
+                get_logger().warning("[AI] - No token usage information available from AI model")
 
-            # log the full response for debugging
+            # Log the full response structure for debugging
             response_log = self.prepare_logs(response, system, user, resp, finish_reason)
-            get_logger().debug("Full_response", artifact=response_log)
-
-            # for CLI debugging
-            if get_settings().config.verbosity_level >= 2:
-                get_logger().info(f"\nAI response:\n{resp}")
-                if token_usage:
-                    get_logger().info(f"Token usage: {token_usage}")
+            get_logger().debug("[AI] - Full AI Response Structure", artifact=response_log)
 
         return resp, finish_reason, token_usage

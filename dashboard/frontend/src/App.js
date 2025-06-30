@@ -112,9 +112,8 @@ function Dashboard() {
     };
 
     const handleLogUpdate = (logData) => {
-      // Don't update logs directly to avoid disrupting user viewing
-      // Instead, notify LogsViewer component about new logs
-      window.dispatchEvent(new CustomEvent('newLogAvailable', { detail: logData }));
+      // Add logs directly to the logs array for immediate display
+      setLogs(prevLogs => [logData, ...prevLogs]);
       
       // Increment new logs badge count only if not currently on logs view
       setActiveTab(currentTab => {

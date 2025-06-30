@@ -626,8 +626,16 @@ const RepositoryManager = () => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+      <div className="space-y-6">
+        <ViewHeader 
+          title="Repository Management"
+          subtitle="Configure which repositories PR-Agent monitors and manages"
+          icon={GitBranch}
+        />
+        <div className="flex items-center justify-center h-64">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+          <span className="ml-3 text-gray-600 dark:text-gray-400">Loading repositories...</span>
+        </div>
       </div>
     );
   }

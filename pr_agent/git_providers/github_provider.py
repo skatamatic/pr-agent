@@ -689,7 +689,11 @@ class GithubProvider(GitProvider):
         try:
             comment.delete()
         except Exception as e:
-            get_logger().exception(f"Failed to remove comment, error: {e}")
+            # Handle 404 errors gracefully - comment might already be deleted
+            if hasattr(e, 'status') and e.status == 404:
+                get_logger().debug(f"Comment already deleted or not found: {e}")
+            else:
+                get_logger().exception(f"Failed to remove comment, error: {e}")
 
     def get_title(self):
         return self.pr.title

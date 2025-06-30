@@ -20,7 +20,6 @@ from services.metrics_service import MetricsService
 from services.operation_service import OperationService, LogService
 from services.config_service import ConfigService
 from services.repository_service import RepositoryService
-from services.job_service import JobService
 from services.robust_cached_job_service import get_robust_cached_job_service
 from services.auth_service import AuthService
 from database import DatabaseManager, SessionLocal
@@ -71,8 +70,8 @@ class DashboardApplication:
             self.operation_service = OperationService()
             self.log_service = LogService()
             self.repository_service = RepositoryService()
-            self.job_service = get_robust_cached_job_service()  # Use robust cached job service
-            self.cached_job_service = self.job_service  # Keep alias for backward compatibility
+            # Use RobustCachedJobService with notification support
+            self.cached_job_service = get_robust_cached_job_service(self.notification_service)
             self.retention_service = RetentionService(self.database_manager)
             self.auth_service = AuthService()
             self.security = HTTPBearer(auto_error=False)
@@ -280,11 +279,16 @@ class DashboardApplication:
             db: Session = Depends(get_db),
             current_user: UserDB = Depends(require_auth)
         ):
-            return await self.operation_service.get_operations(db, limit, status, repo)
+            operations = await self.cached_job_service.get_operations(
+                limit=limit,
+                status=status,
+                repo=repo
+            )
+            return APIResponse(data={"operations": operations}, total=len(operations))
         
         @self.app.get("/api/operations/{operation_id}")
         async def get_operation(operation_id: str, db: Session = Depends(get_db)):
-            operation = await self.operation_service.get_operation(db, operation_id)
+            operation = await self.cached_job_service.get_operation(operation_id)
             if not operation:
                 raise HTTPException(status_code=404, detail="Operation not found")
             return APIResponse(data=operation)
@@ -636,12 +640,17 @@ class DashboardApplication:
                 if success:
                     logger.info(f"Operation {operation_id} AI metrics updated successfully in cache")
                     
-                    # CRITICAL: Auto-recalculate all metrics from scratch for accuracy
+                    # CRITICAL FIX: Database session isolation issue
+                    # The force_sync_operation_to_db() uses a different session than our 'db' parameter
+                    # We need to ensure our session sees the committed changes
                     try:
-                        # Instead of incremental updates (which can get out of sync), 
-                        # just recalculate everything from scratch - it's more reliable!
+                        # Force refresh the database session to see committed changes from other sessions
+                        db.expire_all()  # Clear session cache
+                        db.commit()      # Ensure any pending changes are committed
+                        
+                        # Now recalculate metrics with fresh data
                         await self.metrics_service.recalculate_metrics_from_operations(db)
-                        logger.info(f"DEBUG: Metrics recalculated from all operations after {operation_id}")
+                        logger.info(f"Metrics recalculated immediately after operation {operation_id} AI metrics update")
                     except Exception as e:
                         logger.error(f"Failed to recalculate metrics after operation {operation_id}: {e}")
                         import traceback
@@ -662,10 +671,125 @@ class DashboardApplication:
                 logger.error(f"Failed to update AI metrics: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update AI metrics: {str(e)}")
         
+        @self.app.post("/api/operations/{operation_id}/multi-model-ai-metrics")
+        async def update_operation_multi_model_ai_metrics(operation_id: str, metrics_data: dict, db: Session = Depends(get_db)):
+            """Update operation multi-model AI metrics from PR-Agent"""
+            
+            try:
+                success = await self.cached_job_service.update_operation_multi_model_ai_metrics(
+                    operation_id=operation_id,
+                    models_data=metrics_data.get('models_data', {}),
+                    estimated_dev_hours_saved=metrics_data.get('estimated_dev_hours_saved')
+                )
+                
+                if success:
+                    # Force sync to database before recalculating metrics
+                    await self.cached_job_service.force_sync_operation_to_db(operation_id)
+                    
+                    # Trigger metrics recalculation with fresh session
+                    db.expire_all()  # Clear session cache to see latest data
+                    await self.metrics_service.recalculate_metrics_from_operations(db)
+                    
+                    return {"status": "success", "message": "Multi-model AI metrics updated"}
+                else:
+                    return {"status": "error", "message": "Failed to update multi-model AI metrics"}
+                    
+            except Exception as e:
+                logger.error(f"Error updating multi-model AI metrics for operation {operation_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update multi-model AI metrics: {str(e)}")
+
+        @self.app.post("/api/operations/{operation_id}/step")
+        async def update_operation_step(operation_id: str, step_data: dict, db: Session = Depends(get_db)):
+            """Update operation current step from PR-Agent"""
+            
+            try:
+                current_step = step_data.get('current_step')
+                if not current_step:
+                    raise HTTPException(status_code=400, detail="current_step is required")
+                
+                success = await self.cached_job_service.update_operation_step(
+                    operation_id=operation_id,
+                    current_step=current_step
+                )
+                
+                if success:
+                    # Broadcast step update to WebSocket clients
+                    await self.websocket_manager.broadcast({
+                        "type": "operation_step_update",
+                        "data": {
+                            "operation_id": operation_id,
+                            "current_step": current_step
+                        }
+                    })
+                    
+                    return {"status": "success", "message": "Operation step updated"}
+                else:
+                    return {"status": "error", "message": "Failed to update operation step"}
+                    
+            except Exception as e:
+                logger.error(f"Error updating operation step for {operation_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update operation step: {str(e)}")
+
+        @self.app.put("/api/operations/{operation_id}/insights")
+        async def update_operation_insights(operation_id: str, insights_data: dict, db: Session = Depends(get_db)):
+            """Update operation insights from PR-Agent AI analysis"""
+            
+            try:
+                success = await self.cached_job_service.update_operation_insights(
+                    operation_id=operation_id,
+                    insights=insights_data.get('insights', {})
+                )
+                
+                if success:
+                    logger.info(f"Operation {operation_id} insights updated successfully")
+                    return {"status": "success", "message": "Operation insights updated"}
+                else:
+                    logger.warning(f"Operation {operation_id} not found in cache")
+                    raise HTTPException(status_code=404, detail="Operation not found")
+                    
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error updating operation insights for {operation_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update operation insights: {str(e)}")
+
+        @self.app.get("/api/operations/{operation_id}/insights")
+        async def get_operation_insights(operation_id: str, db: Session = Depends(get_db)):
+            """Get operation insights"""
+            
+            try:
+                # Try to get from cache first
+                operation = await self.cached_job_service.get_operation(operation_id)
+                
+                if operation and operation.get('insights'):
+                    return APIResponse(
+                        data={"insights": operation['insights']}, 
+                        message="Operation insights retrieved successfully"
+                    )
+                
+                # Fallback to database
+                from models import OperationDB
+                db_operation = db.query(OperationDB).filter(OperationDB.operation_id == operation_id).first()
+                
+                if not db_operation:
+                    raise HTTPException(status_code=404, detail="Operation not found")
+                
+                insights = db_operation.insights if db_operation.insights else {}
+                return APIResponse(
+                    data={"insights": insights}, 
+                    message="Operation insights retrieved successfully"
+                )
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error retrieving operation insights for {operation_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to retrieve operation insights: {str(e)}")
+        
         # Logs endpoints
         @self.app.get("/api/logs")
         async def get_logs(
-            limit: int = 1000,
+            limit: int = 50000,  # Increased limit to show all logs, no artificial restriction
             level: Optional[str] = None,
             search: Optional[str] = None,
             repo: Optional[str] = None,
@@ -673,7 +797,7 @@ class DashboardApplication:
             operation_id: Optional[str] = None,
             db: Session = Depends(get_db)
         ):
-            logs = await self.job_service.get_logs(
+            logs = await self.cached_job_service.get_logs(
                 limit=limit,
                 level=level,
                 job_id=job_id,
@@ -684,12 +808,12 @@ class DashboardApplication:
         
         @self.app.get("/api/logs/job/{job_id}")
         async def get_logs_by_job(job_id: str, db: Session = Depends(get_db)):
-            logs = await self.job_service.get_logs(job_id=job_id, limit=10000)
+            logs = await self.cached_job_service.get_logs(job_id=job_id, limit=10000)
             return APIResponse(data={"logs": logs}, message=f"Retrieved {len(logs)} logs for job {job_id}")
         
         @self.app.get("/api/logs/operation/{operation_id}")
         async def get_logs_by_operation(operation_id: str, db: Session = Depends(get_db)):
-            logs = await self.job_service.get_logs(operation_id=operation_id, limit=10000)
+            logs = await self.cached_job_service.get_logs(operation_id=operation_id, limit=10000)
             return APIResponse(data={"logs": logs}, message=f"Retrieved {len(logs)} logs for operation {operation_id}")
         
         # Log ingestion endpoints
@@ -697,7 +821,7 @@ class DashboardApplication:
         async def receive_immediate_log(log_data: dict, db: Session = Depends(get_db)):
             try:
                 # Use robust cached job service for logs too
-                log_id = await self.job_service.create_log_entry(
+                log_id = await self.cached_job_service.create_log_entry(
                     level=log_data.get('level', 'INFO'),
                     message=log_data.get('message', ''),
                     source=log_data.get('source') or log_data.get('module', 'unknown'),
@@ -707,7 +831,8 @@ class DashboardApplication:
                     status=log_data.get('status'),
                     module=log_data.get('module'),
                     function=log_data.get('function'),
-                    severity="high" if log_data.get('level') in ["ERROR", "CRITICAL"] else "normal"
+                    severity="high" if log_data.get('level') in ["ERROR", "CRITICAL"] else "normal",
+                    artifacts=log_data.get('artifacts')  # Add artifacts support
                 )
                 
                 # Update operation status if needed
@@ -755,7 +880,7 @@ class DashboardApplication:
                 
                 # Process each log using robust cached job service
                 for log_data in logs:
-                    log_id = await self.job_service.create_log_entry(
+                    log_id = await self.cached_job_service.create_log_entry(
                         level=log_data.get('level', 'INFO'),
                         message=log_data.get('message', ''),
                         source=log_data.get('source') or log_data.get('module', 'unknown'),
@@ -765,7 +890,8 @@ class DashboardApplication:
                         status=log_data.get('status'),
                         module=log_data.get('module'),
                         function=log_data.get('function'),
-                        severity="high" if log_data.get('level') in ["ERROR", "CRITICAL"] else "normal"
+                        severity="high" if log_data.get('level') in ["ERROR", "CRITICAL"] else "normal",
+                        artifacts=log_data.get('artifacts')  # Add artifacts support
                     )
                     received_log_ids.append({'id': log_id, 'message': log_data.get('message', '')})
                     
@@ -1928,12 +2054,7 @@ class DashboardApplication:
             else:
                 raise HTTPException(status_code=500, detail=result["message"])
         
-        @self.app.post("/api/dev/refresh-job-counts")
-        async def refresh_job_counts():
-            """Refresh job operation counts"""
-            result = await self.job_service.refresh_job_counts()
-            return APIResponse(data=result, message="Job counts refreshed")
-        
+
         @self.app.post("/api/dev/test-system-logs")
         async def test_system_logs():
             """Test system logging functionality for debugging"""
@@ -1992,6 +2113,8 @@ class DashboardApplication:
             try:
                 await initialize_robust_cache_service()
                 logger.info("Robust cache service initialized successfully")
+                # Small delay to ensure cache service is fully ready
+                await asyncio.sleep(0.1)
             except Exception as e:
                 logger.error(f"Robust cache service initialization failed: {e}")
                 raise
@@ -2047,26 +2170,47 @@ class DashboardApplication:
                     pass  # Don't let logging errors cascade
                 # Continue anyway, the fallback in models.py should handle it
             
-            # Start background monitoring tasks
-            cleanup_task = asyncio.create_task(self._cleanup_old_data())
-            backup_task = asyncio.create_task(self._backup_scheduler())
-            health_task = asyncio.create_task(self._monitor_system_health())
+            # Start background monitoring tasks with error handling
+            cleanup_task = None
+            backup_task = None
+            health_task = None
+            startup_logging_task = None
+            
+            try:
+                cleanup_task = asyncio.create_task(self._cleanup_old_data())
+                logger.debug("Cleanup task started")
+            except Exception as e:
+                logger.error(f"Failed to start cleanup task: {e}")
+                
+            try:
+                backup_task = asyncio.create_task(self._backup_scheduler())
+                logger.debug("Backup scheduler task started")
+            except Exception as e:
+                logger.error(f"Failed to start backup scheduler: {e}")
+                
+            try:
+                health_task = asyncio.create_task(self._monitor_system_health())
+                logger.debug("System health monitoring task started")
+            except Exception as e:
+                logger.error(f"Failed to start system health monitoring: {e}")
             
             # Start health service background monitoring
             try:
                 await self.health_service.start_background_monitoring()
+                logger.debug("Health service background monitoring started")
             except Exception as e:
                 logger.error(f"Failed to start health monitoring: {e}")
             
             # Create a task to log system startup after server is fully ready
-            startup_logging_task = asyncio.create_task(self._log_system_startup_after_delay())
+            try:
+                startup_logging_task = asyncio.create_task(self._log_system_startup_after_delay())
+                logger.debug("Startup logging task created")
+            except Exception as e:
+                logger.error(f"Failed to create startup logging task: {e}")
             
             yield
             
-            # Cancel startup logging task during shutdown
-            startup_logging_task.cancel()
-            
-            # Shutdown
+            # Shutdown - start graceful task cancellation
             try:
                 self._log_system_event('INFO', 
                     f"Dashboard backend shutting down - Stopping background services",
@@ -2078,6 +2222,31 @@ class DashboardApplication:
             except Exception as e:
                 logger.warning(f"Failed to log shutdown event: {e}")
             
+            # Gracefully stop health service monitoring first
+            try:
+                await self.health_service.stop_background_monitoring()
+                logger.info("Health service monitoring stopped")
+            except Exception as e:
+                logger.error(f"Failed to stop health monitoring: {e}")
+            
+            # Cancel background tasks gracefully
+            tasks_to_cancel = [task for task in [cleanup_task, backup_task, health_task, startup_logging_task] if task is not None]
+            for task in tasks_to_cancel:
+                if not task.done():
+                    task.cancel()
+            
+            # Wait for tasks to finish cancellation (with timeout)
+            if tasks_to_cancel:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*tasks_to_cancel, return_exceptions=True), 
+                        timeout=5.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Some background tasks did not cancel within timeout")
+                except Exception as e:
+                    logger.debug(f"Background task cancellation completed with exceptions: {e}")
+            
             # Shutdown robust cache service
             try:
                 await shutdown_robust_cache_service()
@@ -2086,13 +2255,6 @@ class DashboardApplication:
                 logger.error(f"Failed to shutdown robust cache service: {e}")
             
             logger.info(f"{settings.app_name} stopped")
-            cleanup_task.cancel()
-            backup_task.cancel()
-            health_task.cancel()
-            try:
-                await self.health_service.stop_background_monitoring()
-            except Exception as e:
-                logger.error(f"Failed to stop health monitoring: {e}")
         
         # Store lifespan handler for FastAPI constructor
         self.lifespan_handler = lifespan

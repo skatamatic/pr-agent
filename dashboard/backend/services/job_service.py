@@ -130,6 +130,8 @@ class JobService:
                 
                 if status in [OperationStatus.COMPLETED, OperationStatus.FAILED, OperationStatus.SKIPPED]:
                     operation.completed_at = datetime.utcnow()
+                    # Clear current step when operation completes or fails
+                    operation.current_step = None
                     if operation.started_at:
                         operation.duration = (operation.completed_at - operation.started_at).total_seconds()
                 
@@ -325,7 +327,7 @@ class JobService:
         with next(get_db()) as db:
             operations_db = db.query(OperationDB).filter(
                 OperationDB.job_id == job_id
-            ).order_by(desc(OperationDB.started_at)).all()
+            ).order_by(OperationDB.started_at).all()
             
             operations = []
             for op_db in operations_db:

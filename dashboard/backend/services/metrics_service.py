@@ -120,15 +120,25 @@ class MetricsService:
     async def update_metrics_from_operation(self, db: Session, operation_data: Dict[str, Any]):
         """Update metrics aggregate from operation data"""
         try:
-            # Extract metrics from operation
+            # Extract multi-model metrics first (preferred)
+            ai_models_used = operation_data.get('ai_models_used')
+            total_input_tokens = operation_data.get('total_input_tokens', 0)
+            total_output_tokens = operation_data.get('total_output_tokens', 0)
+            
+            # Fall back to legacy single-model metrics if multi-model data unavailable
             model_used = operation_data.get('model_used')
-            input_tokens = operation_data.get('input_tokens', 0)
+            input_tokens = operation_data.get('input_tokens', 0) 
             output_tokens = operation_data.get('output_tokens', 0)
+            
+            # Use multi-model totals if available, otherwise use legacy data
+            final_input_tokens = total_input_tokens if total_input_tokens else input_tokens
+            final_output_tokens = total_output_tokens if total_output_tokens else output_tokens
+            
             estimated_dev_hours = operation_data.get('estimated_dev_hours_saved', 0.0)
             job_id = operation_data.get('job_id')
             
-            # Skip if no metrics data
-            if not any([model_used, input_tokens, output_tokens, estimated_dev_hours]):
+            # Skip if no metrics data at all
+            if not any([ai_models_used, model_used, final_input_tokens, final_output_tokens, estimated_dev_hours]):
                 return
             
             # Get or create aggregate
@@ -151,10 +161,10 @@ class MetricsService:
             
             # Update totals
             aggregate.total_operations += 1
-            if input_tokens:
-                aggregate.total_input_tokens += input_tokens
-            if output_tokens:
-                aggregate.total_output_tokens += output_tokens
+            if final_input_tokens:
+                aggregate.total_input_tokens += final_input_tokens
+            if final_output_tokens:
+                aggregate.total_output_tokens += final_output_tokens
             if estimated_dev_hours:
                 aggregate.total_estimated_dev_hours += estimated_dev_hours
             
@@ -164,9 +174,34 @@ class MetricsService:
                 total_jobs = db.query(OperationDB.job_id).distinct().count()
                 aggregate.total_jobs = total_jobs
             
-            # Update model usage breakdown
-            if model_used:
-                model_usage = aggregate.model_usage or {}
+            # Update model usage breakdown - handle both multi-model and legacy data
+            model_usage = aggregate.model_usage or {}
+            
+            # Handle multi-model data (preferred) - track each model separately for cost calculations
+            if ai_models_used and isinstance(ai_models_used, dict):
+                # Each model gets tracked separately with its own operation count and tokens
+                for model_name, model_tokens in ai_models_used.items():
+                    if model_name not in model_usage:
+                        model_usage[model_name] = {
+                            'operations_count': 0,
+                            'input_tokens': 0,
+                            'output_tokens': 0,
+                            'estimated_dev_hours': 0.0
+                        }
+                    
+                    # Each model gets +1 operation count since it participated in this operation
+                    model_usage[model_name]['operations_count'] += 1
+                    model_usage[model_name]['input_tokens'] += model_tokens.get('input_tokens', 0)
+                    model_usage[model_name]['output_tokens'] += model_tokens.get('output_tokens', 0)
+                
+                # Dev hours are attributed to the operation as a whole, not per model
+                # Add dev hours to the first model to avoid duplication but maintain attribution
+                if estimated_dev_hours and ai_models_used:
+                    first_model = list(ai_models_used.keys())[0]
+                    model_usage[first_model]['estimated_dev_hours'] += estimated_dev_hours
+            
+            # Handle legacy single-model data (fallback)
+            elif model_used:
                 if model_used not in model_usage:
                     model_usage[model_used] = {
                         'operations_count': 0,
@@ -176,11 +211,11 @@ class MetricsService:
                     }
                 
                 model_usage[model_used]['operations_count'] += 1
-                model_usage[model_used]['input_tokens'] += input_tokens or 0
-                model_usage[model_used]['output_tokens'] += output_tokens or 0
+                model_usage[model_used]['input_tokens'] += final_input_tokens or 0
+                model_usage[model_used]['output_tokens'] += final_output_tokens or 0
                 model_usage[model_used]['estimated_dev_hours'] += estimated_dev_hours or 0.0
-                
-                aggregate.model_usage = model_usage
+            
+            aggregate.model_usage = model_usage
             
             aggregate.last_updated = datetime.utcnow()
             db.commit()
@@ -215,12 +250,16 @@ class MetricsService:
             if aggregate.total_jobs is None:
                 aggregate.total_jobs = 0
             
+            # Use multi-model data if available, otherwise fall back to legacy
+            final_input_tokens = operation.total_input_tokens if operation.total_input_tokens else (operation.input_tokens or 0)
+            final_output_tokens = operation.total_output_tokens if operation.total_output_tokens else (operation.output_tokens or 0)
+            
             # Update totals
             aggregate.total_operations += 1
-            if operation.input_tokens:
-                aggregate.total_input_tokens += operation.input_tokens
-            if operation.output_tokens:
-                aggregate.total_output_tokens += operation.output_tokens
+            if final_input_tokens:
+                aggregate.total_input_tokens += final_input_tokens
+            if final_output_tokens:
+                aggregate.total_output_tokens += final_output_tokens
             if operation.estimated_dev_hours_saved:
                 aggregate.total_estimated_dev_hours += operation.estimated_dev_hours_saved
             
@@ -229,9 +268,34 @@ class MetricsService:
                 total_jobs = db.query(OperationDB.job_id).distinct().count()
                 aggregate.total_jobs = total_jobs
             
-            # Update model usage breakdown
-            if operation.model_used:
-                model_usage = aggregate.model_usage or {}
+            # Update model usage breakdown - handle both multi-model and legacy data
+            model_usage = aggregate.model_usage or {}
+            
+            # Handle multi-model data (preferred) - track each model separately for cost calculations
+            if operation.ai_models_used and isinstance(operation.ai_models_used, dict):
+                # Each model gets tracked separately with its own operation count and tokens
+                for model_name, model_tokens in operation.ai_models_used.items():
+                    if model_name not in model_usage:
+                        model_usage[model_name] = {
+                            'operations_count': 0,
+                            'input_tokens': 0,
+                            'output_tokens': 0,
+                            'estimated_dev_hours': 0.0
+                        }
+                    
+                    # Each model gets +1 operation count since it participated in this operation
+                    model_usage[model_name]['operations_count'] += 1
+                    model_usage[model_name]['input_tokens'] += model_tokens.get('input_tokens', 0)
+                    model_usage[model_name]['output_tokens'] += model_tokens.get('output_tokens', 0)
+                
+                # Dev hours are attributed to the operation as a whole, not per model
+                # Add dev hours to the first model to avoid duplication but maintain attribution
+                if operation.estimated_dev_hours_saved and operation.ai_models_used:
+                    first_model = list(operation.ai_models_used.keys())[0]
+                    model_usage[first_model]['estimated_dev_hours'] += operation.estimated_dev_hours_saved
+            
+            # Handle legacy single-model data (fallback)
+            elif operation.model_used:
                 if operation.model_used not in model_usage:
                     model_usage[operation.model_used] = {
                         'operations_count': 0,
@@ -241,11 +305,11 @@ class MetricsService:
                     }
                 
                 model_usage[operation.model_used]['operations_count'] += 1
-                model_usage[operation.model_used]['input_tokens'] += operation.input_tokens or 0
-                model_usage[operation.model_used]['output_tokens'] += operation.output_tokens or 0
+                model_usage[operation.model_used]['input_tokens'] += final_input_tokens
+                model_usage[operation.model_used]['output_tokens'] += final_output_tokens
                 model_usage[operation.model_used]['estimated_dev_hours'] += operation.estimated_dev_hours_saved or 0.0
-                
-                aggregate.model_usage = model_usage
+            
+            aggregate.model_usage = model_usage
             
             aggregate.last_updated = datetime.utcnow()
             # Don't commit here - let the calling function handle the transaction
@@ -264,11 +328,14 @@ class MetricsService:
     async def recalculate_metrics_from_operations(self, db: Session):
         """Recalculate all metrics from existing operations (for data migration/correction)"""
         try:
-            # Get all operations with metrics data
+            # Get all operations with metrics data (both legacy and multi-model)
             operations = db.query(OperationDB).filter(
                 (OperationDB.model_used.is_not(None)) |
                 (OperationDB.input_tokens.is_not(None)) |
                 (OperationDB.output_tokens.is_not(None)) |
+                (OperationDB.ai_models_used.is_not(None)) |
+                (OperationDB.total_input_tokens.is_not(None)) |
+                (OperationDB.total_output_tokens.is_not(None)) |
                 (OperationDB.estimated_dev_hours_saved.is_not(None))
             ).all()
             
@@ -281,31 +348,55 @@ class MetricsService:
             
             # Process each operation to build complete new values
             for operation in operations:
-                model_used = operation.model_used
-                input_tokens = operation.input_tokens or 0
-                output_tokens = operation.output_tokens or 0
+                # Use multi-model data if available, otherwise fall back to legacy
+                final_input_tokens = operation.total_input_tokens if operation.total_input_tokens else (operation.input_tokens or 0)
+                final_output_tokens = operation.total_output_tokens if operation.total_output_tokens else (operation.output_tokens or 0)
                 estimated_dev_hours = operation.estimated_dev_hours_saved or 0.0
                 
                 # Update totals
                 new_total_operations += 1
-                new_total_input_tokens += input_tokens
-                new_total_output_tokens += output_tokens
+                new_total_input_tokens += final_input_tokens
+                new_total_output_tokens += final_output_tokens
                 new_total_estimated_dev_hours += estimated_dev_hours
                 
-                # Update model usage
-                if model_used:
-                    if model_used not in new_model_usage:
-                        new_model_usage[model_used] = {
+                # Update model usage - handle both multi-model and legacy data
+                # Handle multi-model data (preferred) - track each model separately for cost calculations
+                if operation.ai_models_used and isinstance(operation.ai_models_used, dict):
+                    # Each model gets tracked separately with its own operation count and tokens
+                    for model_name, model_tokens in operation.ai_models_used.items():
+                        if model_name not in new_model_usage:
+                            new_model_usage[model_name] = {
+                                'operations_count': 0,
+                                'input_tokens': 0,
+                                'output_tokens': 0,
+                                'estimated_dev_hours': 0.0
+                            }
+                        
+                        # Each model gets +1 operation count since it participated in this operation
+                        new_model_usage[model_name]['operations_count'] += 1
+                        new_model_usage[model_name]['input_tokens'] += model_tokens.get('input_tokens', 0)
+                        new_model_usage[model_name]['output_tokens'] += model_tokens.get('output_tokens', 0)
+                    
+                    # Dev hours are attributed to the operation as a whole, not per model
+                    # Add dev hours to the first model to avoid duplication but maintain attribution
+                    if estimated_dev_hours and operation.ai_models_used:
+                        first_model = list(operation.ai_models_used.keys())[0]
+                        new_model_usage[first_model]['estimated_dev_hours'] += estimated_dev_hours
+                
+                # Handle legacy single-model data (fallback)
+                elif operation.model_used:
+                    if operation.model_used not in new_model_usage:
+                        new_model_usage[operation.model_used] = {
                             'operations_count': 0,
                             'input_tokens': 0,
                             'output_tokens': 0,
                             'estimated_dev_hours': 0.0
                         }
                     
-                    new_model_usage[model_used]['operations_count'] += 1
-                    new_model_usage[model_used]['input_tokens'] += input_tokens
-                    new_model_usage[model_used]['output_tokens'] += output_tokens
-                    new_model_usage[model_used]['estimated_dev_hours'] += estimated_dev_hours
+                    new_model_usage[operation.model_used]['operations_count'] += 1
+                    new_model_usage[operation.model_used]['input_tokens'] += final_input_tokens
+                    new_model_usage[operation.model_used]['output_tokens'] += final_output_tokens
+                    new_model_usage[operation.model_used]['estimated_dev_hours'] += estimated_dev_hours
             
             # Count total jobs
             new_total_jobs = db.query(OperationDB.job_id).distinct().count()

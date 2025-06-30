@@ -17,10 +17,31 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
   const [showExportDropdown, setShowExportDropdown] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
-  const [newLogsAvailable, setNewLogsAvailable] = useState(0);
-  const [newLogsBuffer, setNewLogsBuffer] = useState([]);
+  const [selectedStep, setSelectedStep] = useState('all');
+  const [newLogsAvailable, setNewLogsAvailable] = useState(false);
+  const [lastLogCount, setLastLogCount] = useState(0);
+  const [newLogsCount, setNewLogsCount] = useState(0);
   const exportDropdownRef = useRef(null);
-  const itemsPerPage = 30;
+  const itemsPerPage = 100; // Increased from 30 to show more logs per page
+
+  // Helper function to extract step information from log message
+  const extractStepFromLog = (log) => {
+    // First, try to extract step from message prefixes like [Context], [Generating], etc.
+    const message = log.message || '';
+    const stepMatch = message.match(/^\[([^\]]+)\]/);
+    if (stepMatch) {
+      const step = stepMatch[1];
+      // Filter out common system prefixes that aren't operation steps
+      const systemPrefixes = ['NOTIFICATION', 'RETENTION', 'HEALTH', 'SYSTEM', 'DEBUG', 'INFO', 'ERROR', 'WARNING'];
+      if (!systemPrefixes.includes(step.toUpperCase())) {
+        return step;
+      }
+    }
+    
+    // TODO: Could also fetch current step from associated operation via operation_id
+    // For now, return null if no step found in message
+    return null;
+  };
 
   // Auto-refresh when component mounts (navigating to logs view)
   useEffect(() => {
@@ -29,6 +50,16 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Intentionally empty - only run on mount to auto-refresh when navigating to logs
+
+  // Detect new logs arriving and show banner
+  useEffect(() => {
+    if (logs.length > lastLogCount && lastLogCount > 0) {
+      const newCount = logs.length - lastLogCount;
+      setNewLogsAvailable(true);
+      setNewLogsCount(newCount);
+    }
+    setLastLogCount(logs.length);
+  }, [logs.length, lastLogCount]);
 
   // Handle external filtering (from JobsList component)
   useEffect(() => {
@@ -54,19 +85,10 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       setCurrentPage(1);
     };
 
-    // Listen for new logs from WebSocket - don't update display, just count them
-    const handleNewLogAvailable = (event) => {
-      const logData = event.detail;
-      setNewLogsBuffer(prev => [logData, ...prev]);
-      setNewLogsAvailable(prev => prev + 1);
-    };
-
     window.addEventListener('filterLogsByOperation', handleFilterByOperation);
-    window.addEventListener('newLogAvailable', handleNewLogAvailable);
     
     return () => {
       window.removeEventListener('filterLogsByOperation', handleFilterByOperation);
-      window.removeEventListener('newLogAvailable', handleNewLogAvailable);
     };
   }, []);
 
@@ -110,6 +132,9 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
   // Extract unique operation types from logs
   const uniqueOperationTypes = [...new Set(logs.map(log => log.command).filter(Boolean))];
   
+  // Extract unique steps from logs
+  const uniqueSteps = [...new Set(logs.map(log => extractStepFromLog(log) || "System").filter(Boolean))];
+  
   // Extract unique job IDs from logs (for job filtering)
   const uniqueJobIds = [...new Set(logs.map(log => log.job_id).filter(Boolean))];
 
@@ -132,6 +157,17 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     }
   };
 
+  // Helper function to get step display styling (simplified)
+  const getStepInfo = (step) => {
+    if (!step) return null;
+    
+    // Use consistent, minimal styling that matches the UI
+    return {
+      color: 'bg-gray-100 text-gray-700 border-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:border-gray-600',
+      text: step
+    };
+  };
+
   const toggleLevel = (level) => {
     const upperLevel = level.toUpperCase();
     setSelectedLevels(prev => {
@@ -142,6 +178,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       return newLevels.length > 0 ? newLevels : [upperLevel];
     });
     setCurrentPage(1); // Reset to first page when filter changes
+    // Note: expandedLogs state preserved when filter changes
   };
 
   // Helper function to convert local datetime to UTC for comparison
@@ -168,6 +205,10 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       
       // Operation type filter - using command field for operation type
       const matchesOperationType = selectedOperationType === 'all' || log.command === selectedOperationType;
+      
+      // Step filter
+      const logStep = extractStepFromLog(log) || "System";
+      const matchesStep = selectedStep === 'all' || logStep === selectedStep;
       
       // External operation filter - when filtering by specific operation_id from JobsList
       const matchesExternalOperation = !(filterId && filterType === 'operation') || 
@@ -207,7 +248,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                          log.message?.includes('[SYSTEM]');
       const matchesSystemLogFilter = showSystemLogs || !isSystemLog;
       
-      return matchesSearch && matchesLevel && matchesRepo && matchesOperationType && matchesExternalOperation && matchesJob && matchesDateRange && matchesSystemLogFilter;
+      return matchesSearch && matchesLevel && matchesRepo && matchesOperationType && matchesStep && matchesExternalOperation && matchesJob && matchesDateRange && matchesSystemLogFilter;
     });
 
   // Pagination
@@ -238,6 +279,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       searchTerm ||
       selectedLevels.length !== allLevels.length || !allLevels.every(level => selectedLevels.includes(level)) ||
       selectedOperationType !== 'all' ||
+      selectedStep !== 'all' ||
       selectedRepository !== 'all' ||
       dateRange.start ||
       dateRange.end ||
@@ -253,6 +295,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     const headers = [
       'Timestamp (Local)',
       'Level',
+      'Step',
       'Message',
       'Module',
       'Function',
@@ -263,7 +306,8 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       'Status',
       'PR URL',
       'Thread',
-      'Line Number'
+      'Line Number',
+      'Artifacts'
     ];
 
     // Convert logs to CSV rows
@@ -272,6 +316,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       ...logsToExport.map(log => [
         escapeCsvField(formatTimestampForExport(log.timestamp)),
         escapeCsvField(log.level),
+        escapeCsvField(extractStepFromLog(log) || "System"),
         escapeCsvField(log.message),
         escapeCsvField(log.module),
         escapeCsvField(log.function),
@@ -282,7 +327,8 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
         escapeCsvField(log.status),
         escapeCsvField(log.pr_url),
         escapeCsvField(log.thread),
-        escapeCsvField(log.line_number)
+        escapeCsvField(log.line_number),
+        escapeCsvField(log.artifacts)
       ].join(','))
     ];
 
@@ -344,20 +390,10 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     return estimatedLines > 5;
   };
 
-  // Helper function to truncate message for preview
-  const getTruncatedMessage = (message) => {
-    if (!message) return '';
-    const lines = message.split('\n');
-    
-    if (lines.length <= 5) {
-      // If line count is okay, check character-based truncation
-      const truncateLength = 400; // ~5 lines worth of characters
-      if (message.length <= truncateLength) return message;
-      return message.substring(0, truncateLength) + '...';
-    }
-    
-    // Take first 4 lines and add truncation indicator
-    return lines.slice(0, 4).join('\n') + '\n...';
+  // Helper function to get message preview or full message - no truncation!
+  const getMessagePreview = (message) => {
+    // Return full message always - no truncation
+    return message || '';
   };
 
   const logLevels = [
@@ -384,6 +420,10 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       filters.push(`Operation: ${selectedOperationType}`);
     }
     
+    if (selectedStep !== 'all') {
+      filters.push(`Step: ${selectedStep}`);
+    }
+    
     if (selectedRepository !== 'all') {
       filters.push(`Repository: ${selectedRepository.split('/').pop()}`);
     }
@@ -407,12 +447,14 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
   };
 
   const handleRefreshWithNewLogs = () => {
+    // Clear the new logs banner
+    setNewLogsAvailable(false);
+    setNewLogsCount(0);
+    
     // Refresh the parent component to fetch new logs, then clear the banner
     if (onRefresh) {
       onRefresh();
     }
-    setNewLogsAvailable(0);
-    setNewLogsBuffer([]);
   };
 
   // Clear all filters function
@@ -420,6 +462,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     event.stopPropagation(); // Prevent filter card from toggling
     setSelectedLevels(['ERROR', 'WARNING', 'INFO', 'DEBUG']);
     setSelectedOperationType('all');
+    setSelectedStep('all');
     setSelectedRepository('all');
     setShowSystemLogs(true);
     setDateRange({ start: '', end: '' });
@@ -511,27 +554,19 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       />
 
       {/* New Logs Available Banner */}
-      {newLogsAvailable > 0 && (
-        <div className="relative bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-xl p-4 shadow-sm overflow-hidden">
-          {/* Animated border overlay */}
-          <div className="absolute inset-0 rounded-xl border-2 border-green-400 dark:border-green-500 opacity-80 animate-pulse"></div>
-          <div className="absolute inset-0 rounded-xl ring-1 ring-green-300 dark:ring-green-600 animate-ping" style={{animationDuration: '2s'}}></div>
-          
-          {/* Content */}
-          <div className="relative flex items-center justify-between">
+      {newLogsAvailable && (
+        <div className="bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 border-2 border-green-300 dark:border-green-600 rounded-xl p-4 shadow-sm animate-pulse">
+          <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
               <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-lg">
                 <RefreshCw className="h-5 w-5 text-green-600 dark:text-green-400" />
               </div>
               <div>
                 <h3 className="text-lg font-semibold text-green-900 dark:text-green-200">
-                  New Logs Available
+                  {newLogsCount} New Log{newLogsCount !== 1 ? 's' : ''} Available
                 </h3>
                 <p className="text-sm text-green-700 dark:text-green-300">
-                  <span className="font-semibold">{newLogsAvailable}</span> new log{newLogsAvailable !== 1 ? 's' : ''} received
-                </p>
-                <p className="text-xs text-green-600 dark:text-green-400 mt-1">
-                  Click refresh to view the latest logs
+                  New log entries have arrived since your last refresh
                 </p>
               </div>
             </div>
@@ -540,7 +575,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
               className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 transition-colors duration-200 shadow-sm"
             >
               <RefreshCw className="h-4 w-4 mr-2" />
-              Refresh
+              Click to Refresh
             </button>
           </div>
         </div>
@@ -813,6 +848,33 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                 </div>
               </div>
             )}
+
+            {/* Step Filter */}
+            {uniqueSteps.length > 0 && (
+              <div>
+                <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200 mb-3">
+                  Step
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {['all', ...uniqueSteps.sort()].map((step) => (
+                    <button
+                      key={step}
+                      onClick={() => {
+                        setSelectedStep(step);
+                        setCurrentPage(1);
+                      }}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+                        selectedStep === step
+                          ? 'bg-blue-600 text-white shadow-md scale-105'
+                          : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600 hover:border-blue-300 dark:hover:border-blue-500'
+                      }`}
+                    >
+                      {step === 'all' ? 'All Steps' : step}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -836,6 +898,9 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                   </th>
                   <th className="w-40 px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Timestamp
+                  </th>
+                  <th className="w-32 px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                    Step
                   </th>
                   <th className="flex-1 px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Message
@@ -875,6 +940,17 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                             {formatTimestamp(log.timestamp)}
                           </div>
                         </td>
+                        <td className="w-32 px-4 py-4 whitespace-nowrap text-sm">
+                          {(() => {
+                            const step = extractStepFromLog(log) || "System";
+                            const stepInfo = getStepInfo(step);
+                            return (
+                              <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium border ${stepInfo.color}`}>
+                                {stepInfo.text}
+                              </span>
+                            );
+                          })()}
+                        </td>
                         <td className="flex-1 px-4 py-4 text-sm text-gray-900 dark:text-white">
                           <div className="truncate" title={log.message}>
                             {log.message}
@@ -908,7 +984,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                       {/* Expanded details row with animation */}
                       {isExpanded && (
                         <tr className="bg-blue-50 dark:bg-blue-900/10 border-b border-blue-200 dark:border-blue-800">
-                          <td colSpan="5" className="px-6 py-0">
+                          <td colSpan="6" className="px-6 py-0">
                             <div className="overflow-hidden">
                               <div className="bg-white dark:bg-gray-800 rounded-lg border border-blue-200 dark:border-blue-700 p-6 my-4 transform animate-expand">
                               <h4 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center">
@@ -923,32 +999,8 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                       Full Message
                                     </label>
-                                    <div className="bg-gray-50 dark:bg-gray-700 rounded-md p-3 text-sm text-gray-900 dark:text-white break-words">
-                                      {shouldCollapseMessage(log.message) ? (
-                                        <div>
-                                          <div className="whitespace-pre-wrap">
-                                            {expandedMessages.has(logId) ? log.message : getTruncatedMessage(log.message)}
-                                          </div>
-                                          <button
-                                            onClick={() => toggleMessageExpanded(logId)}
-                                            className="mt-2 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 text-sm font-medium flex items-center transition-colors"
-                                          >
-                                            {expandedMessages.has(logId) ? (
-                                              <>
-                                                <ChevronUp className="h-4 w-4 mr-1" />
-                                                Show Less
-                                              </>
-                                            ) : (
-                                              <>
-                                                <ChevronDown className="h-4 w-4 mr-1" />
-                                                Show More
-                                              </>
-                                            )}
-                                          </button>
-                                        </div>
-                                      ) : (
-                                        <div className="whitespace-pre-wrap">{log.message}</div>
-                                      )}
+                                    <div className="bg-gray-50 dark:bg-gray-700 rounded-md p-3 text-sm text-gray-900 dark:text-white break-words max-h-96 overflow-y-auto">
+                                      <div className="whitespace-pre-wrap">{log.message}</div>
                                     </div>
                                   </div>
                                   
@@ -978,7 +1030,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                                           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                             Module
                                           </label>
-                                          <p className="text-sm text-gray-900 dark:text-white font-mono bg-gray-50 dark:bg-gray-700 px-2 py-1 rounded">
+                                          <p className="text-sm text-gray-900 dark:text-white font-mono bg-gray-50 dark:bg-gray-700 px-2 py-1 rounded break-all">
                                             {log.module}
                                           </p>
                                         </div>
@@ -988,7 +1040,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                                           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                             Function
                                           </label>
-                                          <p className="text-sm text-gray-900 dark:text-white font-mono bg-gray-50 dark:bg-gray-700 px-2 py-1 rounded">
+                                          <p className="text-sm text-gray-900 dark:text-white font-mono bg-gray-50 dark:bg-gray-700 px-2 py-1 rounded break-all">
                                             {log.function}()
                                           </p>
                                         </div>
@@ -1102,6 +1154,35 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                                     </div>
                                   </div>
                                   
+                                  {/* Artifacts section - AI prompts and responses */}
+                                  {log.artifacts && (
+                                    <div>
+                                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                        AI Artifacts
+                                      </label>
+                                      <div className="bg-gray-50 dark:bg-gray-700 rounded-md p-3 max-h-96 overflow-y-auto">
+                                        {typeof log.artifacts === 'object' ? (
+                                          <div className="space-y-3">
+                                            {Object.entries(log.artifacts).map(([key, value]) => (
+                                              <div key={key} className="border-b border-gray-200 dark:border-gray-600 pb-2 last:border-b-0">
+                                                <div className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 capitalize">
+                                                  {key.replace(/_/g, ' ')}:
+                                                </div>
+                                                <div className="text-xs font-mono text-gray-600 dark:text-gray-400 whitespace-pre-wrap break-words">
+                                                  {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        ) : (
+                                          <pre className="text-xs font-mono text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">
+                                            {String(log.artifacts)}
+                                          </pre>
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+
                                   {/* Additional metadata */}
                                   <div>
                                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">

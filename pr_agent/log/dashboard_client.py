@@ -61,8 +61,14 @@ class DashboardClient:
                 if response.status == 200:
                     return await response.json()
                 else:
+                    # Get response body for better error reporting
+                    try:
+                        error_body = await response.text()
+                    except:
+                        error_body = "Unable to read response body"
+                    
                     if logger:
-                        logger.warning(f"Dashboard API request failed: {response.status} - {endpoint}")
+                        logger.warning(f"Dashboard API request failed: {response.status} - {endpoint} - {error_body}")
                     return None
                     
         except Exception as e:
@@ -81,7 +87,9 @@ class DashboardClient:
                         request_id: Optional[str] = None,
                         webhook_payload: Optional[Dict[str, Any]] = None,
                         job_id: Optional[str] = None) -> Optional[str]:
-        """Create a new job and return its job_id"""
+        """Create a new job and return its job_id with retry logic"""
+        import asyncio
+        
         job_data = {
             'job_type': job_type,
             'source': source,
@@ -98,9 +106,46 @@ class DashboardClient:
         # Remove None values
         job_data = {k: v for k, v in job_data.items() if v is not None}
         
-        response = await self._make_request('POST', '/api/jobs/create', job_data)
-        if response and response.get('data'):
-            return response['data'].get('job_id')
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = await self._make_request('POST', '/api/jobs/create', job_data)
+                if response and response.get('data'):
+                    job_id_result = response['data'].get('job_id')
+                    if job_id_result:
+                        if logger:
+                            logger.info(f"✅ Dashboard job creation successful (async) for job {job_id_result} (attempt {attempt + 1})")
+                        return job_id_result
+                
+                # If we get here, the response was not successful
+                if logger:
+                    logger.warning(f"⚠️ Dashboard job creation failed (async): Invalid response (attempt {attempt + 1}/{max_retries})")
+                
+            except Exception as e:
+                if logger:
+                    logger.warning(f"⚠️ Dashboard job creation exception (async): {e} (attempt {attempt + 1}/{max_retries})")
+            
+            # Exponential backoff before retry (except on last attempt)
+            if attempt < max_retries - 1:
+                delay = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
+                await asyncio.sleep(delay)
+        
+        # If all retries failed, log a BIG ERROR
+        error_msg = f"""
+🚨🚨🚨 CRITICAL DASHBOARD ERROR (ASYNC) 🚨🚨🚨
+❌ FAILED TO CREATE JOB IN DASHBOARD AFTER {max_retries} RETRIES!
+❌ Job ID: {job_id or 'Unknown'}
+❌ Repository: {repository or 'Unknown'}
+❌ Job Type: {job_type}
+❌ This will cause orphaned operations and dashboard inconsistency!
+❌ Please check dashboard connectivity and API endpoints!
+🚨🚨🚨 CRITICAL DASHBOARD ERROR (ASYNC) 🚨🚨🚨
+"""
+        if logger:
+            logger.error(error_msg)
+        else:
+            print(error_msg)  # Fallback if logger is not available
+            
         return None
     
     async def update_job_status(self, 
@@ -216,6 +261,106 @@ class DashboardClient:
             await self.session.close()
             self.session = None
 
+    async def update_operation_multi_model_ai_metrics(self, operation_id: str, models_data: Dict[str, Dict[str, int]], 
+                                                     estimated_dev_hours_saved: Optional[float] = None):
+        """Update operation multi-model AI metrics"""
+        if not self._enabled:
+            return
+        
+        try:
+            metrics_data = {
+                'models_data': models_data,
+                'estimated_dev_hours_saved': estimated_dev_hours_saved
+            }
+            # Remove None values
+            metrics_data = {k: v for k, v in metrics_data.items() if v is not None}
+            
+            if not metrics_data:
+                return  # Nothing to update
+            
+            url = f"{self.dashboard_url.rstrip('/')}/api/operations/{operation_id}/multi-model-ai-metrics"
+            headers = {"Content-Type": "application/json"}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=metrics_data, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        logger.debug(f"Dashboard multi-model AI metrics update successful for {operation_id}")
+                    else:
+                        logger.debug(f"Dashboard multi-model AI metrics update failed: {response.status}")
+                        
+        except Exception as e:
+            logger.debug(f"Dashboard multi-model AI metrics update failed for {operation_id}: {e}")
+
+    async def update_operation_step(self, operation_id: str, current_step: str):
+        """Update operation current step"""
+        if not self._enabled:
+            return
+        
+        try:
+            step_data = {'current_step': current_step}
+            
+            url = f"{self.dashboard_url.rstrip('/')}/api/operations/{operation_id}/step"
+            headers = {"Content-Type": "application/json"}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=step_data, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                    if response.status == 200:
+                        logger.debug(f"Dashboard operation step update successful for {operation_id}")
+                    else:
+                        logger.debug(f"Dashboard operation step update failed: {response.status}")
+                        
+        except Exception as e:
+            logger.debug(f"Dashboard operation step update failed for {operation_id}: {e}")
+
+    async def update_operation_insights(self, insights: Dict[str, Any]):
+        """Update operation insights"""
+        if not self._enabled:
+            if logger:
+                logger.debug("Dashboard client not enabled for insights update")
+            return
+        
+        try:
+            from pr_agent.log.job_context import JobContext
+            operation_id = JobContext.get_current_operation_id()
+            
+            if logger:
+                logger.info(f"[INSIGHTS DEBUG] Current operation ID from context: {operation_id}")
+            
+            if not operation_id:
+                if logger:
+                    logger.warning("No operation ID available for insights update - insights will not be saved!")
+                return
+            
+            insights_data = {'insights': insights}
+            
+            url = f"{self.dashboard_url.rstrip('/')}/api/operations/{operation_id}/insights"
+            headers = {"Content-Type": "application/json"}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            
+            if logger:
+                logger.info(f"[INSIGHTS DEBUG] Sending insights to URL: {url}")
+                logger.info(f"[INSIGHTS DEBUG] Insights data keys: {list(insights.keys())}")
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.put(url, json=insights_data, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        if logger:
+                            logger.info(f"Dashboard insights update successful for {operation_id}")
+                    else:
+                        if logger:
+                            logger.warning(f"Dashboard insights update failed: {response.status} - {await response.text()}")
+                        
+        except Exception as e:
+            if logger:
+                logger.warning(f"Dashboard insights update failed: {e}")
+                import traceback
+                logger.warning(f"Dashboard insights traceback: {traceback.format_exc()}")
+
 
 # Global dashboard client instance
 _dashboard_client = None
@@ -228,6 +373,12 @@ except Exception:
 
 def get_dashboard_client() -> Optional[DashboardClient]:
     """Get the global dashboard client instance"""
+    global _dashboard_client
+    
+    # Auto-initialize if not yet created
+    if _dashboard_client is None:
+        _dashboard_client = setup_dashboard_client()
+    
     return _dashboard_client
 
 def setup_dashboard_client(dashboard_url: Optional[str] = None, api_key: Optional[str] = None) -> Optional[DashboardClient]:

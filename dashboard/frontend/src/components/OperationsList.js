@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Activity, CheckCircle, Clock, AlertCircle, RefreshCw, ExternalLink, ChevronLeft, ChevronRight, Filter, TrendingUp, Zap, Brain, GitBranch, FileText } from 'lucide-react';
+import { Activity, CheckCircle, Clock, AlertCircle, RefreshCw, ExternalLink, ChevronLeft, ChevronRight, Filter, TrendingUp, Zap, Brain, GitBranch, FileText, Lightbulb } from 'lucide-react';
 import api from '../services/api';
 import ViewHeader from './ViewHeader';
+import OperationInsights from './OperationInsights';
+import { formatTimeSaved } from '../utils/timeUtils';
 
 const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
   const [activeTab, setActiveTab] = useState('live');
@@ -11,6 +13,8 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
   const [sortBy, setSortBy] = useState('timestamp');
   const [sortOrder, setSortOrder] = useState('desc');
   const [currentPage, setCurrentPage] = useState(1);
+  const [showInsights, setShowInsights] = useState(false);
+  const [selectedOperationId, setSelectedOperationId] = useState(null);
   const itemsPerPage = 25;
 
   // Fetch repository names for filtering
@@ -161,6 +165,76 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
 
   const liveCount = operations.filter(op => isLiveStatus(op.status)).length;
   const completedCount = operations.filter(op => !isLiveStatus(op.status)).length;
+
+  // Helper function to format AI metrics display
+  const formatAIMetrics = (operation) => {
+    // Check for multi-model data first
+    if (operation.ai_models_used && typeof operation.ai_models_used === 'object') {
+      const models = Object.keys(operation.ai_models_used);
+      const totalInput = operation.total_input_tokens || 0;
+      const totalOutput = operation.total_output_tokens || 0;
+      const totalTokens = totalInput + totalOutput;
+      
+      if (models.length > 1) {
+        return {
+          type: 'multi',
+          display: `${models.length} models`,
+          details: `${totalTokens.toLocaleString()} tokens`,
+          breakdown: operation.ai_models_used,
+          totalInput,
+          totalOutput
+        };
+      } else if (models.length === 1) {
+        return {
+          type: 'single',
+          display: models[0],
+          details: `${totalTokens.toLocaleString()} tokens`,
+          totalInput,
+          totalOutput
+        };
+      }
+    }
+    
+    // Fallback to legacy single model data
+    if (operation.model_used || operation.input_tokens || operation.output_tokens) {
+      const totalTokens = (operation.input_tokens || 0) + (operation.output_tokens || 0);
+      return {
+        type: 'legacy',
+        display: operation.model_used || 'AI Model',
+        details: totalTokens > 0 ? `${totalTokens.toLocaleString()} tokens` : null,
+        totalInput: operation.input_tokens || 0,
+        totalOutput: operation.output_tokens || 0
+      };
+    }
+    
+    return null;
+  };
+
+  // Helper function to get current step color and display
+  const getCurrentStepInfo = (step) => {
+    if (!step) return null;
+    
+    const stepInfo = {
+      'Context': { color: 'bg-yellow-100 text-yellow-800 border-yellow-300', icon: '🔍' },
+      'Generating': { color: 'bg-purple-100 text-purple-800 border-purple-300', icon: '⚡' },
+      'Reflecting': { color: 'bg-indigo-100 text-indigo-800 border-indigo-300', icon: '🤔' },
+      'DevTime': { color: 'bg-green-100 text-green-800 border-green-300', icon: '⏱️' },
+      'Publishing': { color: 'bg-blue-100 text-blue-800 border-blue-300', icon: '📝' }
+    };
+    
+    return stepInfo[step] || { color: 'bg-gray-100 text-gray-800 border-gray-300', icon: '▶️' };
+  };
+
+
+
+  const hasInsights = (operation) => {
+    return operation.insights && typeof operation.insights === 'object' && Object.keys(operation.insights).length > 0;
+  };
+
+  const handleShowInsights = (operationId) => {
+    setSelectedOperationId(operationId);
+    setShowInsights(true);
+  };
 
   return (
     <div className="space-y-6">
@@ -335,6 +409,9 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
                             Status
                           </th>
                           <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                            Current Step
+                          </th>
+                          <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                             Repository
                           </th>
                           <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
@@ -351,6 +428,9 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
                       <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                         {paginatedOperations.map((operation, index) => {
                           const StatusIcon = getStatusIcon(operation.status);
+                          const stepInfo = getCurrentStepInfo(operation.current_step);
+                          const aiMetrics = formatAIMetrics(operation);
+                          
                           return (
                             <tr key={operation.operation_id || operation.id || index} className="hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors duration-150">
                               <td className="px-6 py-4 whitespace-nowrap">
@@ -362,9 +442,9 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
                                     <div className="text-sm font-medium text-gray-900 dark:text-white">
                                       {operation.operation_type || operation.command || operation.type || 'Unknown'}
                                     </div>
-                                    {operation.sub_feature && (
-                                      <div className="text-sm text-gray-500 dark:text-gray-400">
-                                        {operation.sub_feature}
+                                    {aiMetrics && (
+                                      <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                        {aiMetrics.display} {aiMetrics.details && `• ${aiMetrics.details}`}
                                       </div>
                                     )}
                                   </div>
@@ -374,6 +454,16 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
                                 <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium border ${getStatusColor(operation.status)}`}>
                                   {formatStatus(operation.status)}
                                 </span>
+                              </td>
+                              <td className="px-6 py-4 whitespace-nowrap">
+                                {stepInfo && operation.status !== 'completed' && operation.status !== 'failed' && operation.status !== 'skipped' ? (
+                                  <span className={`inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium border ${stepInfo.color}`}>
+                                    <span className="mr-1.5">{stepInfo.icon}</span>
+                                    {operation.current_step}
+                                  </span>
+                                ) : (
+                                  <span className="text-sm text-gray-400 dark:text-gray-500">-</span>
+                                )}
                               </td>
                               <td className="px-6 py-4 whitespace-nowrap">
                                 <div className="text-sm text-gray-900 dark:text-white font-medium">
@@ -403,6 +493,15 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
                                       <ExternalLink className="h-4 w-4 mr-1" />
                                       View PR
                                     </a>
+                                  )}
+                                  {hasInsights(operation) && (
+                                    <button
+                                      onClick={() => handleShowInsights(operation.operation_id || operation.id)}
+                                      className="inline-flex items-center text-purple-600 hover:text-purple-700 dark:text-purple-400 dark:hover:text-purple-300 transition-colors duration-150"
+                                    >
+                                      <Lightbulb className="h-4 w-4 mr-1" />
+                                      AI Insights
+                                    </button>
                                   )}
                                   <button
                                     onClick={() => onShowLogs && onShowLogs(operation.request_id || operation.operation_id || operation.id)}
@@ -505,6 +604,9 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
                             Status
                           </th>
                           <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                            AI Metrics
+                          </th>
+                          <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                             Repository
                           </th>
                           <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
@@ -521,6 +623,9 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
                       <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                         {paginatedOperations.map((operation, index) => {
                           const StatusIcon = getStatusIcon(operation.status);
+                          const aiMetrics = formatAIMetrics(operation);
+                          const timeSaved = formatTimeSaved(operation.estimated_dev_hours_saved);
+                          
                           return (
                             <tr key={operation.operation_id || operation.id || index} className="hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors duration-150">
                               <td className="px-6 py-4 whitespace-nowrap">
@@ -532,9 +637,10 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
                                     <div className="text-sm font-medium text-gray-900 dark:text-white">
                                       {operation.operation_type || operation.command || operation.type || 'Unknown'}
                                     </div>
-                                    {operation.sub_feature && (
-                                      <div className="text-sm text-gray-500 dark:text-gray-400">
-                                        {operation.sub_feature}
+                                    {timeSaved && (
+                                      <div className={`text-xs mt-1 flex items-center ${timeSaved.color}`}>
+                                        <span className="mr-1">{timeSaved.icon}</span>
+                                        {timeSaved.display}
                                       </div>
                                     )}
                                   </div>
@@ -544,6 +650,31 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
                                 <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium border ${getStatusColor(operation.status)}`}>
                                   {formatStatus(operation.status)}
                                 </span>
+                              </td>
+                              <td className="px-6 py-4 whitespace-nowrap">
+                                {aiMetrics ? (
+                                  <div>
+                                    <div className="text-sm font-medium text-gray-900 dark:text-white">
+                                      {aiMetrics.display}
+                                    </div>
+                                    {aiMetrics.details && (
+                                      <div className="text-xs text-gray-500 dark:text-gray-400">
+                                        {aiMetrics.details}
+                                      </div>
+                                    )}
+                                    {aiMetrics.type === 'multi' && aiMetrics.breakdown && (
+                                      <div className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                                        {Object.entries(aiMetrics.breakdown).map(([model, tokens]) => (
+                                          <div key={model} className="truncate">
+                                            {model}: {((tokens.input_tokens || 0) + (tokens.output_tokens || 0)).toLocaleString()}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span className="text-sm text-gray-400 dark:text-gray-500">-</span>
+                                )}
                               </td>
                               <td className="px-6 py-4 whitespace-nowrap">
                                 <div className="text-sm text-gray-900 dark:text-white font-medium">
@@ -573,6 +704,15 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
                                       <ExternalLink className="h-4 w-4 mr-1" />
                                       View PR
                                     </a>
+                                  )}
+                                  {hasInsights(operation) && (
+                                    <button
+                                      onClick={() => handleShowInsights(operation.operation_id || operation.id)}
+                                      className="inline-flex items-center text-purple-600 hover:text-purple-700 dark:text-purple-400 dark:hover:text-purple-300 transition-colors duration-150"
+                                    >
+                                      <Lightbulb className="h-4 w-4 mr-1" />
+                                      AI Insights
+                                    </button>
                                   )}
                                   <button
                                     onClick={() => onShowLogs && onShowLogs(operation.request_id || operation.operation_id || operation.id)}
@@ -653,6 +793,17 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
             </div>
           </div>
         </div>
+      )}
+      
+      {/* AI Insights Modal */}
+      {showInsights && selectedOperationId && (
+        <OperationInsights
+          operationId={selectedOperationId}
+          onClose={() => {
+            setShowInsights(false);
+            setSelectedOperationId(null);
+          }}
+        />
       )}
     </div>
   );

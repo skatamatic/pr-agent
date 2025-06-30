@@ -1,5 +1,6 @@
-from sqlalchemy import Column, String, DateTime, Text, JSON, Integer, Float, Boolean, ForeignKey
-from sqlalchemy.orm import relationship
+from sqlalchemy import Column, String, DateTime, Text, JSON, Integer, Float, Boolean, ForeignKey, desc, and_, or_, func
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship, backref
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -56,6 +57,7 @@ class OperationDB(Base):
     operation_type = Column(String)  # "fetching_context", "generating_review", "self_reflecting", etc.
     command = Column(String, nullable=True)
     status = Column(String)
+    current_step = Column(String, nullable=True)  # Real-time step tracking: "Context", "Generating", "Reflecting", etc.
     
     # Context
     repo = Column(String, nullable=True)
@@ -76,11 +78,19 @@ class OperationDB(Base):
     context_fetch_time = Column(Float, nullable=True)
     ai_processing_time = Column(Float, nullable=True)
     
-    # NEW: AI/LLM Metrics
-    model_used = Column(String, nullable=True)  # e.g., "gpt-4", "claude-3-sonnet"
+    # Legacy AI/LLM Metrics (for backward compatibility)
+    model_used = Column(String, nullable=True)
     input_tokens = Column(Integer, nullable=True)
     output_tokens = Column(Integer, nullable=True)
-    estimated_dev_hours_saved = Column(Float, nullable=True)  # Hours saved estimate
+    estimated_dev_hours_saved = Column(Float, nullable=True)
+    
+    # NEW: Multi-model AI/LLM Metrics 
+    ai_models_used = Column(JSON, nullable=True)  # {"model_name": {"input_tokens": int, "output_tokens": int}, ...}
+    total_input_tokens = Column(Integer, nullable=True)  # Aggregate across all models
+    total_output_tokens = Column(Integer, nullable=True)  # Aggregate across all models
+    
+    # AI Insights - structured analysis data from self-reflection and dev time estimation
+    insights = Column(JSON, nullable=True)  # {"dev_time_estimation": {...}, "self_reflection": {...}}
     
     # Results
     suggestions_count = Column(Integer, nullable=True)
@@ -89,7 +99,7 @@ class OperationDB(Base):
     result_data = Column(JSON, nullable=True)
 
     # Relationship
-    job = relationship("JobDB", backref="operations")
+    job = relationship("JobDB", backref=backref("operations", order_by="OperationDB.started_at"))
 
 class RepositoryDB(Base):
     __tablename__ = "repositories"
@@ -291,6 +301,14 @@ class OperationType(str, Enum):
     PUBLISHING_RESULTS = "publishing_results"
     FINALIZING = "finalizing"
     CLEANUP = "cleanup"
+    
+    # Generating stages (for detailed operation tracking)
+    GENERATING_REVIEW = "generating_review"
+    GENERATING_DESCRIPTION = "generating_description"
+    GENERATING_SUGGESTIONS = "generating_suggestions"
+    GENERATING_QUESTIONS = "generating_questions"
+    GENERATING_LABELS = "generating_labels"
+    ESTIMATING_DEV_TIME = "estimating_dev_time"
 
 class OperationStatus(str, Enum):
     STARTING = "starting"
@@ -359,6 +377,7 @@ class Operation(BaseModel):
     operation_type: Optional[OperationType] = None
     command: Optional[str] = None
     status: OperationStatus
+    current_step: Optional[str] = None
     
     # Context
     repo: Optional[str] = None
@@ -379,11 +398,19 @@ class Operation(BaseModel):
     context_fetch_time: Optional[float] = None
     ai_processing_time: Optional[float] = None
     
-    # NEW: AI/LLM Metrics
+    # Legacy AI/LLM Metrics (for backward compatibility)
     model_used: Optional[str] = None
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
     estimated_dev_hours_saved: Optional[float] = None
+    
+    # NEW: Multi-model AI/LLM Metrics 
+    ai_models_used: Optional[Dict[str, Dict[str, int]]] = None
+    total_input_tokens: Optional[int] = None
+    total_output_tokens: Optional[int] = None
+    
+    # AI Insights - structured analysis data from self-reflection and dev time estimation
+    insights: Optional[Dict[str, Any]] = None
     
     # Results
     suggestions_count: Optional[int] = None

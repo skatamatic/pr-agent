@@ -166,6 +166,9 @@ class CachedJobService:
             
         if status in [OperationStatus.COMPLETED, OperationStatus.FAILED, OperationStatus.CANCELLED]:
             # Operation is finishing
+            # Clear current step when operation completes or fails
+            updates['current_step'] = None
+            
             operation_data = await self.cache.get_operation(operation_id)
             if operation_data and operation_data.get('started_at'):
                 try:

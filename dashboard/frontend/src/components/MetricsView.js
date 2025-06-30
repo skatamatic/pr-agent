@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import apiService from '../services/api';
 import ViewHeader from './ViewHeader';
+import { formatDevTime } from '../utils/timeUtils';
 
 // Move AnimatedMetric outside of MetricsView to prevent remounting on every render
 const AnimatedMetric = ({ value, formatter, className = "", duration = 1500, integer = false }) => {
@@ -170,6 +171,11 @@ const MetricsView = () => {
     hours_multiplier: 1.0,
     model_costs: {}
   });
+  
+  // Track whether config has been loaded to prevent overwriting user edits
+  const [configLoaded, setConfigLoaded] = useState(false);
+  // Track whether user has made edits to prevent overwriting during auto-refresh
+  const [userHasEditedConfig, setUserHasEditedConfig] = useState(false);
 
   // Adaptive polling interval calculation
   const getPollingInterval = () => {
@@ -342,11 +348,19 @@ const MetricsView = () => {
       setRepositoryData(repositoryBreakdown);
       setConfig(configData);
       setAvailableModels(availableModels);
-      setEditableConfig({
-        developer_hourly_rate: configData.developer_hourly_rate || 75,
-        hours_multiplier: configData.hours_multiplier || 1.0,
-        model_costs: configData.model_costs || {}
-      });
+      
+      // Only update editableConfig on initial load or after successful save
+      // This prevents overwriting user edits during metric updates
+      // Don't update if user has made edits that haven't been saved
+      if (!configLoaded && !userHasEditedConfig) {
+        setEditableConfig({
+          developer_hourly_rate: configData.developer_hourly_rate || 75,
+          hours_multiplier: configData.hours_multiplier || 1.0,
+          model_costs: configData.model_costs || {}
+        });
+        setConfigLoaded(true);
+      }
+      
       setLastUpdated(new Date());
     } catch (err) {
       console.error('Error fetching metrics:', err);
@@ -375,13 +389,42 @@ const MetricsView = () => {
     try {
       setSaving(true);
       await apiService.post('/api/metrics/config', editableConfig);
-      // Trigger immediate refresh after config change
-      await fetchData();
+      
+      // Refresh config after save to get latest values from server
+      const configRes = await apiService.get('/api/metrics/config');
+      const configData = configRes.data?.data || configRes.data;
+      setConfig(configData);
+      
+      // Update editableConfig with the saved values from server
+      setEditableConfig({
+        developer_hourly_rate: configData.developer_hourly_rate || 75,
+        hours_multiplier: configData.hours_multiplier || 1.0,
+        model_costs: configData.model_costs || {}
+      });
+      
+      // Clear the edit flag since we just saved
+      setUserHasEditedConfig(false);
+      
+      // Trigger metrics recalculation with the new config
+      await handleRecalculate();
     } catch (err) {
       console.error('Error saving config:', err);
       setError('Failed to save configuration');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleResetConfig = () => {
+    // Reset to the current saved config from server
+    if (config) {
+      setEditableConfig({
+        developer_hourly_rate: config.developer_hourly_rate || 75,
+        hours_multiplier: config.hours_multiplier || 1.0,
+        model_costs: config.model_costs || {}
+      });
+      // Clear the edit flag since we reset to saved values
+      setUserHasEditedConfig(false);
     }
   };
 
@@ -410,7 +453,7 @@ const MetricsView = () => {
   };
 
   const formatHours = (hours) => {
-    return `${(hours || 0).toFixed(1)}h`;
+    return formatDevTime(hours || 0, true);
   };
 
   // Get models that are either in current config or available in AI config
@@ -675,7 +718,8 @@ const MetricsView = () => {
 
     return sortedModels.map(([modelName, data], index) => {
       const percentage = totals.cost > 0 ? (data.total_cost / totals.cost) * 100 : 0;
-      const angle = (percentage / 100) * 360;
+      // If only one item, ensure it takes the full circle
+      const angle = sortedModels.length === 1 ? 360 : (percentage / 100) * 360;
       const slice = {
         modelName,
         data,
@@ -691,9 +735,14 @@ const MetricsView = () => {
   };
 
   const createPieSlicePath = (centerX, centerY, radius, startAngle, endAngle) => {
-    // Handle full circle case (single data point)
-    if (endAngle - startAngle >= 360) {
-      return `M ${centerX - radius} ${centerY} A ${radius} ${radius} 0 1 1 ${centerX + radius} ${centerY} A ${radius} ${radius} 0 1 1 ${centerX - radius} ${centerY}`;
+    const sweepAngle = endAngle - startAngle;
+    
+    // Handle full circle case (single data point or very close to full circle)
+    if (sweepAngle >= 359.9 || sweepAngle === 360) {
+      // Draw a full circle using two 180-degree arcs
+      return `M ${centerX - radius} ${centerY} 
+              A ${radius} ${radius} 0 1 1 ${centerX + radius} ${centerY} 
+              A ${radius} ${radius} 0 1 1 ${centerX - radius} ${centerY} Z`;
     }
     
     const start = {
@@ -705,7 +754,7 @@ const MetricsView = () => {
       y: centerY + radius * Math.sin((endAngle - 90) * Math.PI / 180)
     };
     
-    const largeArcFlag = endAngle - startAngle <= 180 ? "0" : "1";
+    const largeArcFlag = sweepAngle <= 180 ? "0" : "1";
     
     return [
       "M", centerX, centerY,
@@ -731,6 +780,7 @@ const MetricsView = () => {
 
   const getOperationType = (operation) => {
     const operationMap = {
+      // PR-Agent commands/tools
       'review': { icon: '🔍', name: 'Review', description: 'AI-powered code review' },
       'describe': { icon: '📝', name: 'Describe', description: 'PR description generation' },
       'improve': { icon: '🚀', name: 'Improve', description: 'Code improvement suggestions' },
@@ -738,13 +788,24 @@ const MetricsView = () => {
       'add_docs': { icon: '📚', name: 'Add Docs', description: 'Documentation generation' },
       'update_changelog': { icon: '📋', name: 'Changelog', description: 'Changelog updates' },
       'similar_issue': { icon: '🔗', name: 'Similar Issue', description: 'Similar issue detection' },
+      
+      // Process stages
+      'starting': { icon: '🚀', name: 'Starting', description: 'Operation initialization' },
       'fetching_context': { icon: '📡', name: 'Fetch Context', description: 'Context data retrieval' },
       'processing_pr': { icon: '⚙️', name: 'Process PR', description: 'PR data processing' },
       'self_reflecting': { icon: '🤔', name: 'Self Reflect', description: 'AI self-reflection process' },
       'publishing_results': { icon: '📤', name: 'Publish', description: 'Results publication' },
-      'starting': { icon: '🚀', name: 'Starting', description: 'Operation initialization' },
       'finalizing': { icon: '✅', name: 'Finalizing', description: 'Operation completion' },
       'cleanup': { icon: '🧹', name: 'Cleanup', description: 'Resource cleanup' },
+      
+      // Generating stages (detailed operation tracking)
+      'generating_review': { icon: '🔍✨', name: 'Generating Review', description: 'AI generating code review' },
+      'generating_description': { icon: '📝✨', name: 'Generating Description', description: 'AI generating PR description' },
+      'generating_suggestions': { icon: '🚀✨', name: 'Generating Suggestions', description: 'AI generating code suggestions' },
+      'generating_questions': { icon: '❓✨', name: 'Generating Questions', description: 'AI generating PR questions' },
+      'generating_labels': { icon: '🏷️✨', name: 'Generating Labels', description: 'AI generating PR labels' },
+      'estimating_dev_time': { icon: '⏱️✨', name: 'Estimating Dev Time', description: 'AI estimating development time saved' },
+      
       'unknown': { icon: '❓', name: 'Unknown', description: 'Unknown operation type' }
     };
     
@@ -760,7 +821,8 @@ const MetricsView = () => {
     let currentAngle = 0;
     return sortedOperations.map(([operationName, data], index) => {
       const percentage = totals.cost > 0 ? (data.total_cost / totals.cost) * 100 : 0;
-      const sweepAngle = (percentage / 100) * 360;
+      // If only one item, ensure it takes the full circle
+      const sweepAngle = sortedOperations.length === 1 ? 360 : (percentage / 100) * 360;
       
       const slice = {
         operationName,
@@ -798,7 +860,8 @@ const MetricsView = () => {
     let currentAngle = 0;
     return sortedRepositories.map(([repositoryName, data], index) => {
       const percentage = totals.cost > 0 ? (data.total_cost / totals.cost) * 100 : 0;
-      const sweepAngle = (percentage / 100) * 360;
+      // If only one item, ensure it takes the full circle
+      const sweepAngle = sortedRepositories.length === 1 ? 360 : (percentage / 100) * 360;
       
       const slice = {
         repositoryName,
@@ -1819,10 +1882,13 @@ const MetricsView = () => {
                   <input
                     type="number"
                     value={editableConfig.developer_hourly_rate}
-                    onChange={(e) => setEditableConfig(prev => ({
-                      ...prev,
-                      developer_hourly_rate: parseFloat(e.target.value) || 0
-                    }))}
+                    onChange={(e) => {
+                      setEditableConfig(prev => ({
+                        ...prev,
+                        developer_hourly_rate: parseFloat(e.target.value) || 0
+                      }));
+                      setUserHasEditedConfig(true);
+                    }}
                     className="w-full pl-8 pr-4 py-3 text-lg border-2 border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
                     placeholder="75"
                   />
@@ -1859,10 +1925,13 @@ const MetricsView = () => {
                     min="0.1"
                     max="5.0"
                     value={editableConfig.hours_multiplier}
-                    onChange={(e) => setEditableConfig(prev => ({
-                      ...prev,
-                      hours_multiplier: parseFloat(e.target.value) || 0
-                    }))}
+                    onChange={(e) => {
+                      setEditableConfig(prev => ({
+                        ...prev,
+                        hours_multiplier: parseFloat(e.target.value) || 0
+                      }));
+                      setUserHasEditedConfig(true);
+                    }}
                     className="w-full px-4 py-3 text-lg border-2 border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-green-500 focus:border-green-500 transition-colors"
                     placeholder="1.0"
                   />
@@ -1971,16 +2040,19 @@ const MetricsView = () => {
                                 type="number"
                                 step="0.0001"
                                 value={costs.input || 0}
-                                onChange={(e) => setEditableConfig(prev => ({
-                                  ...prev,
-                                  model_costs: {
-                                    ...prev.model_costs,
-                                    [model]: {
-                                      ...prev.model_costs[model],
-                                      input: parseFloat(e.target.value) || 0
+                                onChange={(e) => {
+                                  setEditableConfig(prev => ({
+                                    ...prev,
+                                    model_costs: {
+                                      ...prev.model_costs,
+                                      [model]: {
+                                        ...prev.model_costs[model],
+                                        input: parseFloat(e.target.value) || 0
+                                      }
                                     }
-                                  }
-                                }))}
+                                  }));
+                                  setUserHasEditedConfig(true);
+                                }}
                                 className="w-full pl-6 pr-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                 placeholder="0.0000"
                               />
@@ -2000,16 +2072,19 @@ const MetricsView = () => {
                                 type="number"
                                 step="0.0001"
                                 value={costs.output || 0}
-                                onChange={(e) => setEditableConfig(prev => ({
-                                  ...prev,
-                                  model_costs: {
-                                    ...prev.model_costs,
-                                    [model]: {
-                                      ...prev.model_costs[model],
-                                      output: parseFloat(e.target.value) || 0
+                                onChange={(e) => {
+                                  setEditableConfig(prev => ({
+                                    ...prev,
+                                    model_costs: {
+                                      ...prev.model_costs,
+                                      [model]: {
+                                        ...prev.model_costs[model],
+                                        output: parseFloat(e.target.value) || 0
+                                      }
                                     }
-                                  }
-                                }))}
+                                  }));
+                                  setUserHasEditedConfig(true);
+                                }}
                                 className="w-full pl-6 pr-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                 placeholder="0.0000"
                               />
@@ -2045,18 +2120,28 @@ const MetricsView = () => {
               <div className="text-sm text-gray-600 dark:text-gray-400">
                 Changes will recalculate all cost metrics and savings estimates
               </div>
-              <button
-                onClick={handleSaveConfig}
-                disabled={saving}
-                className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:opacity-50 text-white px-8 py-3 rounded-lg flex items-center font-semibold shadow-lg hover:shadow-xl transition-all duration-200 transform hover:-translate-y-0.5"
-              >
-                {saving ? (
-                  <RefreshCw className="h-5 w-5 mr-2 animate-spin" />
-                ) : (
-                  <Save className="h-5 w-5 mr-2" />
-                )}
-                Save Configuration
-              </button>
+              <div className="flex space-x-3">
+                <button
+                  onClick={handleResetConfig}
+                  disabled={saving}
+                  className="bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50 text-gray-700 dark:text-gray-300 px-6 py-3 rounded-lg flex items-center font-medium shadow hover:shadow-md transition-all duration-200"
+                >
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  Reset
+                </button>
+                <button
+                  onClick={handleSaveConfig}
+                  disabled={saving}
+                  className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:opacity-50 text-white px-8 py-3 rounded-lg flex items-center font-semibold shadow-lg hover:shadow-xl transition-all duration-200 transform hover:-translate-y-0.5"
+                >
+                  {saving ? (
+                    <RefreshCw className="h-5 w-5 mr-2 animate-spin" />
+                  ) : (
+                    <Save className="h-5 w-5 mr-2" />
+                  )}
+                  Save Configuration
+                </button>
+              </div>
             </div>
           </div>
         </div>

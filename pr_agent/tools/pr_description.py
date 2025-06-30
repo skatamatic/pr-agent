@@ -3,7 +3,7 @@ import copy
 import re
 import traceback
 from functools import partial
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import yaml
 from jinja2 import Environment, StrictUndefined
@@ -33,11 +33,13 @@ from pr_agent.tools.ticket_pr_compliance_check import (
 try:
     from pr_agent.log.job_context import (
         operation_context, OperationType, update_operation_status, 
-        update_operation_ai_metrics, extract_repository_from_url
+        update_operation_ai_metrics, update_operation_multi_model_ai_metrics,
+        extract_repository_from_url, set_operation_step
     )
-    DASHBOARD_AVAILABLE = True
+    DASHBOARD_INTEGRATION_AVAILABLE = True
 except ImportError:
-    DASHBOARD_AVAILABLE = False
+    DASHBOARD_INTEGRATION_AVAILABLE = False
+    get_logger().debug("Dashboard integration not available for PR Description tool")
 
 
 class PRDescription:
@@ -66,6 +68,9 @@ class PRDescription:
         # Initialize the AI handler
         self.ai_handler = ai_handler()
         self.ai_handler.main_pr_language = self.main_pr_language
+
+        # Multi-model AI metrics tracking
+        self.ai_models_metrics = {}  # {"model_name": {"input_tokens": int, "output_tokens": int}}
 
         # Initialize the variables dictionary
         self.COLLAPSIBLE_FILE_LIST_THRESHOLD = get_settings().pr_description.get("collapsible_file_list_threshold", 8)
@@ -105,14 +110,14 @@ class PRDescription:
         # Extract repository information for dashboard tracking
         repository = None
         pr_url = self.git_provider.get_pr_url()
-        if DASHBOARD_AVAILABLE:
+        if DASHBOARD_INTEGRATION_AVAILABLE:
             try:
                 repository = extract_repository_from_url(pr_url)
             except Exception as e:
                 get_logger().debug(f"Failed to extract repository from URL: {e}")
 
         # Create operation context for dashboard tracking (error resilient)
-        if DASHBOARD_AVAILABLE:
+        if DASHBOARD_INTEGRATION_AVAILABLE:
             try:
                 with operation_context(
                     operation_type=OperationType.GENERATING_DESCRIPTION,
@@ -138,8 +143,8 @@ class PRDescription:
             # Update operation status to processing
             update_operation_status("processing")
             
-            # Execute the main description logic
-            result = await self._execute_description_logic()
+            # Execute the streamlined workflow with step tracking
+            result = await self._execute_streamlined_workflow()
             
             # Update operation status based on result
             if result is not None:
@@ -163,9 +168,61 @@ class PRDescription:
 
     async def _run_without_tracking(self):
         """Run PR description without dashboard tracking (fallback)"""
-        return await self._execute_description_logic()
+        return await self._execute_legacy_workflow()
 
-    async def _execute_description_logic(self):
+    async def _execute_streamlined_workflow(self):
+        """Execute the streamlined PR description workflow with step tracking"""
+        try:
+            # Step 1: Context and diff preparation
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                set_operation_step("Context")
+            get_logger().info("[Context] - Preparing PR description context and diff...")
+            await self._prepare_context_and_tickets()
+            
+            # Step 2: Generate main description
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                set_operation_step("Generating")
+            get_logger().info("[Generating] - Generating PR description...")
+            await self._generate_description()
+            
+            # Step 3: Prepare and process data
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                set_operation_step("Processing")
+            get_logger().info("[Processing] - Processing generated description...")
+            result = await self._process_description_data()
+            
+            # Step 4: Dev time estimation (with insights capture)
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                set_operation_step("DevTime")
+            get_logger().info("[DevTime] - Estimating time savings...")
+            dev_hours_saved, dev_time_insights = await self._estimate_dev_time_saved_with_insights(result)
+            
+            # Capture insights for dashboard
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                insights_data = {
+                    'dev_time_analysis': dev_time_insights,  # Pass through the full AI estimation result
+                    'description_generation': getattr(self, '_generation_insights', None)
+                }
+                await self._send_insights(insights_data)
+            
+            # Step 5: Send aggregated AI metrics
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                get_logger().info("[AI] - Sending aggregated AI metrics...")
+                self._send_aggregated_ai_metrics(dev_hours_saved)
+            
+            # Step 6: Publishing
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                set_operation_step("Publishing")
+            get_logger().info("[Publishing] - Publishing PR description...")
+            await self._publish_description_result(result, dev_hours_saved)
+            
+            return result
+            
+        except Exception as e:
+            get_logger().error(f"Error in streamlined PR description workflow: {e}")
+            raise
+
+    async def _execute_legacy_workflow(self):
         """Main PR description logic (extracted for reuse with/without tracking)"""
         try:
             get_logger().info(f"Generating a PR description for pr_id: {self.pr_id}")
@@ -505,10 +562,7 @@ class PRDescription:
         system_prompt = environment.from_string(get_settings().get(prompt, {}).get("system", "")).render(self.variables)
         user_prompt = environment.from_string(get_settings().get(prompt, {}).get("user", "")).render(self.variables)
 
-        # Track AI metrics for dashboard (error resilient)
-        from pr_agent.algo.token_handler import TokenUsageTracker
-        
-        token_tracker = TokenUsageTracker()
+        get_logger().info(f"[Generating] - Making AI call for description generation using {model}...")
         
         try:
             response, finish_reason, token_usage = await self.ai_handler.chat_completion(
@@ -518,82 +572,27 @@ class PRDescription:
                 user=user_prompt
             )
             
-            # Track token usage from successful call
-            token_tracker.add_usage(token_usage, call_failed=False)
+            # Track AI metrics for multi-model support
+            if token_usage:
+                self._track_ai_metrics(model, token_usage)
             
-            # Update dashboard metrics if available
-            if DASHBOARD_AVAILABLE:
-                try:
-                    totals = token_tracker.get_totals()
-                    input_tokens = totals['input_tokens']
-                    output_tokens = totals['output_tokens']
-                    
-                    # Use accurate token counts if available, otherwise estimate
-                    if not token_tracker.has_usage():
-                        get_logger().warning("No accurate token usage available, falling back to estimation")
-                        # Fallback to tiktoken estimation
-                        from pr_agent.algo.token_handler import TokenHandler
-                        token_handler = TokenHandler()
-                        input_tokens = token_handler.get_token_count_from_string(system_prompt + user_prompt)
-                        output_tokens = token_handler.get_token_count_from_string(response)
-                    
-                    # Estimate developer time saved for description operation using AI analysis
-                    try:
-                        estimated_hours = await self._estimate_description_dev_hours_saved_ai(
-                            model=model,
-                            input_tokens=input_tokens,
-                            output_tokens=output_tokens,
-                            files_count=len(self.git_provider.get_files()) if self.git_provider.get_files() else 0,
-                            prompt_type=prompt,
-                            diff=self.patches_diff,
-                            description_content=response
-                        )
-                    except Exception as e:
-                        get_logger().debug(f"AI time estimation failed, using fallback: {e}")
-                        estimated_hours = self._estimate_description_dev_hours_saved(
-                            model=model,
-                            input_tokens=input_tokens,
-                            output_tokens=output_tokens,
-                            files_count=len(self.git_provider.get_files()) if self.git_provider.get_files() else 0,
-                            prompt_type=prompt
-                        )
-                    
-                    # Update AI metrics
-                    update_operation_ai_metrics(
-                        model_used=model,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        estimated_dev_hours_saved=estimated_hours
-                    )
-                    
-                    get_logger().info(f"AI metrics updated - Input: {input_tokens}, Output: {output_tokens}, "
-                                    f"Calls: {totals['call_count']}, Failed: {totals['failed_calls']}, Prompt: {prompt}")
-                    
-                except Exception as e:
-                    get_logger().debug(f"Failed to track AI metrics for description: {e}")
+            get_logger().info(f"[Generating] - AI call completed successfully", 
+                             artifacts={
+                                 'model': model,
+                                 'finish_reason': finish_reason,
+                                 'response_length': len(response) if response else 0,
+                                 'prompt_type': prompt
+                             })
             
             return response
             
         except Exception as e:
-            # Track failed AI call
-            token_tracker.add_usage(None, call_failed=True)
+            get_logger().error(f"[Generating] - AI call failed for model {model}: {e}")
             
-            # Track failed AI call if dashboard is available
-            if DASHBOARD_AVAILABLE:
-                try:
-                    # Estimate tokens for failed call
-                    from pr_agent.algo.token_handler import TokenHandler
-                    token_handler = TokenHandler()
-                    input_tokens = token_handler.get_token_count_from_string(system_prompt + user_prompt)
-                    
-                    update_operation_ai_metrics(
-                        model_used=model,
-                        input_tokens=input_tokens,
-                        output_tokens=0,
-                        estimated_dev_hours_saved=0.0
-                    )
-                except:
-                    pass  # Ignore dashboard errors during error handling
+            # Still track metrics even on failure if we have token usage data
+            if 'token_usage' in locals() and token_usage:
+                self._track_ai_metrics(model, token_usage)
+            
             raise
 
     def _estimate_description_dev_hours_saved(self, model: str, input_tokens: int = None, 
@@ -645,12 +644,60 @@ class PRDescription:
             # Calculate final estimate
             estimated_hours = base_description_hours * complexity_multiplier * model_multiplier
             
-            # Cap at reasonable bounds
-            return max(0.08, min(2.0, estimated_hours))
+            # Cap at reasonable bounds (allow negative values for time wasted)
+            return max(-2.0, min(2.0, estimated_hours))
             
         except Exception as e:
             get_logger().debug(f"Failed to estimate description dev hours: {e}")
             return 0.25  # Default fallback
+
+    async def _estimate_description_dev_hours_saved_ai_full(self, model: str, input_tokens: int = None, 
+                                                           output_tokens: int = None, files_count: int = 0,
+                                                           prompt_type: str = "pr_description_prompt", 
+                                                           diff: str = None, description_content: str = None) -> dict:
+        """
+        Estimate developer hours saved using AI-powered analysis - returns full AI estimation result
+        """
+        try:
+            if diff and description_content:
+                from pr_agent.algo.dev_time_estimator import DevTimeEstimator
+                
+                estimator = DevTimeEstimator(self.ai_handler, self.token_handler, self._track_ai_metrics)
+                
+                # Extract line counts from diff
+                lines_added = 0
+                lines_deleted = 0
+                if diff:
+                    for line in diff.split('\n'):
+                        if line.startswith('+') and not line.startswith('+++'):
+                            lines_added += 1
+                        elif line.startswith('-') and not line.startswith('---'):
+                            lines_deleted += 1
+                
+                get_logger().info(f"[DevTime] - Making AI call for description time estimation using model: {model}")
+                
+                # Get the FULL AI estimation result
+                estimation_result = await estimator.estimate_description_time_savings(
+                    diff=diff,
+                    ai_description_content=description_content,
+                    language=self.main_pr_language,
+                    files_changed=files_count,
+                    lines_added=lines_added,
+                    lines_deleted=lines_deleted,
+                    model=model
+                )
+                
+                get_logger().info(f"[DevTime] - Full AI estimation result received", 
+                                artifacts={'estimation_result': estimation_result})
+                
+                return estimation_result
+            
+            # Fall back to None if no data
+            return None
+            
+        except Exception as e:
+            get_logger().debug(f"AI time estimation failed: {e}")
+            return None
 
     async def _estimate_description_dev_hours_saved_ai(self, model: str, input_tokens: int = None, 
                                                       output_tokens: int = None, files_count: int = 0,
@@ -663,7 +710,7 @@ class PRDescription:
             if diff and description_content:
                 from pr_agent.algo.dev_time_estimator import DevTimeEstimator
                 
-                estimator = DevTimeEstimator(self.ai_handler, self.token_handler)
+                estimator = DevTimeEstimator(self.ai_handler, self.token_handler, self._track_ai_metrics)
                 
                 # Extract line counts from diff
                 lines_added = 0
@@ -674,6 +721,9 @@ class PRDescription:
                             lines_added += 1
                         elif line.startswith('-') and not line.startswith('---'):
                             lines_deleted += 1
+                
+                # Use the description-specific prompt for time estimation
+                prompt_type_for_estimation = "pr_description_dev_time_estimation_prompt" if prompt_type == "pr_description_dev_time_estimation_prompt" else "pr_description_prompt"
                 
                 estimation_result = await estimator.estimate_description_time_savings(
                     diff=diff,
@@ -699,6 +749,282 @@ class PRDescription:
         except Exception as e:
             get_logger().debug(f"AI time estimation failed: {e}")
             return self._estimate_description_dev_hours_saved(model, input_tokens, output_tokens, files_count, prompt_type)
+
+    async def _prepare_context_and_tickets(self):
+        """Step 1: Prepare context and extract ticket information"""
+        try:
+            get_logger().info("[Context] - Extracting ticket information...")
+            # Extract ticket information if exists
+            await extract_and_cache_pr_tickets(self.git_provider, self.vars)
+            get_logger().info("[Context] - Context preparation completed")
+        except Exception as e:
+            get_logger().error(f"[Context] - Failed to prepare context: {e}")
+            raise
+
+    async def _generate_description(self):
+        """Step 2: Generate main PR description using AI"""
+        try:
+            get_logger().info("[Generating] - Starting description generation...")
+            
+            # Initialize progress message if enabled
+            if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
+                self.git_provider.publish_comment("Preparing PR description...", is_temporary=True)
+            
+            # Generate the main prediction using AI
+            await retry_with_fallback_models(self._prepare_prediction, ModelType.WEAK)
+            
+            if not self.prediction:
+                get_logger().warning(f"[Generating] - Empty prediction for PR: {self.pr_id}")
+                self.git_provider.remove_initial_comment()
+                raise Exception("Description generation returned empty result")
+            
+            get_logger().info("[Generating] - Description generation completed successfully")
+            
+        except Exception as e:
+            get_logger().error(f"[Generating] - Failed to generate description: {e}")
+            raise
+
+    async def _process_description_data(self):
+        """Step 3: Process and prepare the generated description data"""
+        try:
+            get_logger().info("[Processing] - Processing generated description data...")
+            
+            # Prepare the data dictionary from AI prediction
+            self._prepare_data()
+            
+            # Prepare file labels if semantic files are enabled
+            if get_settings().pr_description.enable_semantic_files_types:
+                self.file_label_dict = self._prepare_file_labels()
+            
+            # Prepare labels and PR structure
+            pr_labels, pr_file_changes = [], []
+            if get_settings().pr_description.publish_labels:
+                pr_labels = self._prepare_labels()
+            
+            # Process description based on marker mode
+            if get_settings().pr_description.use_description_markers:
+                pr_title, pr_body, changes_walkthrough, pr_file_changes = self._prepare_pr_answer_with_markers()
+            else:
+                pr_title, pr_body, changes_walkthrough, pr_file_changes = self._prepare_pr_answer()
+            
+            result = {
+                'title': pr_title,
+                'body': pr_body,
+                'changes_walkthrough': changes_walkthrough,
+                'pr_file_changes': pr_file_changes,
+                'labels': pr_labels,
+                'data': self.data
+            }
+            
+            get_logger().info("[Processing] - Description data processing completed", 
+                             artifacts={'result_keys': list(result.keys())})
+            
+            return result
+            
+        except Exception as e:
+            get_logger().error(f"[Processing] - Failed to process description data: {e}")
+            raise
+
+    async def _estimate_dev_time_saved_with_insights(self, result):
+        """Step 4: Estimate dev time savings with detailed insights capture"""
+        try:
+            get_logger().info("[DevTime] - Starting dev time estimation with insights...")
+            
+            # Calculate file metrics
+            files_count = len(self.git_provider.get_files()) if self.git_provider.get_files() else 0
+            
+            # Try AI-powered estimation first if we have enough data
+            if result and 'body' in result and self.patches_diff:
+                get_logger().info("[DevTime] - Using AI-powered time estimation...")
+                
+                # Calculate input/output tokens from the AI generation
+                total_input_tokens = sum(data.get('input_tokens', 0) for data in self.ai_models_metrics.values())
+                total_output_tokens = sum(data.get('output_tokens', 0) for data in self.ai_models_metrics.values())
+                
+                try:
+                    # Get the FULL AI estimation result (not just the hours)
+                    estimation_result = await self._estimate_description_dev_hours_saved_ai_full(
+                        model=get_settings().config.model,
+                        input_tokens=total_input_tokens,
+                        output_tokens=total_output_tokens,
+                        files_count=files_count,
+                        prompt_type="pr_description_dev_time_estimation_prompt",
+                        diff=self.patches_diff,
+                        description_content=result['body']
+                    )
+                    
+                    # Extract final hours estimate
+                    estimated_hours = 0.0
+                    if estimation_result and 'final_assessment' in estimation_result:
+                        estimated_hours = estimation_result['final_assessment'].get('total_developer_hours_saved', 0.0)
+                        # Cap the result at reasonable bounds
+                        estimated_hours = max(-2.0, min(2.0, float(estimated_hours)))
+                    
+                    get_logger().info(f"[DevTime] - AI estimation completed: {estimated_hours} hours", 
+                                     artifacts={'full_estimation_result': estimation_result})
+                    
+                    return estimated_hours, estimation_result
+                    
+                except Exception as e:
+                    get_logger().warning(f"[DevTime] - AI estimation failed, falling back to heuristic: {e}")
+            
+            # Fallback to heuristic estimation
+            get_logger().info("[DevTime] - Using heuristic time estimation...")
+            total_tokens = sum(data.get('input_tokens', 0) + data.get('output_tokens', 0) 
+                              for data in self.ai_models_metrics.values())
+            
+            dev_hours_saved = self._estimate_description_dev_hours_saved(
+                model=get_settings().config.model,
+                input_tokens=total_tokens // 2,  # Rough split
+                output_tokens=total_tokens // 2,
+                files_count=files_count
+            )
+            
+            get_logger().info(f"[DevTime] - Heuristic estimation completed: {dev_hours_saved} hours")
+            
+            # Return None for insights since this is heuristic, not AI-powered
+            return dev_hours_saved, None
+            
+        except Exception as e:
+            get_logger().error(f"[DevTime] - Failed to estimate dev time: {e}")
+            return 0.25, None  # Return None for insights on error
+
+    async def _send_insights(self, insights_data: dict):
+        """Send insights data to dashboard"""
+        try:
+            get_logger().info(f"[Insights] - DEBUG: _send_insights called with data keys: {list(insights_data.keys()) if insights_data else 'None'}")
+            
+            from pr_agent.log.dashboard_client import get_dashboard_client
+            
+            dashboard_client = get_dashboard_client()
+            get_logger().info(f"[Insights] - DEBUG: Dashboard client obtained: {dashboard_client is not None}")
+            get_logger().info(f"[Insights] - DEBUG: Dashboard client enabled: {dashboard_client._enabled if dashboard_client else 'None'}")
+            
+            if not dashboard_client or not dashboard_client._enabled:
+                get_logger().debug("[Insights] - Dashboard client not available, skipping insights")
+                return
+            
+            # Clean up None values to avoid sending empty insights
+            cleaned_insights = {}
+            for category, data in insights_data.items():
+                if data is not None:
+                    cleaned_insights[category] = data
+            
+            get_logger().info(f"[Insights] - DEBUG: Cleaned insights keys: {list(cleaned_insights.keys())}")
+            
+            if not cleaned_insights:
+                get_logger().debug("[Insights] - No insights data to send")
+                return
+            
+            get_logger().info(f"[Insights] - Sending insights to dashboard: {list(cleaned_insights.keys())}", 
+                             artifacts={'insights_categories': list(cleaned_insights.keys())})
+            
+            get_logger().info("[Insights] - DEBUG: About to call dashboard_client.update_operation_insights")
+            await dashboard_client.update_operation_insights(cleaned_insights)
+            get_logger().info("[Insights] - Successfully sent insights to dashboard")
+            
+        except Exception as e:
+            get_logger().warning(f"[Insights] - Failed to send insights to dashboard: {e}")
+            import traceback
+            get_logger().warning(f"[Insights] - Traceback: {traceback.format_exc()}")
+            # Don't fail the operation if insights sending fails
+
+    async def _publish_description_result(self, result, dev_hours_saved):
+        """Step 5: Publish the final PR description result"""
+        try:
+            get_logger().info("[Publishing] - Publishing PR description result...")
+            
+            if not get_settings().config.publish_output:
+                get_logger().info("[Publishing] - Output publishing disabled, storing as data artifact")
+                get_settings().data = {"artifact": result['body']}
+                return
+            
+            # Remove temporary comment
+            self.git_provider.remove_initial_comment()
+            
+            # Set PR title if enabled
+            if get_settings().pr_description.generate_ai_title and result.get('title'):
+                self.git_provider.publish_description(result['title'], result['body'])
+            else:
+                # Use original title when AI title generation is disabled
+                original_title = self.vars.get("title", "PR Description")
+                self.git_provider.publish_description(original_title, result['body'])
+            
+            # Publish labels if enabled and supported
+            if get_settings().pr_description.publish_labels and result.get('labels') and self.git_provider.is_supported("get_labels"):
+                self.git_provider.publish_labels(result['labels'])
+            
+            # Send aggregated AI metrics to dashboard
+            self._send_aggregated_ai_metrics(dev_hours_saved)
+            
+            get_logger().info("[Publishing] - PR description published successfully", 
+                             artifacts={
+                                 'title_changed': get_settings().pr_description.generate_ai_title and result.get('title'),
+                                 'labels_published': get_settings().pr_description.publish_labels and result.get('labels'),
+                                 'body_length': len(result['body']) if result.get('body') else 0
+                             })
+            
+        except Exception as e:
+            get_logger().error(f"[Publishing] - Failed to publish description: {e}")
+            raise
+
+    def _track_ai_metrics(self, model: str, token_usage: dict):
+        """Track AI metrics for multiple models"""
+        get_logger().debug(f"[AI] - _track_ai_metrics called with model: {model}, token_usage: {token_usage}")
+        
+        if not token_usage:
+            get_logger().debug(f"[AI] - No token usage provided for {model} - skipping tracking")
+            return
+        
+        input_tokens = token_usage.get('input_tokens', 0)
+        output_tokens = token_usage.get('output_tokens', 0)
+        
+        get_logger().debug(f"[AI] - Extracted tokens for {model}: input={input_tokens}, output={output_tokens}")
+        
+        if model not in self.ai_models_metrics:
+            self.ai_models_metrics[model] = {"input_tokens": 0, "output_tokens": 0}
+            get_logger().debug(f"[AI] - Initialized metrics tracking for new model: {model}")
+        
+        self.ai_models_metrics[model]["input_tokens"] += input_tokens
+        self.ai_models_metrics[model]["output_tokens"] += output_tokens
+        
+        get_logger().debug(f"[AI] - Updated metrics for {model}: total_input={self.ai_models_metrics[model]['input_tokens']}, "
+                          f"total_output={self.ai_models_metrics[model]['output_tokens']}")
+        get_logger().debug(f"[AI] - Current ai_models_metrics: {self.ai_models_metrics}")
+
+    def _send_aggregated_ai_metrics(self, estimated_dev_hours_saved):
+        """Send aggregated AI metrics to dashboard"""
+        get_logger().debug(f"[AI] - _send_aggregated_ai_metrics called - Dashboard available: {DASHBOARD_INTEGRATION_AVAILABLE}, "
+                          f"Metrics count: {len(self.ai_models_metrics) if self.ai_models_metrics else 0}")
+        
+        if not DASHBOARD_INTEGRATION_AVAILABLE:
+            get_logger().debug("[AI] - Dashboard integration not available - skipping AI metrics")
+            return
+            
+        if not self.ai_models_metrics:
+            get_logger().debug("[AI] - No AI metrics to send - ai_models_metrics is empty")
+            return
+        
+        try:
+            # Log what we're sending
+            get_logger().debug(f"[AI] - Sending AI metrics: {self.ai_models_metrics}")
+            
+            update_operation_multi_model_ai_metrics(
+                models_data=self.ai_models_metrics,
+                estimated_dev_hours_saved=estimated_dev_hours_saved
+            )
+            
+            # Log summary
+            total_input = sum(data.get('input_tokens', 0) for data in self.ai_models_metrics.values())
+            total_output = sum(data.get('output_tokens', 0) for data in self.ai_models_metrics.values())
+            models_used = list(self.ai_models_metrics.keys())
+            
+            get_logger().info(f"[AI] - Sent aggregated metrics for models: {models_used}, "
+                            f"Total tokens: {total_input + total_output} "
+                            f"(Input: {total_input}, Output: {total_output})")
+            
+        except Exception as e:
+            get_logger().warning(f"[AI] - Failed to send aggregated AI metrics: {e}")
 
     def _prepare_data(self):
         # Load the AI prediction data into a dictionary

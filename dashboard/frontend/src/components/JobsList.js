@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useContext, useRef } from 'react';
 import { 
-  Play, 
   CheckCircle, 
   XCircle, 
   Clock, 
@@ -22,12 +21,15 @@ import {
   Brain,
   DollarSign,
   TrendingUp,
-  BarChart3
+  BarChart3,
+  Play
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
 import RunningIndicator from './RunningIndicator';
+import OperationInsights from './OperationInsights';
+import { formatDevTime } from '../utils/timeUtils';
 
 const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOperationId }) => {
   const [jobs, setJobs] = useState([]);
@@ -41,6 +43,8 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
   });
   const [currentPage, setCurrentPage] = useState(1);
   const [lastRefreshTrigger, setLastRefreshTrigger] = useState(null);
+  const [showInsights, setShowInsights] = useState(false);
+  const [selectedOperationId, setSelectedOperationId] = useState(null);
   const { showError } = useContext(ToastContext);
   const highlightedJobRef = useRef(null);
   const highlightedOperationRef = useRef(null);
@@ -297,6 +301,7 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
     const getStatusText = (status) => {
       switch (status) {
         case 'running': return 'Job is currently running';
+        case 'pending': return 'Job is pending execution';
         case 'completed': return 'Job completed successfully';
         case 'failed': return 'Job failed to complete';
         case 'cancelled': return 'Job was cancelled';
@@ -306,10 +311,9 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
 
     switch (status) {
       case 'running':
+      case 'pending':
         return (
-          <div className="flex items-center justify-center h-4 w-4" title={getStatusText(status)}>
-            <div className="h-3 w-3 bg-blue-600 rounded-full animate-simple-pulse"></div>
-          </div>
+          <Play className="h-4 w-4 text-blue-600 dark:text-blue-400 animate-pulse" title={getStatusText(status)} />
         );
       case 'completed':
         return <CheckCircle className="h-4 w-4 text-green-500" title={getStatusText(status)} />;
@@ -330,10 +334,9 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
       case 'preparing':
       case 'self_reflecting':
       case 'publishing':
+      case 'running':
         return (
-          <div className="flex items-center justify-center h-3 w-3">
-            <div className="h-2 w-2 bg-blue-600 rounded-full animate-simple-pulse"></div>
-          </div>
+          <Play className="h-3 w-3 text-blue-600 dark:text-blue-400 animate-pulse" />
         );
       case 'completed':
       case 'context_completed':
@@ -405,7 +408,18 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
 
   const formatHours = (hours) => {
     if (!hours) return null;
-    return `${hours.toFixed(1)}h`;
+    return formatDevTime(hours, true);
+  };
+
+  // Check if operation has insights data
+  const hasInsights = (operation) => {
+    return operation.insights && typeof operation.insights === 'object' && Object.keys(operation.insights).length > 0;
+  };
+
+  // Handle showing insights modal
+  const handleShowInsights = (operationId) => {
+    setSelectedOperationId(operationId);
+    setShowInsights(true);
   };
 
   const getUniqueValues = (field) => {
@@ -564,9 +578,16 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
-        <span className="ml-3 text-gray-600 dark:text-gray-300">Loading jobs...</span>
+      <div className="space-y-6">
+        <ViewHeader
+          title="Jobs"
+          subtitle="Monitor PR-Agent job execution and operations"
+          icon={BarChart3}
+        />
+        <div className="flex items-center justify-center py-12">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+          <span className="ml-3 text-gray-600 dark:text-gray-300">Loading jobs...</span>
+        </div>
       </div>
     );
   }
@@ -719,9 +740,25 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
                       <div>
                         <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
                           {job.repository || 'Unknown Repository'}
+                          {job.pr_url && (() => {
+                            try {
+                              // Extract PR number from URL safely
+                              const prMatch = job.pr_url.match(/\/pull\/(\d+)|\/merge_requests\/(\d+)|\/pullrequest\/(\d+)/);
+                              const prNumber = prMatch ? (prMatch[1] || prMatch[2] || prMatch[3]) : null;
+                              return prNumber ? ` - PR #${prNumber}` : ' - PR';
+                            } catch (e) {
+                              return ' - PR';
+                            }
+                          })()}
                         </h3>
                         <p className="text-sm text-gray-500 dark:text-gray-400">
                           {job.job_type} • Started {formatTimestamp(job.started_at)}
+                          {job.pr_url && (
+                            <span className="ml-2 inline-flex items-center">
+                              <GitBranch className="h-3 w-3 mr-1" />
+                              Pull Request
+                            </span>
+                          )}
                         </p>
                       </div>
                     </div>
@@ -777,8 +814,9 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
                     </h4>
                     <div className="space-y-2">
                       {job.operations.map((operation) => {
-                        // Check if operation has AI metrics
-                        const hasAiMetrics = operation.model_used || operation.input_tokens || operation.output_tokens || operation.estimated_dev_hours_saved;
+                        // Check if operation has AI metrics (both single and multi-model)
+                        const hasAiMetrics = operation.model_used || operation.ai_models_used || operation.total_input_tokens || operation.total_output_tokens || operation.input_tokens || operation.output_tokens || operation.estimated_dev_hours_saved;
+                        const isMultiModel = operation.ai_models_used && Object.keys(operation.ai_models_used).length > 1;
                         
                         return (
                           <div
@@ -792,9 +830,16 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
                               <div className="flex items-center space-x-3">
                                 {getOperationStatusIcon(operation.status)}
                                 <div>
-                                  <p className="text-sm font-medium text-gray-900 dark:text-white">
-                                    {operation.operation_type || operation.command || 'Unknown Operation'}
-                                  </p>
+                                  <div className="flex items-center space-x-2">
+                                    <p className="text-sm font-medium text-gray-900 dark:text-white">
+                                      {operation.operation_type || operation.command || 'Unknown Operation'}
+                                    </p>
+                                    {operation.current_step && operation.status !== 'completed' && operation.status !== 'failed' && operation.status !== 'skipped' && (
+                                      <span className="px-2 py-0.5 text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-full font-medium">
+                                        {operation.current_step}
+                                      </span>
+                                    )}
+                                  </div>
                                   <p className="text-xs text-gray-500 dark:text-gray-400">
                                     {formatTimestamp(operation.started_at)}
                                     {operation.duration && ` • ${formatDuration(operation.duration)}`}
@@ -806,41 +851,96 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
                                 {/* AI Metrics Display - moved to header */}
                                 {hasAiMetrics && (
                                   <div className="flex items-center space-x-4 text-xs">
-                                    {operation.model_used && (
+                                    {/* Model Display - Multi-model aware */}
+                                    {isMultiModel ? (
+                                      <div className="flex items-center space-x-1 text-blue-600 dark:text-blue-400" 
+                                           title={`Models used: ${Object.keys(operation.ai_models_used).join(', ')}`}>
+                                        <Brain className="h-3 w-3" />
+                                        <span>{Object.keys(operation.ai_models_used).length} models</span>
+                                      </div>
+                                    ) : operation.model_used && (
                                       <div className="flex items-center space-x-1 text-blue-600 dark:text-blue-400">
                                         <Brain className="h-3 w-3" />
                                         <span>{operation.model_used}</span>
                                       </div>
                                     )}
                                     
-                                    {(operation.input_tokens || operation.output_tokens) && (
+                                    {/* Token Display - Multi-model aware */}
+                                    {((operation.total_input_tokens || operation.total_output_tokens) || (operation.input_tokens || operation.output_tokens)) && (
                                       <div className="flex items-center space-x-1 text-purple-600 dark:text-purple-400">
                                         <Zap className="h-3 w-3" />
                                         <span>
-                                          {formatTokens(operation.input_tokens || 0)}
-                                          {operation.output_tokens && `+${formatTokens(operation.output_tokens)}`} tokens
+                                          {formatTokens((operation.total_input_tokens || operation.input_tokens) || 0)}
+                                          {((operation.total_output_tokens || operation.output_tokens)) && 
+                                            `+${formatTokens(operation.total_output_tokens || operation.output_tokens)}`} tokens
                                         </span>
                                       </div>
                                     )}
                                     
                                     {operation.estimated_dev_hours_saved && (
-                                      <div className="flex items-center space-x-1 text-green-600 dark:text-green-400">
-                                        <TrendingUp className="h-3 w-3" />
-                                        <span>{formatHours(operation.estimated_dev_hours_saved)} saved</span>
+                                      <div className={`flex items-center space-x-1 ${
+                                        operation.estimated_dev_hours_saved < 0 
+                                          ? 'text-red-600 dark:text-red-400' 
+                                          : 'text-green-600 dark:text-green-400'
+                                      }`}>
+                                        {operation.estimated_dev_hours_saved < 0 ? (
+                                          <AlertTriangle className="h-3 w-3" />
+                                        ) : (
+                                          <TrendingUp className="h-3 w-3" />
+                                        )}
+                                        <span>
+                                          {formatHours(Math.abs(operation.estimated_dev_hours_saved))} 
+                                          {operation.estimated_dev_hours_saved < 0 ? ' wasted' : ' saved'}
+                                        </span>
                                       </div>
                                     )}
                                   </div>
                                 )}
                                 
-                                <button
-                                  onClick={() => onShowLogs(operation.operation_id, 'operation')}
-                                  className="inline-flex items-center px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-                                >
-                                  <FileText className="h-3 w-3 mr-1" />
-                                  Logs
-                                </button>
+                                <div className="flex items-center space-x-2">
+                                  {hasInsights(operation) && (
+                                    <button
+                                      onClick={() => handleShowInsights(operation.operation_id || operation.id)}
+                                      className="inline-flex items-center px-2 py-1 text-xs border border-blue-300 dark:border-blue-600 rounded text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors"
+                                    >
+                                      <Brain className="h-3 w-3 mr-1" />
+                                      AI Insights
+                                    </button>
+                                  )}
+                                  
+                                  <button
+                                    onClick={() => onShowLogs(operation.operation_id, 'operation')}
+                                    className="inline-flex items-center px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                                  >
+                                    <FileText className="h-3 w-3 mr-1" />
+                                    Logs
+                                  </button>
+                                </div>
                               </div>
                             </div>
+                            
+                            {/* Detailed Multi-Model Breakdown */}
+                            {isMultiModel && (
+                              <div className="mt-3 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-md text-xs">
+                                <div className="font-medium text-gray-700 dark:text-gray-300 mb-2 flex items-center">
+                                  <Brain className="h-3 w-3 mr-1" />
+                                  Model Usage Breakdown:
+                                </div>
+                                <div className="space-y-1">
+                                  {Object.entries(operation.ai_models_used).map(([model, metrics]) => (
+                                    <div key={model} className="flex justify-between items-center py-1 px-2 bg-white dark:bg-gray-800 rounded">
+                                      <span className="font-mono text-blue-600 dark:text-blue-400 font-medium">{model}</span>
+                                      <div className="flex items-center space-x-2 text-purple-600 dark:text-purple-400">
+                                        <Zap className="h-3 w-3" />
+                                        <span>
+                                          {formatTokens(metrics.input_tokens || 0)}+{formatTokens(metrics.output_tokens || 0)}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -930,6 +1030,17 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
             </button>
           </div>
         </div>
+      )}
+
+      {/* AI Insights Modal */}
+      {showInsights && selectedOperationId && (
+        <OperationInsights
+          operationId={selectedOperationId}
+          onClose={() => {
+            setShowInsights(false);
+            setSelectedOperationId(null);
+          }}
+        />
       )}
     </div>
   );

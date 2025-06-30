@@ -1,6 +1,7 @@
 import json
 import asyncio
 from typing import Dict, Any, Optional
+from datetime import datetime
 
 try:
     import aiohttp
@@ -50,8 +51,8 @@ class DashboardSink:
             try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
-                    # Send immediately for errors or status updates
-                    if record["level"].name in ["ERROR", "CRITICAL"] or self._is_status_update(record):
+                    # Send immediately for errors or status updates (including EXCEPTION logs)
+                    if record["level"].name in ["ERROR", "CRITICAL", "EXCEPTION"] or self._is_status_update(record):
                         asyncio.create_task(self._send_immediately(log_entry))
                     
                     # Batch send for other logs
@@ -72,52 +73,150 @@ class DashboardSink:
             import traceback
             traceback.print_exc()
     
-    def _format_log_entry(self, record: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Format log record for dashboard consumption
-        """
+    def _format_log_entry(self, record):
+        """Convert loguru record to dashboard log entry format"""
+        
+        # Get current step for automatic prefixing
+        current_step = None
+        try:
+            from pr_agent.log.job_context import JobContext
+            current_step = JobContext.get_current_step()
+        except Exception:
+            pass  # Ignore errors getting current step
+        
+        # Extract basic log information
+        timestamp = record["time"].timestamp()
+        level = record["level"].name
+        
+        # Get the raw message before any prefixing
+        raw_message = record["message"]
+        
+        # Apply automatic step prefixing if:
+        # 1. We have a current step
+        # 2. The message doesn't already have a step prefix
+        # 3. The message doesn't start with common system prefixes
+        message = raw_message
+        if (current_step and 
+            not self._has_existing_prefix(raw_message) and
+            not self._is_system_message(raw_message)):
+            message = f"[{current_step}] - {raw_message}"
+        
+        # Extract context from extra fields
         extra = record.get("extra", {})
         
         log_entry = {
-            "timestamp": record["time"].isoformat(),
-            "level": record["level"].name,
-            "message": record["message"],
-            "module": record.get("module", ""),
-            "function": record.get("function", ""),
+            "timestamp": datetime.fromtimestamp(timestamp).isoformat(),
+            "level": level,
+            "message": message,
+            "module": record.get("name", "unknown"),
+            "function": record.get("function", "unknown"),
             "line": record.get("line", 0),
-            
-            # NEW: Job and Operation tracking
-            "job_id": extra.get("job_id"),
-            "operation_id": extra.get("operation_id"),
-            
-            # Context information
-            "pr_url": extra.get("pr_url"),
-            "command": extra.get("command"),
-            "installation_id": extra.get("installation_id"),
-            "repo": extra.get("repo"),
-            "sender": extra.get("sender"),
-            "request_id": extra.get("request_id"),
-            "sub_feature": extra.get("sub_feature"),
-            
-            # Status information
-            "status": self._extract_status(record),
-            "analytics": extra.get("analytics", False),
-            
-            # Artifacts for detailed debugging
-            "artifact": extra.get("artifact"),
-            "artifacts": extra.get("artifacts"),
-            
-            # Error information
-            "error": self._extract_error_info(record),
-            
-            # Application metadata
-            "app_name": extra.get("app_name"),
-            "build_number": extra.get("build_number"),
-            "git_provider": extra.get("git_provider"),
+            "source": "pr_agent",
         }
         
-        # Clean up None values
-        return {k: v for k, v in log_entry.items() if v is not None}
+        # Add context from extra fields
+        context_fields = [
+            "job_id", "operation_id", "command", "repo", "pr_url", 
+            "installation_id", "sender", "request_id", "status"
+        ]
+        
+        for field in context_fields:
+            if field in extra:
+                log_entry[field] = extra[field]
+        
+        # Handle artifacts (complex data structures)
+        if "artifacts" in extra:
+            artifacts = extra["artifacts"]
+            if isinstance(artifacts, dict):
+                # Store artifacts as separate field for structured display
+                log_entry["artifacts"] = artifacts
+                
+                # Convert artifacts to a formatted string representation for message text
+                formatted_artifacts = self._format_artifacts_for_message(artifacts)
+                if formatted_artifacts:
+                    log_entry["message"] += f" | Artifacts: {formatted_artifacts}"
+        
+        return log_entry
+
+    def _has_existing_prefix(self, message: str) -> bool:
+        """Check if message already has a step prefix"""
+        if not message:
+            return False
+        
+        # Check for existing step prefixes
+        step_prefixes = ['[Context]', '[Generating]', '[Reflecting]', '[Publishing]', '[DevTime]', '[AI]']
+        return any(message.startswith(prefix) for prefix in step_prefixes)
+    
+    def _is_system_message(self, message: str) -> bool:
+        """Check if this is a system message that shouldn't get step prefixes"""
+        if not message:
+            return False
+        
+        # System message patterns that shouldn't get step prefixes
+        system_patterns = [
+            '[NOTIFICATION]', '[RETENTION]', '[HEALTH]', '[SYSTEM]',
+            'Dashboard', 'WebSocket', 'HTTP', 'Database', 'Cache',
+            'Starting comprehensive', 'Operation completed', 'Job completed',
+            'AI metrics updated', 'Metrics recalculated'
+        ]
+        return any(pattern in message for pattern in system_patterns)
+    
+    def _format_artifacts_for_message(self, extra: Dict[str, Any]) -> str:
+        """
+        Format artifacts into readable text for appending to log messages
+        """
+        artifacts_parts = []
+        
+        # Handle single artifact
+        artifact = extra.get("artifact")
+        if artifact is not None:
+            if isinstance(artifact, dict):
+                # Format dict artifacts as key-value pairs
+                formatted_dict = []
+                for key, value in artifact.items():
+                    if isinstance(value, (dict, list)):
+                        # For complex values, format as JSON but compact
+                        try:
+                            value_str = json.dumps(value, separators=(',', ':'))
+                            # Increased limit for better debugging, especially for estimation inputs
+                            if len(value_str) > 2000:
+                                value_str = value_str[:1997] + "..."
+                        except:
+                            value_str = str(value)[:2000]
+                    else:
+                        value_str = str(value)
+                    formatted_dict.append(f"{key}={value_str}")
+                artifacts_parts.append("Artifact: " + ", ".join(formatted_dict))
+            else:
+                # For simple artifacts, just convert to string
+                artifact_str = str(artifact)
+                # Increased limit for better debugging
+                if len(artifact_str) > 2000:
+                    artifact_str = artifact_str[:1997] + "..."
+                artifacts_parts.append(f"Artifact: {artifact_str}")
+        
+        # Handle multiple artifacts
+        artifacts = extra.get("artifacts")
+        if artifacts is not None and isinstance(artifacts, dict):
+            formatted_artifacts = []
+            for key, value in artifacts.items():
+                if isinstance(value, (dict, list)):
+                    # For complex values, format as JSON but compact
+                    try:
+                        value_str = json.dumps(value, separators=(',', ':'))
+                        # Increased limit for better debugging, especially for estimation inputs
+                        if len(value_str) > 2000:
+                            value_str = value_str[:1997] + "..."
+                    except:
+                        value_str = str(value)[:2000]
+                else:
+                    value_str = str(value)
+                formatted_artifacts.append(f"{key}={value_str}")
+            
+            if formatted_artifacts:
+                artifacts_parts.append("Artifacts: " + ", ".join(formatted_artifacts))
+        
+        return " | ".join(artifacts_parts)
     
     def _extract_status(self, record: Dict[str, Any]) -> Optional[str]:
         """
@@ -217,8 +316,8 @@ class DashboardSink:
             # Error states are handled by log level
         }
         
-        # Handle errors by log level
-        if record["level"].name in ["ERROR", "CRITICAL"]:
+        # Handle errors by log level (including EXCEPTION logs)
+        if record["level"].name in ["ERROR", "CRITICAL", "EXCEPTION"]:
             return "failed"
         
         # Check for specific patterns
@@ -236,11 +335,17 @@ class DashboardSink:
         """
         Extract error information from log records
         """
-        if record["level"].name not in ["ERROR", "CRITICAL"]:
+        # Include EXCEPTION logs as errors since they'll be converted to ERROR level
+        if record["level"].name not in ["ERROR", "CRITICAL", "EXCEPTION"]:
             return None
             
+        # Convert EXCEPTION to ERROR for consistency
+        level_name = record["level"].name
+        if level_name == "EXCEPTION":
+            level_name = "ERROR"
+            
         error_info = {
-            "level": record["level"].name,
+            "level": level_name,
             "message": record["message"],
         }
         
@@ -257,6 +362,15 @@ class DashboardSink:
         if "artifact" in extra and isinstance(extra["artifact"], dict):
             if "error" in extra["artifact"] or "traceback" in extra["artifact"]:
                 error_info["details"] = extra["artifact"]
+        
+        # Also check artifacts field for error details        
+        if "artifacts" in extra and isinstance(extra["artifacts"], dict):
+            error_details = {}
+            for key, value in extra["artifacts"].items():
+                if "error" in key.lower() or "exception" in key.lower() or "traceback" in key.lower():
+                    error_details[key] = value
+            if error_details:
+                error_info["artifacts_details"] = error_details
                 
         return error_info
     
@@ -326,10 +440,21 @@ class DashboardSink:
         """
         Start periodic flushing of log buffer
         """
+        # Don't start if already running
+        if self._flush_task and not self._flush_task.done():
+            return
+            
         async def flush_periodically():
-            while True:
-                await asyncio.sleep(self.flush_interval)
-                await self._flush_buffer()
+            try:
+                while True:
+                    await asyncio.sleep(self.flush_interval)
+                    await self._flush_buffer()
+            except asyncio.CancelledError:
+                # Task was cancelled, clean exit
+                pass
+            except Exception as e:
+                # Log error but don't crash
+                pass
                 
         self._flush_task = asyncio.create_task(flush_periodically())
     
@@ -337,8 +462,12 @@ class DashboardSink:
         """
         Clean up resources
         """
-        if self._flush_task:
+        if self._flush_task and not self._flush_task.done():
             self._flush_task.cancel()
+            try:
+                await self._flush_task
+            except asyncio.CancelledError:
+                pass  # Expected when cancelling
             
         await self._flush_buffer()  # Final flush
         
@@ -416,12 +545,29 @@ def setup_dashboard_sink(dashboard_url: Optional[str] = None, api_key: Optional[
         enqueue=True,  # Use async queue for better performance
     )
     
-    # Start the periodic flush timer
+    # Start the periodic flush timer (only if event loop is running)
     try:
         loop = asyncio.get_event_loop()
-        loop.create_task(_dashboard_sink.start_flush_timer())
+        if loop.is_running():
+            # Store the task reference to prevent warnings
+            task = loop.create_task(_dashboard_sink.start_flush_timer())
+            # Add weak reference to prevent circular dependencies
+            _dashboard_sink._flush_task = task
     except RuntimeError:
-        # No event loop running yet, will start later
+        # No event loop running yet, will start later when needed
         pass
     
-    return _dashboard_sink 
+    return _dashboard_sink
+
+async def cleanup_dashboard_sink():
+    """
+    Cleanup the dashboard sink and any running tasks
+    """
+    global _dashboard_sink
+    
+    if _dashboard_sink:
+        try:
+            await _dashboard_sink.close()
+        except Exception as e:
+            # Silent cleanup - don't break shutdown
+            pass 

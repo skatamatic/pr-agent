@@ -6,7 +6,7 @@ import textwrap
 import traceback
 from datetime import datetime
 from functools import partial
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from jinja2 import Environment, StrictUndefined
 
@@ -32,7 +32,12 @@ from pr_agent.tools.pr_description import insert_br_after_x_chars
 
 # Dashboard integration imports
 try:
-    from pr_agent.log.job_context import operation_context, OperationType, update_operation_ai_metrics
+    from pr_agent.log.job_context import (
+        operation_context, OperationType, 
+        job_context, JobType, 
+        set_operation_step, update_operation_multi_model_ai_metrics,
+        extract_repository_from_url, update_operation_status
+    )
     DASHBOARD_INTEGRATION_AVAILABLE = True
 except ImportError:
     DASHBOARD_INTEGRATION_AVAILABLE = False
@@ -40,8 +45,19 @@ except ImportError:
 
 
 class PRCodeSuggestions:
-    def __init__(self, pr_url: str, cli_mode=False, args: list = None,
-                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
+    def __init__(self, pr_url: str, args: list = None, ai_handler: BaseAiHandler = LiteLLMAIHandler(), cli_mode: bool = False):
+        self.pr_url = pr_url
+        self.cli_mode = cli_mode
+        
+        # Multi-model AI metrics tracking
+        self.ai_models_metrics = {}  # {"model_name": {"input_tokens": int, "output_tokens": int}}
+        
+        # Initialize other attributes
+        self.prediction = ""
+        self.can_add_test_class = False
+        self.num_code_suggestions = 0
+        self.patches_diff = ""
+        self.progress_response = None
 
         self.git_provider = get_git_provider_with_context(pr_url)
         self.main_language = get_main_pr_language(
@@ -62,8 +78,6 @@ class PRCodeSuggestions:
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
         self.prediction = None
-        self.pr_url = pr_url
-        self.cli_mode = cli_mode
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
         if (self.pr_description_files and get_settings().get("config.is_auto_command", False) and
@@ -109,53 +123,457 @@ class PRCodeSuggestions:
         self.progress += f"""\nWork in progress ...<br>\n<img src="https://codium.ai/images/pr_agent/dual_ball_loading-crop.gif" width=48>"""
         self.progress_response = None
 
-    async def run(self):
-        # Dashboard integration - try with tracking first, fallback to normal execution
+    async def run(self) -> bool:
+        """Main entry point for code suggestions with dashboard operation tracking"""
+        get_logger().info('Starting comprehensive code suggestions operation...')
+        
+        # Extract repository information for dashboard tracking
+        repository = None
+        if DASHBOARD_INTEGRATION_AVAILABLE:
+            try:
+                repository = extract_repository_from_url(self.pr_url)
+            except Exception as e:
+                get_logger().debug(f"Failed to extract repository from URL: {e}")
+
+        # Create operation context for dashboard tracking (error resilient)
         if DASHBOARD_INTEGRATION_AVAILABLE:
             try:
                 with operation_context(
                     operation_type=OperationType.GENERATING_SUGGESTIONS,
                     command="improve",
-                    repository_url=self.pr_url
+                    repo=repository,
+                    pr_url=self.pr_url,
+                    installation_id=getattr(self.git_provider, 'installation_id', None),
+                    sender=getattr(self.git_provider, 'sender', None)
                 ) as operation_id:
+                    get_logger().info(f"Code suggestions operation started with ID: {operation_id}")
                     return await self._run_with_tracking(operation_id)
             except Exception as e:
-                get_logger().warning(f"Dashboard operation context failed, continuing without tracking: {e}")
+                get_logger().warning(f"Dashboard operation tracking failed, continuing without tracking: {e}")
                 # Fall through to execute without tracking
         
+        # Execute without operation tracking (fallback or dashboard disabled)
+        get_logger().info("Executing code suggestions without dashboard tracking")
         return await self._run_without_tracking()
-    
-    async def _run_with_tracking(self, operation_id: str):
-        """Run code suggestions with dashboard tracking"""
+
+    async def _fetch_context_and_diff(self):
+        """Stage 1: Fetch PR diff and context data"""
         try:
-            # Update operation status to processing
-            from pr_agent.log.job_context import update_operation_status
-            update_operation_status("processing")
+            # Get PR diff using existing logic from prepare_prediction_main
+            get_logger().info('[Context] - Fetching diff...')
+            model = get_settings().config.model  # Use default model for tokenization
             
-            result = await self._run_without_tracking()
-            
-            # Update operation status based on result
-            update_operation_status("completed", result_data={
-                "suggestions_count": len(result.get("code_suggestions", [])) if result else 0,
-                "pr_url": self.pr_url,
-                "suggestions_generated": result is not None
-            })
+            if get_settings().pr_code_suggestions.decouple_hunks:
+                self.patches_diff_list = await get_pr_multi_diffs(self.git_provider,
+                                                            self.token_handler,
+                                                            model,
+                                                            max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
+                                                            add_line_numbers=True)
+                self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)
+            else:
+                self.patches_diff_list_no_line_numbers = await get_pr_multi_diffs(self.git_provider,
+                                                                            self.token_handler,
+                                                                            model,
+                                                                            max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
+                                                                            add_line_numbers=False)
+                self.patches_diff_list = await self.convert_to_decoupled_with_line_numbers(
+                    self.patches_diff_list_no_line_numbers, model)
+                if not self.patches_diff_list:
+                    self.patches_diff_list = await get_pr_multi_diffs(self.git_provider,
+                                                                self.token_handler,
+                                                                model,
+                                                                max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
+                                                                add_line_numbers=True)
+
+            # Fetch context if enabled
+            if get_settings().csharp_code_context_service.enabled:
+                get_logger().info('[Context] - Fetching additional code context...')
+                self.context_data = await get_pr_context(self.git_provider)
+                get_logger().info(f"[Context] - Code context retrieved successfully")
+            else:
+                get_logger().info('[Context] - Code context fetch is disabled')
+                self.context_data = ""
+
+            if not self.patches_diff_list:
+                get_logger().warning(f"[Context] - Empty PR diff list")
+                return None
                 
-            return result
+            get_logger().info(f"[Context] - Processing {len(self.patches_diff_list)} diff chunks")
+            return {"patches_fetched": True, "context_fetched": bool(self.context_data)}
+            
         except Exception as e:
-            get_logger().error(f"PR code suggestions failed: {e}")
+            get_logger().error(f"[Context] - Failed to fetch context and diff: {e}")
+            raise
+    
+    async def _generate_suggestions_with_data(self, data):
+        """Stage 2: Generate AI suggestions"""
+        try:
+            get_logger().info('[Generating] - Starting AI code suggestions generation...')
+            model = get_settings().config.model
+            
+            # Generate suggestions using existing logic from prepare_prediction_main
+            # Skip self-reflection here since it's handled in Stage 3
+            if get_settings().pr_code_suggestions.parallel_calls:
+                prediction_list = await asyncio.gather(
+                    *[self._get_prediction(model, patches_diff, patches_diff_no_line_numbers, skip_self_reflection=True) for
+                      patches_diff, patches_diff_no_line_numbers in
+                      zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers)])
+                self.prediction_list = prediction_list
+            else:
+                prediction_list = []
+                for patches_diff, patches_diff_no_line_numbers in zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers):
+                    prediction = await self._get_prediction(model, patches_diff, patches_diff_no_line_numbers, skip_self_reflection=True)
+                    prediction_list.append(prediction)
+
+            # Consolidate suggestions using existing logic
+            result_data = {"code_suggestions": []}
+            for j, predictions in enumerate(prediction_list):
+                if "code_suggestions" in predictions:
+                    score_threshold = max(1, int(get_settings().pr_code_suggestions.suggestions_score_threshold))
+                    for i, prediction in enumerate(predictions["code_suggestions"]):
+                        try:
+                            score = int(prediction.get("score", 1))
+                            if score >= score_threshold:
+                                result_data["code_suggestions"].append(prediction)
+                            else:
+                                                            get_logger().info(
+                                f"[Generating] - Filtering out low-score suggestion {i} from call {j} (score={score}, threshold={score_threshold})",
+                                artifact=prediction)
+                        except Exception as e:
+                            get_logger().error(f"[Generating] - Error processing suggestion {i} in call {j}: {e}",
+                                               artifact={"prediction": prediction})
+            
+            get_logger().info(f"[Generating] - Generated {len(result_data.get('code_suggestions', []))} total suggestions")
+            self.data = result_data
+            return result_data
+            
+        except Exception as e:
+            get_logger().error(f"[Generating] - Failed to generate suggestions: {e}")
+            raise
+    
+    async def _self_reflect_on_result(self, result):
+        """Stage 3: Self-reflect on suggestions"""
+        try:
+            get_logger().info('[Reflecting] - Starting self-reflection on generated suggestions...')
+            # Use existing self-reflection logic from _get_prediction
+            if not result or not result.get('code_suggestions'):
+                get_logger().info('[Reflecting] - No suggestions to reflect on, skipping')
+                return result
+                
+            # Call self-reflection for each suggestion (simplified version)
+            model = get_settings().config.model
+            patches_diff = "\n\n".join(self.patches_diff_list) if self.patches_diff_list else ""
+            
+            # Perform self-reflection using existing logic
+            response_reflect = await self.self_reflect_on_suggestions(
+                result['code_suggestions'],
+                patches_diff,
+                model
+            )
+            
+            if response_reflect:
+                get_logger().info('[Reflecting] - Analyzing reflection response and updating scores...')
+                await self.analyze_self_reflection_response(result, response_reflect)
+            else:
+                get_logger().warning('[Reflecting] - Reflection failed, applying default scores')
+                # Default scores if reflection fails
+                for suggestion in result["code_suggestions"]:
+                    suggestion["score"] = 7
+                    suggestion["score_why"] = ""
+            
+            get_logger().info('[Reflecting] - Self-reflection completed successfully')
+            return result
+            
+        except Exception as e:
+            get_logger().error(f"[Reflecting] - Failed to self-reflect on suggestions: {e}")
+            # Return original result if reflection fails
+            return result
+    
+    async def _publish_result(self, result, dev_hours_saved):
+        """Stage 5: Publish suggestions"""
+        get_logger().info('[Publishing] - Starting to publish code suggestions')
+        
+        try:
+            if result and result.get("code_suggestions"):
+                await self.dual_publishing(result)
+                get_logger().info(f'[Publishing] - Successfully published {len(result.get("code_suggestions", []))} code suggestions')
+            else:
+                await self.publish_no_suggestions()
+                get_logger().info('[Publishing] - Published no suggestions message')
+                
+            # Send aggregated AI metrics after successful publishing
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                self._send_aggregated_ai_metrics(estimated_dev_hours_saved=dev_hours_saved)
+            
+        except Exception as e:
+            get_logger().error(f'[Publishing] - Failed to publish suggestions: {e}')
+            
+            # Still send metrics even if publishing fails
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                self._send_aggregated_ai_metrics(estimated_dev_hours_saved=dev_hours_saved)
+            
+            raise
+    
+    async def _estimate_dev_time_saved(self, final_result):
+        """Stage 4: Estimate developer time saved with proper operation tracking"""
+        try:
+            get_logger().info("[DevTime] - Starting AI-powered developer time saved estimation...")
+            
+            if not final_result or not final_result.get('code_suggestions'):
+                get_logger().warning("[DevTime] - No suggestions available for time estimation")
+                return 0.0
+            
+            # Get required data for estimation
+            suggestions_count = len(final_result.get('code_suggestions', []))
+            files_count = len(self.git_provider.get_files()) if hasattr(self, 'git_provider') else 1
+            
+            # Build content for AI estimation
+            suggestions_content = str(final_result.get('code_suggestions', []))
+            diff_content = "\n\n".join(self.patches_diff_list) if hasattr(self, 'patches_diff_list') and self.patches_diff_list else ''
+            
+            get_logger().info(f"[DevTime] - Time estimation inputs: {suggestions_count} suggestions, {files_count} files")
+            
+            # Let DevTimeEstimator choose the model based on config, fall back to reasoning model if needed
+            estimation_model = get_settings().get("pr_dev_time_estimation.model", "")
+            if estimation_model:
+                model = estimation_model
+                get_logger().info(f"[DevTime] - Using configured dev time estimation model: {model}")
+            else:
+                model = get_model('model_reasoning')
+                get_logger().info(f"[DevTime] - No config model found, using reasoning model for dev time estimation: {model}")
+            
             try:
-                from pr_agent.log.job_context import update_operation_status
-                update_operation_status("failed", error_details=str(e))
-            except Exception as status_error:
-                get_logger().debug(f"Failed to update operation status: {status_error}")
+                dev_hours_saved = await self._estimate_suggestions_dev_hours_saved_ai(
+                    model=model,
+                    input_tokens=0,  # Will be updated inside the method
+                    output_tokens=0,  # Will be updated inside the method
+                    files_count=files_count,
+                    diff=diff_content,
+                    suggestions_content=suggestions_content,
+                    suggestions_count=suggestions_count,
+                    track_metrics=True  # Enable AI metrics tracking for this operation
+                )
+                
+                get_logger().info(f"[DevTime] - AI estimation completed: {dev_hours_saved} hours", 
+                                 artifacts={
+                                     'suggestions_count': suggestions_count,
+                                     'files_count': files_count,
+                                     'estimated_hours': dev_hours_saved,
+                                     'model_used': model
+                                 })
+                
+                return dev_hours_saved
+                
+            except Exception as ai_error:
+                get_logger().warning(f"[DevTime] - AI estimation failed, using heuristic fallback: {ai_error}")
+                
+                # Fallback to heuristic estimation
+                heuristic_result = self._estimate_suggestions_dev_hours_saved(
+                    files_count, 
+                    2000,  # Estimated tokens for heuristic
+                    model
+                )
+                
+                get_logger().info(f"[DevTime] - Heuristic estimation: {heuristic_result} hours")
+                return heuristic_result
+                
+        except Exception as e:
+            get_logger().error(f"[DevTime] - Dev time estimation operation failed: {e}")
             raise
 
-    async def _run_without_tracking(self):
+    async def _estimate_dev_time_saved_with_insights(self, final_result):
+        """Stage 4: Estimate developer time saved with full insights capture"""
+        try:
+            get_logger().info("[DevTime] - Starting AI-powered developer time saved estimation with insights...")
+            
+            if not final_result or not final_result.get('code_suggestions'):
+                get_logger().warning("[DevTime] - No suggestions available for time estimation")
+                return 0.0, None
+            
+            # Get required data for estimation
+            suggestions_count = len(final_result.get('code_suggestions', []))
+            files_count = len(self.git_provider.get_files()) if hasattr(self, 'git_provider') else 1
+            
+            # Build content for AI estimation
+            suggestions_content = str(final_result.get('code_suggestions', []))
+            diff_content = "\n\n".join(self.patches_diff_list) if hasattr(self, 'patches_diff_list') and self.patches_diff_list else ''
+            
+            get_logger().info(f"[DevTime] - Time estimation inputs: {suggestions_count} suggestions, {files_count} files")
+            
+            # Let DevTimeEstimator choose the model based on config, fall back to reasoning model if needed
+            estimation_model = get_settings().get("pr_dev_time_estimation.model", "")
+            if estimation_model:
+                model = estimation_model
+                get_logger().info(f"[DevTime] - Using configured dev time estimation model: {model}")
+            else:
+                model = get_model('model_reasoning')
+                get_logger().info(f"[DevTime] - No config model found, using reasoning model for dev time estimation: {model}")
+            
+            # Initialize AI time estimator with callback for metrics tracking
+            try:
+                from pr_agent.algo.dev_time_estimator import DevTimeEstimator
+                estimator = DevTimeEstimator(self.ai_handler, self.token_handler, self._track_ai_metrics)
+                
+            except Exception as e:
+                get_logger().error("❌ Failed to initialize DevTimeEstimator", 
+                                  artifacts={'error': str(e), 'error_type': type(e).__name__})
+                return 0.0, None
+
+            # Make AI estimation call with full insights
+            try:
+                get_logger().info("Making AI call for time savings estimation with insights...")
+                
+                estimation_result = await estimator.estimate_suggestions_time_savings(
+                    diff=diff_content,
+                    ai_suggestions_content=suggestions_content,
+                    language=self.main_language,
+                    files_changed=files_count,
+                    lines_added=len([line for line in diff_content.split('\n') if line.startswith('+')]),
+                    lines_deleted=len([line for line in diff_content.split('\n') if line.startswith('-')]),
+                    suggestions_count=suggestions_count,
+                    model=model
+                )
+                
+                # Extract final hours estimate
+                estimated_hours = 0.0
+                if estimation_result and 'final_assessment' in estimation_result:
+                    estimated_hours = estimation_result['final_assessment'].get('total_developer_hours_saved', 0.0)
+                    # Cap the result at reasonable bounds (allow negative values for time wasted)
+                    estimated_hours = max(-16.0, min(16.0, float(estimated_hours)))
+                
+                get_logger().info(f"[DevTime] - AI time estimation with insights completed: {estimated_hours} hours", 
+                                 artifacts={'full_estimation_result': estimation_result})
+                
+                return estimated_hours, estimation_result
+                
+            except Exception as e:
+                get_logger().error("❌ AI time estimation call failed", 
+                                  artifacts={'error': str(e), 'error_type': type(e).__name__})
+                return 0.0, None
+                
+        except Exception as e:
+            get_logger().error(f"[DevTime] - Dev time estimation with insights failed: {e}")
+            return 0.0, None
+
+    async def _send_insights(self, insights_data: dict):
+        """Send AI insights to dashboard for analysis and visualization"""
+        try:
+            get_logger().info(f"[Insights] - DEBUG: _send_insights called with data keys: {list(insights_data.keys()) if insights_data else 'None'}")
+            
+            from pr_agent.log.dashboard_client import get_dashboard_client
+            
+            dashboard_client = get_dashboard_client()
+            get_logger().info(f"[Insights] - DEBUG: Dashboard client obtained: {dashboard_client is not None}")
+            get_logger().info(f"[Insights] - DEBUG: Dashboard client enabled: {dashboard_client._enabled if dashboard_client else 'None'}")
+            
+            if not dashboard_client or not dashboard_client._enabled:
+                get_logger().debug("[Insights] - Dashboard client not available, skipping insights")
+                return
+            
+            # Clean up None values to avoid sending empty insights
+            cleaned_insights = {}
+            for category, data in insights_data.items():
+                if data is not None:
+                    cleaned_insights[category] = data
+            
+            get_logger().info(f"[Insights] - DEBUG: Cleaned insights keys: {list(cleaned_insights.keys())}")
+            
+            if not cleaned_insights:
+                get_logger().debug("[Insights] - No insights data to send")
+                return
+            
+            get_logger().info(f"[Insights] - Sending insights to dashboard: {list(cleaned_insights.keys())}", 
+                             artifacts={'insights_categories': list(cleaned_insights.keys())})
+            
+            get_logger().info("[Insights] - DEBUG: About to call dashboard_client.update_operation_insights")
+            await dashboard_client.update_operation_insights(cleaned_insights)
+            get_logger().info("[Insights] - Successfully sent insights to dashboard")
+            
+        except Exception as e:
+            get_logger().warning(f"[Insights] - Failed to send insights to dashboard: {e}")
+            import traceback
+            get_logger().warning(f"[Insights] - Traceback: {traceback.format_exc()}")
+            # Don't fail the operation if insights sending fails
+    
+    async def _run_with_tracking(self, operation_id: str) -> bool:
+        """Run code suggestions with dashboard operation tracking"""
+        try:
+            # Update operation status to processing
+            update_operation_status("processing")
+            
+            # Execute the main streamlined workflow
+            result = await self._execute_streamlined_workflow()
+            
+            # Update operation status based on result
+            if result:
+                update_operation_status("completed", result_data={
+                    "suggestions_generated": True,
+                    "suggestions_count": len(result.get('code_suggestions', [])) if result else 0
+                })
+                get_logger().info(f"Code suggestions operation {operation_id} completed successfully")
+                return True
+            else:
+                update_operation_status("failed", error_details="Code suggestions generation returned no result")
+                get_logger().warning(f"Code suggestions operation {operation_id} completed with no result")
+                return False
+            
+        except Exception as e:
+            # Update operation status to failed
+            update_operation_status("failed", error_details=str(e))
+            get_logger().error(f"Code suggestions operation {operation_id} failed: {e}")
+            raise
+
+    async def _execute_streamlined_workflow(self):
+        """Execute the streamlined code suggestions workflow"""
+        try:
+            # Step 1: Context and diff
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                set_operation_step("Context")
+            await self._fetch_context_and_diff()
+            
+            # Step 2: Generate suggestions
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                set_operation_step("Generating")
+            result = await self._generate_suggestions_with_data({})
+            
+            # Step 3: Self-reflection (if needed)
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                set_operation_step("Reflecting") 
+            result = await self._self_reflect_on_result(result)
+            
+            # Step 4: Time estimation (with insights capture)
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                set_operation_step("DevTime")
+            dev_hours_saved, dev_time_insights = await self._estimate_dev_time_saved_with_insights(result)
+            
+            # Capture insights for dashboard
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                insights_data = {
+                    'dev_time_analysis': dev_time_insights,
+                    'self_reflection': getattr(self, '_self_reflection_insights', None)
+                }
+                await self._send_insights(insights_data)
+            
+            # Step 5: Publishing
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                set_operation_step("Publishing")
+            await self._publish_result(result, dev_hours_saved)
+            
+            return result
+            
+        except Exception as e:
+            get_logger().error(f"Error in streamlined code suggestions workflow: {e}")
+            raise
+
+    async def _run_without_tracking(self) -> bool:
+        """Run code suggestions without dashboard tracking (fallback)"""
+        return await self._execute_legacy_workflow()
+
+    async def _execute_legacy_workflow(self) -> bool:
         try:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping code suggestions")
-                return None
+                return False
 
             get_logger().info('Generating code suggestions for PR...')
             relevant_configs = {'pr_code_suggestions': dict(get_settings().pr_code_suggestions),
@@ -183,7 +601,7 @@ class PRCodeSuggestions:
             # Handle the case where the PR has no suggestions
             if (data is None or 'code_suggestions' not in data or not data['code_suggestions']):
                 await self.publish_no_suggestions()
-                return
+                return False
 
             # publish the suggestions
             if get_settings().config.publish_output:
@@ -242,7 +660,7 @@ class PRCodeSuggestions:
                 get_logger().info('Code suggestions generated for PR, but not published since publish_output is False.')
                 pr_body = self.generate_summarized_suggestions(data)
                 get_settings().data = {"artifact": pr_body}
-                return
+                return False
         except Exception as e:
             get_logger().error(f"Failed to generate code suggestions for PR, error: {e}",
                                artifact={"traceback": traceback.format_exc()})
@@ -255,6 +673,8 @@ class PRCodeSuggestions:
                         self.git_provider.publish_comment(f"Failed to generate code suggestions for PR")
                     except Exception as e:
                         get_logger().exception(f"Failed to update persistent review, error: {e}")
+
+        return True
 
     async def add_self_review_text(self, pr_body):
         text = get_settings().pr_code_suggestions.code_suggestions_self_review_text
@@ -426,167 +846,265 @@ class PRCodeSuggestions:
             up_to_commit_txt = f" up to commit {match.group(0)[4:-3].strip()}"
         return up_to_commit_txt
 
-    async def _prepare_prediction(self, model: str) -> dict:
-        self.patches_diff = get_pr_diff(self.git_provider,
-                                        self.token_handler,
-                                        model,
-                                        add_line_numbers_to_hunks=True,
-                                        disable_extra_lines=False)
-        self.patches_diff_list = [self.patches_diff]
-        self.patches_diff_no_line_number = self.remove_line_numbers([self.patches_diff])[0]
-
-        if self.patches_diff:
-            get_logger().debug(f"PR diff", artifact=self.patches_diff)
-            self.prediction = await self._get_prediction(model, self.patches_diff, self.patches_diff_no_line_number)
-        else:
-            get_logger().warning(f"Empty PR diff")
-            self.prediction = None
-
-        data = self.prediction
-        return data
-
-    async def _get_prediction(self, model: str, patches_diff: str, patches_diff_no_line_number: str) -> dict:
+    async def _get_prediction(self, model: str, patches_diff: str, patches_diff_no_line_number: str, skip_self_reflection: bool = False) -> dict:
+        get_logger().info(f"Starting AI code suggestions generation", 
+                         artifacts={
+                             'model': model,
+                             'diff_lines': len(patches_diff.split('\n')) if patches_diff else 0,
+                             'files_changed': len(self.git_provider.get_files()) if hasattr(self, 'git_provider') else 0,
+                             'language': self.main_language
+                         })
+        
+        # Prepare prompts
         variables = copy.deepcopy(self.vars)
-        variables["diff"] = patches_diff  # update diff
-        variables["diff_no_line_numbers"] = patches_diff_no_line_number  # update diff
+        variables["diff"] = patches_diff
+        variables["diff_no_line_numbers"] = patches_diff_no_line_number
         variables["context"] = self.context_data
         environment = Environment(undefined=StrictUndefined)
-        system_prompt = environment.from_string(self.pr_code_suggestions_prompt_system).render(variables)
-        user_prompt = environment.from_string(get_settings().pr_code_suggestions_prompt.user).render(variables)
-        
-        # Track AI metrics for dashboard
-        ai_metrics_data = None
-        if DASHBOARD_INTEGRATION_AVAILABLE:
-            try:
-                prompt_tokens = self.token_handler.count_tokens(system_prompt + user_prompt)
-                ai_metrics_data = {
-                    'model_used': model,
-                    'prompt_tokens': prompt_tokens,
-                    'prompt_type': 'code_suggestions'
-                }
-            except Exception as e:
-                get_logger().debug(f"Failed to prepare AI metrics: {e}")
-        
-        # Track AI metrics for dashboard (error resilient)
-        from pr_agent.algo.token_handler import TokenUsageTracker
-        
-        token_tracker = TokenUsageTracker()
         
         try:
-            response, finish_reason, token_usage = await self.ai_handler.chat_completion(
-                model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
-            
-            # Track token usage from successful call
-            token_tracker.add_usage(token_usage, call_failed=False)
-            
-            # Update AI metrics with response data
-            if DASHBOARD_INTEGRATION_AVAILABLE:
-                try:
-                    totals = token_tracker.get_totals()
-                    input_tokens = totals['input_tokens']
-                    output_tokens = totals['output_tokens']
-                    
-                    # Use accurate token counts if available, otherwise estimate
-                    if not token_tracker.has_usage():
-                        get_logger().warning("No accurate token usage available, falling back to estimation")
-                        # Fallback to tiktoken estimation
-                        input_tokens = self.token_handler.count_tokens(system_prompt + user_prompt)
-                        output_tokens = self.token_handler.count_tokens(response)
-                    
-                    # Estimate developer time saved for code suggestions using AI analysis
-                    files_count = len(self.git_provider.get_files()) if hasattr(self, 'git_provider') else 1
-                    try:
-                        dev_hours_saved = await self._estimate_suggestions_dev_hours_saved_ai(
-                            model=model,
-                            input_tokens=input_tokens,
-                            output_tokens=output_tokens,
-                            files_count=files_count,
-                            diff=patches_diff,
-                            suggestions_content=response,
-                            suggestions_count=len(data.get("code_suggestions", []))
-                        )
-                    except Exception as e:
-                        get_logger().debug(f"AI time estimation failed, using fallback: {e}")
-                        dev_hours_saved = self._estimate_suggestions_dev_hours_saved(files_count, input_tokens + output_tokens, model)
-                    
-                    # Update AI metrics
-                    update_operation_ai_metrics(
-                        model_used=model,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        estimated_dev_hours_saved=dev_hours_saved
-                    )
-                    
-                    get_logger().info(f"AI metrics updated - Input: {input_tokens}, Output: {output_tokens}, "
-                                    f"Calls: {totals['call_count']}, Failed: {totals['failed_calls']}")
-                    
-                except Exception as e:
-                    get_logger().debug(f"Failed to update AI metrics: {e}")
-                    
+            system_prompt = environment.from_string(self.pr_code_suggestions_prompt_system).render(variables)
+            user_prompt = environment.from_string(get_settings().pr_code_suggestions_prompt.user).render(variables)
         except Exception as e:
-            # Track failed AI call
-            token_tracker.add_usage(None, call_failed=True)
-            
-            # Track failed AI call if dashboard is available
-            if DASHBOARD_INTEGRATION_AVAILABLE:
-                try:
-                    # Estimate tokens for failed call
-                    input_tokens = self.token_handler.count_tokens(system_prompt + user_prompt)
-                    
-                    update_operation_ai_metrics(
-                        model_used=model,
-                        input_tokens=input_tokens,
-                        output_tokens=0,
-                        estimated_dev_hours_saved=0.0
-                    )
-                except:
-                    pass  # Ignore dashboard errors during error handling
+            get_logger().error(f"Failed to render AI prompts", 
+                             artifacts={'error': str(e), 'variables_keys': list(variables.keys())})
             raise
         
+        # Calculate token estimates
+        prompt_tokens = 0
+        try:
+            prompt_tokens = self.token_handler.count_tokens(system_prompt + user_prompt)
+            get_logger().info(f"AI prompt prepared - {prompt_tokens:,} tokens estimated")
+        except Exception as e:
+            get_logger().warning(f"Could not estimate prompt tokens: {e}")
+            raise
+        
+        # Log full prompts at DEBUG level
+        get_logger().debug(f"AI System Prompt ({len(system_prompt)} chars):", 
+                          artifacts={'system_prompt': system_prompt})
+        get_logger().debug(f"AI User Prompt ({len(user_prompt)} chars):", 
+                          artifacts={'user_prompt': user_prompt})
+        
+        # Track AI metrics for dashboard
+        from pr_agent.algo.token_handler import TokenUsageTracker
+        token_tracker = TokenUsageTracker()
+        
+        # Make AI call
+        get_logger().info(f"Making AI call to {model} for code suggestions...")
+        try:
+            response, finish_reason, token_usage = await self.ai_handler.chat_completion(
+                model=model, 
+                temperature=get_settings().config.temperature, 
+                system=system_prompt, 
+                user=user_prompt
+            )
+            
+            # Track metrics for multi-model support
+            self._track_ai_metrics(model, token_usage)
+            
+            # Log raw AI response at DEBUG level
+            get_logger().debug(f"AI Raw Response ({len(response)} chars):", 
+                              artifacts={
+                                  'response': response,
+                                  'finish_reason': finish_reason,
+                                  'token_usage': token_usage
+                              })
+            
+            # Get accurate token counts
+            input_tokens = token_usage.get('input_tokens', 0) if token_usage else 0
+            totals = token_tracker.get_totals()
+            input_tokens = totals.get('input_tokens', prompt_tokens)
+            output_tokens = totals.get('output_tokens', 0)
+                    
+            if not token_tracker.has_usage():
+                get_logger().warning("[Generating] - ⚠️ No accurate token usage from AI handler, using estimates")
+                try:
+                    output_tokens = self.token_handler.count_tokens(response)
+                except Exception as e:
+                    get_logger().warning(f"[Generating] - ⚠️ Could not estimate output tokens: {e}")
+            
+                get_logger().info(f"[Generating] - AI call completed successfully", 
+                             artifacts={
+                                 'input_tokens': input_tokens,
+                                 'output_tokens': output_tokens,
+                                 'total_tokens': input_tokens + output_tokens,
+                                 'finish_reason': finish_reason,
+                                 'response_length': len(response)
+                             })
+            
+            # Store failed call metrics for later use - DON'T send them yet to avoid double-counting
+            if DASHBOARD_INTEGRATION_AVAILABLE:
+                try:
+                    # Store failed AI metrics for later use
+                    if not hasattr(self, 'stored_suggestion_metrics'):
+                        self.stored_suggestion_metrics = []
+                    
+                    self.stored_suggestion_metrics.append({
+                        'input_tokens': prompt_tokens,
+                        'output_tokens': 0,
+                        'model': model,
+                        'diff': patches_diff,
+                        'response': "",
+                        'totals': {'call_count': 1, 'failed_calls': 1},
+                        'failed': True
+                    })
+                    
+                    get_logger().debug(f"Failed AI call metrics stored for later use")
+                except Exception as metric_error:
+                    get_logger().debug(f"Failed to store AI metrics for failed call: {metric_error}")
+        except Exception as e:
+            get_logger().error(f"❌ AI call failed", 
+                              artifacts={
+                                  'error': str(e),
+                                  'model': model,
+                                  'estimated_input_tokens': prompt_tokens,
+                                  'error_type': type(e).__name__
+                              });
+            raise
+        
+        # Store prompts for potential debugging
         if not get_settings().config.publish_output:
             get_settings().system_prompt = system_prompt
             get_settings().user_prompt = user_prompt
 
-        # load suggestions from the AI response
-        data = self._prepare_pr_code_suggestions(response)
+        # Parse AI response into structured suggestions
+        get_logger().info("[Generating] - Parsing AI response into code suggestions...")
+        try:
+            data = self._prepare_pr_code_suggestions(response)
+            suggestions_count = len(data.get("code_suggestions", []))
+            
+            if suggestions_count == 0:
+                get_logger().warning("[Generating] - No code suggestions extracted from AI response")
+            else:
+                get_logger().info(f"[Generating] - Extracted {suggestions_count} code suggestions from AI response")
+                
+                # Log brief suggestion summaries (first 3 only)
+                for i, suggestion in enumerate(data.get("code_suggestions", [])[:3]):
+                    summary = suggestion.get('one_sentence_summary', 'No summary')[:80]
+                    file_name = suggestion.get('relevant_file', 'Unknown file')
+                    get_logger().info(f"[Generating] - {i+1}. {summary} ({file_name})")
+                
+                if suggestions_count > 3:
+                    get_logger().info(f"[Generating] - ... and {suggestions_count - 3} more suggestions")
+                    
+        except Exception as e:
+            get_logger().error("[Generating] - Failed to parse AI response into suggestions", 
+                              artifacts={'error': str(e), 'error_type': type(e).__name__})
+            raise
 
-        # self-reflect on suggestions (mandatory, since line numbers are generated now here)
-        model_reflect_with_reasoning = get_model('model_reasoning')
-        fallbacks = get_settings().config.fallback_models
-        if model_reflect_with_reasoning == get_settings().config.model and model != get_settings().config.model and fallbacks and model == \
-                fallbacks[0]:
-            # we are using a fallback model (should not happen on regular conditions)
-            get_logger().warning(f"Using the same model for self-reflection as the one used for suggestions")
-            model_reflect_with_reasoning = model
-        response_reflect = await self.self_reflect_on_suggestions(data["code_suggestions"],
-                                                                  patches_diff, model=model_reflect_with_reasoning)
-        if response_reflect:
-            await self.analyze_self_reflection_response(data, response_reflect)
+        # Self-reflection on suggestions (only if not skipped)
+        if not skip_self_reflection:
+            try:
+                get_logger().info("[Reflecting] - Starting self-reflection on generated suggestions...")
+                model_reflect_with_reasoning = get_model('model_reasoning')
+                fallbacks = get_settings().config.fallback_models
+                    
+                if model_reflect_with_reasoning == get_settings().config.model and model != get_settings().config.model and fallbacks and model == fallbacks[0]:
+                    get_logger().warning(f"[Reflecting] - Using same model ({model}) for self-reflection as suggestions generation")
+                    model_reflect_with_reasoning = model
+                else:
+                    get_logger().info(f"[Reflecting] - Using {model_reflect_with_reasoning} for self-reflection")
+                
+                response_reflect = await self.self_reflect_on_suggestions(
+                    data["code_suggestions"],
+                    patches_diff, 
+                    model=model_reflect_with_reasoning
+                )
+                        
+                if response_reflect:
+                    get_logger().info("[Reflecting] - Self-reflection completed, analyzing results...")
+                    await self.analyze_self_reflection_response(data, response_reflect)
+                            
+                    # Count suggestions after self-reflection filtering
+                    final_count = len([s for s in data.get("code_suggestions", []) if s.get("score", 0) > 0])
+                    get_logger().info(f"[Reflecting] - Kept {final_count} suggestions (from {suggestions_count} original)")
+                            
+                else:
+                    get_logger().warning("[Reflecting] - Self-reflection failed, using default scores")
+                    for i, suggestion in enumerate(data["code_suggestions"]):
+                        suggestion["score"] = 7
+                        suggestion["score_why"] = "Self-reflection unavailable"
+                        
+            except Exception as e:
+                get_logger().error("[Reflecting] - Self-reflection process failed", 
+                                  artifacts={'error': str(e), 'error_type': type(e).__name__})
+                # Continue with original suggestions but log the issue
+                for i, suggestion in enumerate(data["code_suggestions"]):
+                    suggestion["score"] = 7
+                    suggestion["score_why"] = "Self-reflection failed"
         else:
-            # get_logger().error(f"Could not self-reflect on suggestions. using default score 7")
+            get_logger().info("[Reflecting] - Skipping self-reflection (will be handled in separate stage)")
+            # Apply default scores when skipping self-reflection
             for i, suggestion in enumerate(data["code_suggestions"]):
-                suggestion["score"] = 7
-                suggestion["score_why"] = ""
+                suggestion["score"] = 7  # Default score for multi-stage processing
+                suggestion["score_why"] = "Default score - reflection pending"
+
+        # Store tokens for later use (dashboard metrics) - DON'T send them yet to avoid double-counting
+        if DASHBOARD_INTEGRATION_AVAILABLE:
+            try:
+                # Store AI metrics for later use, but don't send them yet
+                if not hasattr(self, 'stored_suggestion_metrics'):
+                    self.stored_suggestion_metrics = []
+                
+                self.stored_suggestion_metrics.append({
+                    'input_tokens': input_tokens,
+                    'output_tokens': output_tokens,
+                    'model': model,
+                    'diff': patches_diff,
+                    'response': response,
+                    'totals': totals
+                })
+                
+                get_logger().info("[Generating] - AI metrics stored for later aggregation", 
+                                 artifacts={
+                                     'model': model,
+                                     'input_tokens': input_tokens,
+                                     'output_tokens': output_tokens,
+                                     'stored_count': len(self.stored_suggestion_metrics)
+                                 })
+                
+            except Exception as e:
+                get_logger().warning(f"[Generating] - Failed to store AI metrics: {e}")
+
+        final_suggestions_count = len(data.get("code_suggestions", []))
+        get_logger().info(f"[Generating] - Code suggestions generation completed - {final_suggestions_count} suggestions ready")
 
         return data
 
     async def _estimate_suggestions_dev_hours_saved_ai(self, model: str, input_tokens: int = None, 
                                                      output_tokens: int = None, files_count: int = 0,
                                                      diff: str = None, suggestions_content: str = None,
-                                                     suggestions_count: int = 0) -> float:
+                                                     suggestions_count: int = 0, track_metrics: bool = False) -> float:
         """
         Estimate developer hours saved using AI-powered analysis of the code suggestions
         """
+        
+        get_logger().info("Starting AI-powered time savings estimation", 
+                         artifacts={
+                             'model': model,
+                             'suggestions_count': suggestions_count,
+                             'files_count': files_count,
+                             'input_tokens': input_tokens,
+                             'output_tokens': output_tokens,
+                             'has_diff': bool(diff),
+                             'has_suggestions_content': bool(suggestions_content)
+                         })
+        
+        # Validate required inputs
+        if not diff or not suggestions_content:
+            get_logger().warning("Missing required data for AI time estimation, falling back to heuristic calculation",
+                               artifacts={
+                                   'missing_diff': not diff,
+                                   'missing_suggestions': not suggestions_content
+                               })
+            heuristic_result = self._estimate_suggestions_dev_hours_saved(files_count, input_tokens + output_tokens, model)
+            get_logger().info(f"Heuristic fallback estimation: {heuristic_result} hours")
+            return heuristic_result
+        
+        # Analyze diff complexity
         try:
-            if not diff or not suggestions_content:
-                # Fall back to heuristic if we don't have the necessary data
-                return self._estimate_suggestions_dev_hours_saved(files_count, input_tokens + output_tokens, model)
+            get_logger().info("Analyzing diff complexity for time estimation...")
             
-            from pr_agent.algo.dev_time_estimator import DevTimeEstimator
-            
-            estimator = DevTimeEstimator(self.ai_handler, self.token_handler)
-            
-            # Extract line counts from diff
             lines_added = 0
             lines_deleted = 0
             if diff:
@@ -595,6 +1113,56 @@ class PRCodeSuggestions:
                         lines_added += 1
                     elif line.startswith('-') and not line.startswith('---'):
                         lines_deleted += 1
+            
+            diff_stats = {
+                'lines_added': lines_added,
+                'lines_deleted': lines_deleted,
+                'total_diff_lines': len(diff.split('\n')) if diff else 0,
+                'language': self.main_language
+            }
+            
+            get_logger().info(f"Diff analysis completed: +{lines_added}/-{lines_deleted} lines", 
+                             artifacts=diff_stats)
+            
+            get_logger().debug("Diff content for time estimation:", 
+                              artifacts={'diff_preview': diff[:500] + "..." if len(diff) > 500 else diff})
+            
+        except Exception as e:
+            get_logger().error("❌ Failed to analyze diff complexity", 
+                              artifacts={'error': str(e), 'error_type': type(e).__name__})
+            heuristic_result = self._estimate_suggestions_dev_hours_saved(files_count, input_tokens + output_tokens, model)
+            get_logger().info(f"Fallback to heuristic: {heuristic_result} hours")
+            return heuristic_result
+
+        # Initialize AI time estimator
+        try:
+            get_logger().info("Initializing AI time estimator...")
+            from pr_agent.algo.dev_time_estimator import DevTimeEstimator
+            estimator = DevTimeEstimator(self.ai_handler, self.token_handler, self._track_ai_metrics)
+            
+        except Exception as e:
+            get_logger().error("❌ Failed to initialize DevTimeEstimator", 
+                              artifacts={'error': str(e), 'error_type': type(e).__name__})
+            heuristic_result = self._estimate_suggestions_dev_hours_saved(files_count, input_tokens + output_tokens, model)
+            get_logger().info(f"Fallback to heuristic: {heuristic_result} hours")
+            return heuristic_result
+
+        # Make AI estimation call
+        try:
+            get_logger().info("Making AI call for time savings estimation...", 
+                             artifacts={
+                                 'estimation_inputs': {
+                                     'language': self.main_language,
+                                     'files_changed': files_count,
+                                     'lines_added': lines_added,
+                                     'lines_deleted': lines_deleted,
+                                     'suggestions_count': suggestions_count,
+                                     'model': model
+                                 }
+                             })
+            
+            get_logger().debug("Suggestions content for time estimation:", 
+                              artifacts={'suggestions_preview': suggestions_content[:1000] + "..." if len(suggestions_content) > 1000 else suggestions_content})
             
             estimation_result = await estimator.estimate_suggestions_time_savings(
                 diff=diff,
@@ -607,23 +1175,122 @@ class PRCodeSuggestions:
                 model=model
             )
             
-            if estimation_result and 'final_assessment' in estimation_result:
+            get_logger().debug("[DevTime] - Raw AI estimation result:", 
+                              artifacts={'estimation_result': estimation_result})
+            
+            # Track metrics if requested (for single operation tracking)
+            if track_metrics and DASHBOARD_INTEGRATION_AVAILABLE:
+                try:
+                    # Try to get token usage from the estimator result or estimate
+                    actual_input_tokens = estimation_result.get('token_usage', {}).get('input_tokens', 0)
+                    actual_output_tokens = estimation_result.get('token_usage', {}).get('output_tokens', 0)
+                    
+                    # If no token data in result, try to estimate based on content
+                    if not actual_input_tokens and not actual_output_tokens:
+                        try:
+                            # Estimate tokens based on the content we sent
+                            prompt_content = f"{diff}\n{suggestions_content}"
+                            actual_input_tokens = self.token_handler.count_tokens(prompt_content) if hasattr(self, 'token_handler') else 2000
+                            # Estimate output tokens (typical AI response is smaller)
+                            actual_output_tokens = actual_input_tokens // 4  # Conservative estimate
+                        except Exception as token_error:
+                            get_logger().warning(f"Failed to estimate tokens for time estimation: {token_error}")
+                            actual_input_tokens = 2000  # Default estimate
+                            actual_output_tokens = 500   # Default estimate
+                    
+                    get_logger().info(f"[DevTime] - Tracking AI metrics for dev time estimation", 
+                                     artifacts={
+                                         'model': model,
+                                         'input_tokens': actual_input_tokens,
+                                         'output_tokens': actual_output_tokens,
+                                         'total_tokens': actual_input_tokens + actual_output_tokens
+                                     })
+                    
+                    # Store AI metrics for the time estimation (will be sent with complete metrics later)
+                    if not hasattr(self, 'all_ai_metrics'):
+                        self.all_ai_metrics = []
+                    
+                    self.all_ai_metrics.append({
+                        'input_tokens': actual_input_tokens,
+                        'output_tokens': actual_output_tokens,
+                        'model': model,
+                        'stage': 'dev_time_estimation'
+                    })
+                    
+                except Exception as metric_error:
+                    get_logger().warning(f"Failed to store AI metrics for dev time estimation: {metric_error}")
+            
+        except Exception as e:
+            get_logger().error("❌ AI time estimation call failed", 
+                              artifacts={
+                                  'error': str(e),
+                                  'error_type': type(e).__name__,
+                                  'model': model
+                              })
+            heuristic_result = self._estimate_suggestions_dev_hours_saved(files_count, input_tokens + output_tokens, model)
+            get_logger().info(f"Fallback to heuristic: {heuristic_result} hours")
+            return heuristic_result
+
+        # Process AI estimation result
+        if estimation_result and 'final_assessment' in estimation_result:
+            try:
                 estimated_hours = estimation_result['final_assessment'].get('total_developer_hours_saved', 1.0)
                 confidence = estimation_result['final_assessment'].get('confidence_level', 'medium')
                 
-                get_logger().info(f"AI-powered suggestions time estimation: {estimated_hours} hours (confidence: {confidence})", 
-                                artifacts={'estimation_details': estimation_result})
-                return float(estimated_hours)
-            else:
-                # Fall back to heuristic if AI estimation fails
-                return self._estimate_suggestions_dev_hours_saved(files_count, input_tokens + output_tokens, model)
-            
-        except Exception as e:
-            get_logger().debug(f"AI time estimation failed: {e}")
-            return self._estimate_suggestions_dev_hours_saved(files_count, input_tokens + output_tokens, model)
+                # Validate the estimation result (allow negative values - they represent time wasted)
+                if not isinstance(estimated_hours, (int, float)):
+                    get_logger().warning(f"Invalid AI estimation result: {estimated_hours}, using fallback")
+                    heuristic_result = self._estimate_suggestions_dev_hours_saved(files_count, input_tokens + output_tokens, model)
+                    get_logger().info(f"Fallback to heuristic: {heuristic_result} hours")
+                    return heuristic_result
+                
+                # Cap the result at reasonable bounds (allow negative values for time wasted)
+                capped_hours = max(-16.0, min(16.0, float(estimated_hours)))
+                if capped_hours != estimated_hours:
+                    get_logger().warning(f"AI estimation ({estimated_hours}h) was outside bounds, capped to {capped_hours}h")
+                
+                get_logger().info(f"[DevTime] - AI time estimation completed successfully: {capped_hours} hours", 
+                                 artifacts={
+                                     'estimated_hours': capped_hours,
+                                     'confidence_level': confidence,
+                                     'original_estimate': estimated_hours,
+                                     'was_capped': capped_hours != estimated_hours,
+                                     'estimation_breakdown': estimation_result.get('reasoning', 'No breakdown available')
+                                 })
+                
+                get_logger().debug("[DevTime] - Complete AI estimation details:", 
+                                  artifacts={'full_estimation_result': estimation_result})
+                
+                return capped_hours
+                
+            except Exception as e:
+                get_logger().error("❌ Failed to process AI estimation result", 
+                                  artifacts={
+                                      'error': str(e),
+                                      'error_type': type(e).__name__,
+                                      'raw_result': estimation_result
+                                  })
+                heuristic_result = self._estimate_suggestions_dev_hours_saved(files_count, input_tokens + output_tokens, model)
+                get_logger().info(f"Fallback to heuristic: {heuristic_result} hours")
+                return heuristic_result
+                
+        else:
+            get_logger().warning("⚠️ AI estimation returned invalid or empty result", 
+                               artifacts={'raw_result': estimation_result})
+            heuristic_result = self._estimate_suggestions_dev_hours_saved(files_count, input_tokens + output_tokens, model)
+            get_logger().info(f"Fallback to heuristic: {heuristic_result} hours")
+            return heuristic_result
 
     def _estimate_suggestions_dev_hours_saved(self, files_count: int, total_tokens: int, model: str) -> float:
         """Estimate developer hours saved for code suggestions based on complexity (heuristic fallback)"""
+        
+        get_logger().info("Using heuristic time estimation method", 
+                         artifacts={
+                             'files_count': files_count,
+                             'total_tokens': total_tokens,
+                             'model': model
+                         })
+        
         try:
             # Base time for code suggestions (finding and implementing improvements)
             base_hours = 1.0
@@ -631,95 +1298,254 @@ class PRCodeSuggestions:
             # Scale by file count - more files means more potential improvements
             if files_count > 50:
                 file_multiplier = 4.0
+                file_reasoning = "Very large codebase (50+ files)"
             elif files_count > 20:
                 file_multiplier = 2.5
+                file_reasoning = "Large codebase (20-50 files)"
             elif files_count > 10:
                 file_multiplier = 1.5
+                file_reasoning = "Medium codebase (10-20 files)"
             elif files_count > 5:
                 file_multiplier = 1.2
+                file_reasoning = "Small-medium codebase (5-10 files)"
             else:
                 file_multiplier = 1.0
+                file_reasoning = "Small codebase (≤5 files)"
             
             # Scale by token complexity - more tokens indicate more complex analysis
             if total_tokens > 8000:
                 token_multiplier = 2.0
+                token_reasoning = "Very complex analysis (8000+ tokens)"
             elif total_tokens > 4000:
                 token_multiplier = 1.5
+                token_reasoning = "Complex analysis (4000-8000 tokens)"
             elif total_tokens > 2000:
                 token_multiplier = 1.2
+                token_reasoning = "Moderate analysis (2000-4000 tokens)"
             else:
                 token_multiplier = 1.0
+                token_reasoning = "Simple analysis (≤2000 tokens)"
             
             # Model quality adjustment
             if 'gpt-4' in model.lower() or 'claude-3' in model.lower():
-                model_multiplier = 1.3  # Higher quality suggestions
+                model_multiplier = 1.3
+                model_reasoning = "High-quality model (GPT-4/Claude-3)"
             elif 'gpt-3.5' in model.lower():
                 model_multiplier = 1.0
+                model_reasoning = "Standard model (GPT-3.5)"
             else:
-                model_multiplier = 0.8  # Conservative for other models
+                model_multiplier = 0.8
+                model_reasoning = "Conservative estimate (other model)"
             
             estimated_hours = base_hours * file_multiplier * token_multiplier * model_multiplier
             
-            # Cap at reasonable bounds (15 minutes to 8 hours)
-            return max(0.25, min(8.0, round(estimated_hours, 2)))
+            # Cap at reasonable bounds (allow negative values for time wasted)
+            final_hours = max(-8.0, min(8.0, round(estimated_hours, 2)))
+            was_capped = final_hours != round(estimated_hours, 2)
+            
+            get_logger().info(f"Heuristic calculation completed: {final_hours} hours", 
+                             artifacts={
+                                 'calculation_breakdown': {
+                                     'base_hours': base_hours,
+                                     'file_multiplier': file_multiplier,
+                                     'file_reasoning': file_reasoning,
+                                     'token_multiplier': token_multiplier,
+                                     'token_reasoning': token_reasoning,
+                                     'model_multiplier': model_multiplier,
+                                     'model_reasoning': model_reasoning,
+                                     'raw_calculation': base_hours * file_multiplier * token_multiplier * model_multiplier,
+                                     'final_result': final_hours,
+                                     'was_capped': was_capped
+                                 }
+                             })
+            
+            if was_capped:
+                get_logger().warning(f"⚠️ Heuristic estimate was capped (bounds: 0.1-8.0 hours)")
+            
+            return final_hours
             
         except Exception as e:
-            get_logger().debug(f"Error estimating dev hours for suggestions: {e}")
+            get_logger().error("❌ Error in heuristic time estimation", 
+                              artifacts={'error': str(e), 'error_type': type(e).__name__})
+            get_logger().warning("⚠️ Using default fallback: 1.0 hours")
             return 1.0  # Default fallback
 
     async def analyze_self_reflection_response(self, data, response_reflect):
-        response_reflect_yaml = load_yaml(response_reflect)
-        code_suggestions_feedback = response_reflect_yaml.get("code_suggestions", [])
-        if code_suggestions_feedback and len(code_suggestions_feedback) == len(data["code_suggestions"]):
-            for i, suggestion in enumerate(data["code_suggestions"]):
-                try:
-                    suggestion["score"] = code_suggestions_feedback[i]["suggestion_score"]
-                    suggestion["score_why"] = code_suggestions_feedback[i]["why"]
+        get_logger().info("[Reflecting] - Analyzing self-reflection response and applying scores to suggestions")
+        
+        # Parse the YAML response from self-reflection
+        try:
+            get_logger().debug("[Reflecting] - Parsing reflection response as YAML", 
+                              artifacts={'response_preview': response_reflect[:200] + "..." if len(response_reflect) > 200 else response_reflect})
+            
+            response_reflect_yaml = load_yaml(response_reflect)
+            code_suggestions_feedback = response_reflect_yaml.get("code_suggestions", [])
+            
+            get_logger().info(f"[Reflecting] - Parsed reflection feedback for {len(code_suggestions_feedback)} suggestions")
+            
+            if not code_suggestions_feedback:
+                get_logger().warning("[Reflecting] - No feedback found in self-reflection response")
+                self._apply_default_scores(data["code_suggestions"])
+                return
+                
+        except Exception as e:
+            get_logger().error("[Reflecting] - Failed to parse self-reflection YAML response", 
+                              artifacts={'error': str(e), 'error_type': type(e).__name__})
+            self._apply_default_scores(data["code_suggestions"])
+            return
 
-                    if 'relevant_lines_start' not in suggestion:
-                        relevant_lines_start = code_suggestions_feedback[i].get('relevant_lines_start', -1)
-                        relevant_lines_end = code_suggestions_feedback[i].get('relevant_lines_end', -1)
-                        suggestion['relevant_lines_start'] = relevant_lines_start
-                        suggestion['relevant_lines_end'] = relevant_lines_end
-                        if relevant_lines_start < 0 or relevant_lines_end < 0:
-                            suggestion["score"] = 0
+        # Validate response structure
+        if len(code_suggestions_feedback) != len(data["code_suggestions"]):
+            get_logger().warning(f"[Reflecting] - Feedback count mismatch: {len(code_suggestions_feedback)} feedback vs {len(data['code_suggestions'])} suggestions")
+            self._apply_default_scores(data["code_suggestions"])
+            return
 
-                    try:
-                        if get_settings().config.publish_output:
-                            if not suggestion["score"]:
-                                score = -1
-                            else:
-                                score = int(suggestion["score"])
-                            label = suggestion["label"].lower().strip()
-                            label = label.replace('<br>', ' ')
-                            suggestion_statistics_dict = {'score': score,
-                                                          'label': label}
-                            get_logger().info(f"PR-Agent suggestions statistics",
-                                              statistics=suggestion_statistics_dict, analytics=True)
-                    except Exception as e:
-                        get_logger().error(f"Failed to log suggestion statistics, error: {e}")
-                        pass
+        # Apply feedback to each suggestion
+        scoring_stats = {
+            'processed': 0,
+            'scored_successfully': 0,
+            'line_validation_failures': 0,
+            'processing_errors': 0,
+            'duplicate_code_issues': 0,
+            'score_distribution': {}
+        }
+        
+        get_logger().info("[Reflecting] - Applying reflection feedback to suggestions...")
+        
+        for i, suggestion in enumerate(data["code_suggestions"]):
+            suggestion_file = suggestion.get('relevant_file', f'suggestion_{i+1}')
+            
+            try:
+                scoring_stats['processed'] += 1
+                feedback = code_suggestions_feedback[i]
+                
+                # Extract score and reasoning
+                original_score = feedback.get("suggestion_score", 7)
+                score_reasoning = feedback.get("why", "No reasoning provided")
+                
+                suggestion["score"] = original_score
+                suggestion["score_why"] = score_reasoning
 
-                except Exception as e:  #
-                    get_logger().error(f"Error processing suggestion score {i}",
-                                       artifact={"suggestion": suggestion,
-                                                 "code_suggestions_feedback": code_suggestions_feedback[i]})
-                    suggestion["score"] = 7
-                    suggestion["score_why"] = ""
+                # Handle missing line number information
+                if 'relevant_lines_start' not in suggestion:
+                    relevant_lines_start = feedback.get('relevant_lines_start', -1)
+                    relevant_lines_end = feedback.get('relevant_lines_end', -1)
+                    suggestion['relevant_lines_start'] = relevant_lines_start
+                    suggestion['relevant_lines_end'] = relevant_lines_end
+                    
+                    if relevant_lines_start < 0 or relevant_lines_end < 0:
+                        suggestion["score"] = 0
+                        scoring_stats['line_validation_failures'] += 1
 
+                # Validate the suggestion for duplicated code
                 suggestion = self.validate_one_liner_suggestion_not_repeating_code(suggestion)
 
-                # if the before and after code is the same, clear one of them
+                # Check for duplicate existing/improved code
                 try:
-                    if suggestion['existing_code'] == suggestion['improved_code']:
-                        get_logger().debug(
-                            f"edited improved suggestion {i + 1}, because equal to existing code: {suggestion['existing_code']}")
+                    if suggestion.get('existing_code') == suggestion.get('improved_code'):
+                        scoring_stats['duplicate_code_issues'] += 1
+                        
                         if get_settings().pr_code_suggestions.commitable_code_suggestions:
-                            suggestion['improved_code'] = ""  # we need 'existing_code' to locate the code in the PR
+                            suggestion['improved_code'] = ""  # Keep existing_code for location
                         else:
                             suggestion['existing_code'] = ""
+                            
                 except Exception as e:
-                    get_logger().error(f"Error processing suggestion {i + 1}, error: {e}")
+                    get_logger().warning(f"[Reflecting] - Error checking duplicate code for suggestion {i+1}: {e}")
+
+                # Log analytics statistics if enabled
+                try:
+                    if get_settings().config.publish_output:
+                        if not suggestion["score"]:
+                            analytics_score = -1
+                        else:
+                            analytics_score = int(suggestion["score"])
+                        
+                        label = suggestion.get("label", "").lower().strip().replace('<br>', ' ')
+                        
+                        suggestion_statistics_dict = {
+                            'score': analytics_score,
+                            'label': label,
+                            'file': suggestion_file
+                        }
+                        
+                        pass
+                        
+                except Exception as e:
+                    get_logger().warning(f"[Reflecting] - Failed to log analytics for suggestion {i+1}: {e}")
+
+                # Track score distribution
+                final_score = suggestion.get("score", 0)
+                score_key = str(final_score)
+                scoring_stats['score_distribution'][score_key] = scoring_stats['score_distribution'].get(score_key, 0) + 1
+                scoring_stats['scored_successfully'] += 1
+
+            except Exception as e:
+                scoring_stats['processing_errors'] += 1
+                
+                # Apply default fallback scoring
+                suggestion["score"] = 7
+                suggestion["score_why"] = f"Processing error: {str(e)}"
+                scoring_stats['score_distribution']['7'] = scoring_stats['score_distribution'].get('7', 0) + 1
+
+        # Log overall scoring statistics
+        high_scores = sum(count for score, count in scoring_stats['score_distribution'].items() if int(score) >= 8)
+        medium_scores = sum(count for score, count in scoring_stats['score_distribution'].items() if 5 <= int(score) < 8)
+        low_scores = sum(count for score, count in scoring_stats['score_distribution'].items() if int(score) < 5)
+        
+        get_logger().info("[Reflecting] - Self-reflection analysis completed", 
+                         artifacts={
+                             'total_processed': scoring_stats['processed'],
+                             'successfully_scored': scoring_stats['scored_successfully'],
+                             'issues_found': {
+                                 'processing_errors': scoring_stats['processing_errors'],
+                                 'line_validation_failures': scoring_stats['line_validation_failures'],
+                                 'duplicate_code_issues': scoring_stats['duplicate_code_issues']
+                             },
+                             'quality_summary': {
+                                 'high_quality': high_scores,
+                                 'medium_quality': medium_scores,
+                                 'low_quality': low_scores
+                             },
+                             'score_distribution': scoring_stats['score_distribution']
+                         })
+        
+        # Capture self-reflection insights for dashboard
+        self._self_reflection_insights = {
+            'analysis_statistics': scoring_stats,
+            'quality_breakdown': {
+                'high_quality_suggestions': high_scores,
+                'medium_quality_suggestions': medium_scores,  
+                'low_quality_suggestions': low_scores,
+                'total_suggestions': scoring_stats['processed']
+            },
+            'score_distribution': scoring_stats['score_distribution'],
+            'processing_summary': {
+                'successfully_analyzed': scoring_stats['scored_successfully'],
+                'processing_errors': scoring_stats['processing_errors'],
+                'line_validation_failures': scoring_stats['line_validation_failures'],
+                'duplicate_code_issues': scoring_stats['duplicate_code_issues']
+            },
+            'individual_suggestions': [
+                {
+                    'suggestion_summary': suggestion.get('one_sentence_summary', ''),
+                    'file': suggestion.get('relevant_file', ''),
+                    'score': suggestion.get('score', 0),
+                    'reasoning': suggestion.get('score_why', '')
+                }
+                for suggestion in data.get("code_suggestions", [])
+            ]
+        }
+
+    def _apply_default_scores(self, suggestions):
+        """Apply default scores when reflection analysis fails"""
+        get_logger().warning("[Reflecting] - Applying default scores to all suggestions (score=7)")
+        
+        for i, suggestion in enumerate(suggestions):
+            suggestion["score"] = 7
+            suggestion["score_why"] = "Default score - reflection analysis failed"
+            
+        get_logger().info(f"[Reflecting] - Applied default scores to {len(suggestions)} suggestions")
 
     @staticmethod
     def _truncate_if_needed(suggestion):
@@ -734,258 +1560,791 @@ class PRCodeSuggestions:
         return suggestion
 
     def _prepare_pr_code_suggestions(self, predictions: str) -> Dict:
-        data = load_yaml(predictions.strip(),
-                         keys_fix_yaml=["relevant_file", "suggestion_content", "existing_code", "improved_code"],
-                         first_key="code_suggestions", last_key="label")
-        if isinstance(data, list):
-            data = {'code_suggestions': data}
+        get_logger().info("[Generating] - Processing and validating AI predictions into structured suggestions")
+        
+        # Parse YAML predictions
+        try:
+            get_logger().debug("[Generating] - Parsing AI response as YAML", 
+                              artifacts={'response_preview': predictions[:200] + "..." if len(predictions) > 200 else predictions})
+            
+            data = load_yaml(predictions.strip(),
+                             keys_fix_yaml=["relevant_file", "suggestion_content", "existing_code", "improved_code"],
+                             first_key="code_suggestions", last_key="label")
+            
+            if isinstance(data, list):
+                data = {'code_suggestions': data}
+                get_logger().debug("[Generating] - Converted list format to dictionary format")
+            
+            raw_suggestions_count = len(data.get('code_suggestions', []))
+            get_logger().info(f"[Generating] - Successfully parsed {raw_suggestions_count} raw suggestions from AI")
+            
+        except Exception as e:
+            get_logger().error("[Generating] - Failed to parse AI predictions YAML", 
+                              artifacts={'error': str(e), 'error_type': type(e).__name__})
+            return {'code_suggestions': []}
 
-        # remove or edit invalid suggestions
+        # Validation and filtering statistics
+        validation_stats = {
+            'raw_suggestions': len(data.get('code_suggestions', [])),
+            'missing_required_keys': 0,
+            'duplicate_summaries': 0,
+            'const_let_filtered': 0,
+            'missing_code_blocks': 0,
+            'truncated_suggestions': 0,
+            'processing_errors': 0,
+            'final_valid_suggestions': 0
+        }
+        
+        # Track required keys and filtering
+        required_keys = ['one_sentence_summary', 'label', 'relevant_file']
         suggestion_list = []
         one_sentence_summary_list = []
-        for i, suggestion in enumerate(data['code_suggestions']):
+        focus_on_problems = get_settings().get("pr_code_suggestions.focus_only_on_problems", False)
+        
+        get_logger().info(f"[Generating] - Starting suggestion validation (focus_on_problems: {focus_on_problems})")
+
+        for i, suggestion in enumerate(data.get('code_suggestions', [])):
+            suggestion_file = suggestion.get('relevant_file', f'suggestion_{i+1}')
+            
             try:
-                needed_keys = ['one_sentence_summary', 'label', 'relevant_file']
-                is_valid_keys = True
-                for key in needed_keys:
-                    if key not in suggestion:
-                        is_valid_keys = False
-                        get_logger().debug(
-                            f"Skipping suggestion {i + 1}, because it does not contain '{key}':\n'{suggestion}")
-                        break
-                if not is_valid_keys:
+                # Validate required keys
+                missing_keys = [key for key in required_keys if key not in suggestion]
+                if missing_keys:
+                    validation_stats['missing_required_keys'] += 1
                     continue
 
-                if get_settings().get("pr_code_suggestions.focus_only_on_problems", False):
+                # Apply focus-on-problems filtering
+                if focus_on_problems:
                     CRITICAL_LABEL = 'critical'
-                    if CRITICAL_LABEL in suggestion['label'].lower(): # we want the published labels to be less declarative
+                    original_label = suggestion.get('label', '')
+                    if CRITICAL_LABEL in original_label.lower():
                         suggestion['label'] = 'possible issue'
 
-                if suggestion['one_sentence_summary'] in one_sentence_summary_list:
-                    get_logger().debug(f"Skipping suggestion {i + 1}, because it is a duplicate: {suggestion}")
+                # Check for duplicate summaries
+                summary = suggestion.get('one_sentence_summary', '')
+                if summary in one_sentence_summary_list:
+                    validation_stats['duplicate_summaries'] += 1
                     continue
 
-                if 'const' in suggestion['suggestion_content'] and 'instead' in suggestion[
-                    'suggestion_content'] and 'let' in suggestion['suggestion_content']:
-                    get_logger().debug(
-                        f"Skipping suggestion {i + 1}, because it uses 'const instead let': {suggestion}")
+                # Filter out const/let suggestions (specific business logic)
+                suggestion_content = suggestion.get('suggestion_content', '')
+                if ('const' in suggestion_content and 'instead' in suggestion_content and 'let' in suggestion_content):
+                    validation_stats['const_let_filtered'] += 1
                     continue
 
-                if ('existing_code' in suggestion) and ('improved_code' in suggestion):
-                    suggestion = self._truncate_if_needed(suggestion)
-                    one_sentence_summary_list.append(suggestion['one_sentence_summary'])
-                    suggestion_list.append(suggestion)
-                else:
-                    get_logger().info(
-                        f"Skipping suggestion {i + 1}, because it does not contain 'existing_code' or 'improved_code': {suggestion}")
+                # Validate code blocks exist
+                has_existing_code = 'existing_code' in suggestion and suggestion['existing_code']
+                has_improved_code = 'improved_code' in suggestion and suggestion['improved_code']
+                
+                if not (has_existing_code and has_improved_code):
+                    validation_stats['missing_code_blocks'] += 1
+                    continue
+
+                # Apply truncation if needed
+                original_length = len(suggestion.get('improved_code', ''))
+                suggestion = self._truncate_if_needed(suggestion)
+                new_length = len(suggestion.get('improved_code', ''))
+                
+                if new_length != original_length:
+                    validation_stats['truncated_suggestions'] += 1
+
+                # Suggestion is valid - add to final list
+                one_sentence_summary_list.append(summary)
+                suggestion_list.append(suggestion)
+                validation_stats['final_valid_suggestions'] += 1
+
             except Exception as e:
-                get_logger().error(f"Error processing suggestion {i + 1}: {suggestion}, error: {e}")
-        data['code_suggestions'] = suggestion_list
+                validation_stats['processing_errors'] += 1
 
+        # Update data with validated suggestions
+        data['code_suggestions'] = suggestion_list
+        
+        # Calculate filtering efficiency
+        kept_percentage = (validation_stats['final_valid_suggestions'] / max(1, validation_stats['raw_suggestions'])) * 100
+        
+        get_logger().info("[Generating] - Suggestion validation completed", 
+                         artifacts={
+                             'validation_summary': validation_stats,
+                             'kept_percentage': round(kept_percentage, 1),
+                             'final_count': validation_stats['final_valid_suggestions']
+                         })
+        
+        if validation_stats['processing_errors'] > 0:
+            get_logger().warning(f"[Generating] - {validation_stats['processing_errors']} suggestions had processing errors")
+        
         return data
 
     async def push_inline_code_suggestions(self, data):
-        code_suggestions = []
+        # Starting to format and publish code suggestions to PR
+        pass
 
-        if not data['code_suggestions']:
-            get_logger().info('No suggestions found to improve this PR.')
-            if self.progress_response:
-                return self.git_provider.edit_comment(self.progress_response,
-                                                      body='No suggestions found to improve this PR.')
-            else:
-                return self.git_provider.publish_comment('No suggestions found to improve this PR.')
-
-        for d in data['code_suggestions']:
+        # Handle empty suggestions case
+        if not data.get('code_suggestions'):
+            get_logger().warning("⚠️ No suggestions available to publish")
+            
+            no_suggestions_message = 'No suggestions found to improve this PR.'
+            
             try:
-                if get_settings().config.verbosity_level >= 2:
-                    get_logger().info(f"suggestion: {d}")
-                relevant_file = d['relevant_file'].strip()
-                relevant_lines_start = int(d['relevant_lines_start'])  # absolute position
-                relevant_lines_end = int(d['relevant_lines_end'])
-                content = d['suggestion_content'].rstrip()
-                new_code_snippet = d['improved_code'].rstrip()
-                label = d['label'].strip()
+                if self.progress_response:
+                    get_logger().info("Updating existing progress comment with 'no suggestions' message")
+                    result = self.git_provider.edit_comment(self.progress_response, body=no_suggestions_message)
+                    get_logger().info("Progress comment updated successfully")
+                    return result
+                else:
+                    get_logger().info("Publishing new comment with 'no suggestions' message")
+                    result = self.git_provider.publish_comment(no_suggestions_message)
+                    get_logger().info("No suggestions comment published successfully")
+                    return result
+            except Exception as e:
+                get_logger().error("❌ Failed to publish 'no suggestions' message", 
+                                  artifacts={
+                                      'error': str(e),
+                                      'error_type': type(e).__name__,
+                                      'has_progress_response': bool(self.progress_response)
+                                  })
+                return None
 
+        # Process and format suggestions for publishing
+        code_suggestions = []
+        formatting_stats = {
+            'total_suggestions': len(data['code_suggestions']),
+            'successfully_formatted': 0,
+            'formatting_errors': 0,
+            'dedented_code_snippets': 0,
+            'scored_suggestions': 0,
+            'unscored_suggestions': 0
+        }
+        
+        # Formatting suggestions for GitHub publication
+        for i, suggestion in enumerate(data['code_suggestions']):
+            suggestion_file = suggestion.get('relevant_file', f'suggestion_{i+1}')
+            
+            try:
+                # Processing suggestion for publication
+                pass
+
+                # Extract and validate suggestion fields
+                relevant_file = suggestion['relevant_file'].strip()
+                relevant_lines_start = int(suggestion['relevant_lines_start'])
+                relevant_lines_end = int(suggestion['relevant_lines_end'])
+                content = suggestion['suggestion_content'].rstrip()
+                new_code_snippet = suggestion['improved_code'].rstrip()
+                label = suggestion['label'].strip()
+                score = suggestion.get('score')
+
+                # Log suggestion details at high verbosity
+                if get_settings().config.verbosity_level >= 2:
+                    get_logger().info(f"Detailed suggestion {i+1} data:", 
+                                     artifacts={
+                                         'full_suggestion': suggestion,
+                                         'file': relevant_file,
+                                         'lines': f"{relevant_lines_start}-{relevant_lines_end}",
+                                         'content_preview': content[:100],
+                                         'code_length': len(new_code_snippet)
+                                     })
+
+                # Apply code deindentation if needed
+                original_code_snippet = new_code_snippet
                 if new_code_snippet:
                     new_code_snippet = self.dedent_code(relevant_file, relevant_lines_start, new_code_snippet)
 
-                if d.get('score'):
-                    body = f"**Suggestion:** {content} [{label}, importance: {d.get('score')}]\n```suggestion\n" + new_code_snippet + "\n```"
+                    if new_code_snippet != original_code_snippet:
+                        formatting_stats['dedented_code_snippets'] += 1
+                        # Indentation adjustment completed (verbose logging removed)
+
+                # Format suggestion body for GitHub
+                if score:
+                    body = f"**Suggestion:** {content} [{label}, importance: {score}]\n```suggestion\n{new_code_snippet}\n```"
+                    formatting_stats['scored_suggestions'] += 1
                 else:
-                    body = f"**Suggestion:** {content} [{label}]\n```suggestion\n" + new_code_snippet + "\n```"
-                code_suggestions.append({'body': body, 'relevant_file': relevant_file,
+                    body = f"**Suggestion:** {content} [{label}]\n```suggestion\n{new_code_snippet}\n```"
+                    formatting_stats['unscored_suggestions'] += 1
+
+                # Create formatted suggestion for publishing
+                formatted_suggestion = {
+                    'body': body,
+                    'relevant_file': relevant_file,
                                          'relevant_lines_start': relevant_lines_start,
                                          'relevant_lines_end': relevant_lines_end,
-                                         'original_suggestion': d})
-            except Exception:
-                get_logger().info(f"Could not parse suggestion: {d}")
+                    'original_suggestion': suggestion
+                }
+                
+                code_suggestions.append(formatted_suggestion)
+                formatting_stats['successfully_formatted'] += 1
 
-        is_successful = self.git_provider.publish_code_suggestions(code_suggestions)
-        if not is_successful:
-            get_logger().info("Failed to publish code suggestions, trying to publish each suggestion separately")
-            for code_suggestion in code_suggestions:
-                self.git_provider.publish_code_suggestions([code_suggestion])
+            except Exception as e:
+                formatting_stats['formatting_errors'] += 1
+                get_logger().error(f"❌ Error formatting suggestion {i+1}", 
+                                  artifacts={
+                                      'error': str(e),
+                                      'error_type': type(e).__name__,
+                                      'suggestion': suggestion,
+                                      'file': suggestion_file
+                                  })
+
+        if not code_suggestions:
+            get_logger().error("❌ No suggestions were successfully formatted for publication")
+            return None
+        
+        try:
+            is_successful = self.git_provider.publish_code_suggestions(code_suggestions)
+            
+            if is_successful:
+                return is_successful
+                
+        except Exception as e:
+            get_logger().error("❌ Error during batch publishing", 
+                              artifacts={
+                                  'error': str(e),
+                                  'error_type': type(e).__name__,
+                                  'suggestions_count': len(code_suggestions)
+                              })
+
+        # Fallback: Publish suggestions individually
+        individual_publish_stats = {
+            'attempted': len(code_suggestions),
+            'successful': 0,
+            'failed': 0
+        }
+        
+        for i, code_suggestion in enumerate(code_suggestions):
+            try:
+                individual_result = self.git_provider.publish_code_suggestions([code_suggestion])
+                
+                if individual_result:
+                    individual_publish_stats['successful'] += 1
+                else:
+                    individual_publish_stats['failed'] += 1
+                    
+            except Exception as e:
+                individual_publish_stats['failed'] += 1
+                get_logger().error(f"❌ Error publishing individual suggestion {i+1}", 
+                                  artifacts={
+                                      'error': str(e),
+                                      'error_type': type(e).__name__,
+                                      'suggestion_file': code_suggestion.get('relevant_file', 'unknown')
+                                  })
+
+        if individual_publish_stats['successful'] == 0:
+            get_logger().error("❌ Failed to publish any suggestions to the PR")
+            
+        return individual_publish_stats['successful'] > 0
 
     def dedent_code(self, relevant_file, relevant_lines_start, new_code_snippet):
-        try:  # dedent code snippet
+        # Handle empty code snippet
+        if not new_code_snippet or not new_code_snippet.strip():
+            return new_code_snippet
+            
+        try:
+            # Get diff files from git provider
             self.diff_files = self.git_provider.diff_files if self.git_provider.diff_files \
                 else self.git_provider.get_diff_files()
+            
             original_initial_line = None
-            for file in self.diff_files:
+            target_file_found = False
+            
+            # Find the target file in diff files
+            for file_idx, file in enumerate(self.diff_files):
                 if file.filename.strip() == relevant_file:
-                    if file.head_file:
-                        file_lines = file.head_file.splitlines()
-                        if relevant_lines_start > len(file_lines):
-                            get_logger().warning(
-                                "Could not dedent code snippet, because relevant_lines_start is out of range",
-                                artifact={'filename': file.filename,
-                                          'file_content': file.head_file,
-                                          'relevant_lines_start': relevant_lines_start,
-                                          'new_code_snippet': new_code_snippet})
-                            return new_code_snippet
-                        else:
-                            original_initial_line = file_lines[relevant_lines_start - 1]
-                    else:
-                        get_logger().warning("Could not dedent code snippet, because head_file is missing",
-                                             artifact={'filename': file.filename,
-                                                       'relevant_lines_start': relevant_lines_start,
-                                                       'new_code_snippet': new_code_snippet})
+                    target_file_found = True
+                    
+                    # Check if head_file exists
+                    if not file.head_file:
+                        get_logger().warning(f"⚠️ Target file has no head_file content, cannot adjust indentation: {file.filename}")
                         return new_code_snippet
+                    
+                    # Split file into lines and validate line number
+                    file_lines = file.head_file.splitlines()
+                    total_lines = len(file_lines)
+                    
+                    if relevant_lines_start > total_lines:
+                        get_logger().warning(f"⚠️ Target line number {relevant_lines_start} exceeds file length {total_lines}, cannot adjust indentation")
+                        return new_code_snippet
+                    
+                    # Get the original line for indentation reference (1-based to 0-based)
+                    original_initial_line = file_lines[relevant_lines_start - 1]
                     break
-            if original_initial_line:
-                suggested_initial_line = new_code_snippet.splitlines()[0]
+            
+            # Handle case where target file wasn't found
+            if not target_file_found:
+                get_logger().warning(f"⚠️ Target file not found in diff files: {relevant_file}")
+                return new_code_snippet
+            
+            # Process indentation if we found the original line
+            if original_initial_line is not None:
+                # Get the first line of the suggested code
+                suggested_lines = new_code_snippet.splitlines()
+                if not suggested_lines:
+                    return new_code_snippet
+                    
+                suggested_initial_line = suggested_lines[0]
+                
+                # Calculate indentation spaces
                 original_initial_spaces = len(original_initial_line) - len(original_initial_line.lstrip())
                 suggested_initial_spaces = len(suggested_initial_line) - len(suggested_initial_line.lstrip())
                 delta_spaces = original_initial_spaces - suggested_initial_spaces
+                
+                # Apply indentation adjustment if needed
                 if delta_spaces > 0:
-                    new_code_snippet = textwrap.indent(new_code_snippet, delta_spaces * " ").rstrip('\n')
+                    indent_str = delta_spaces * " "
+                    new_code_snippet = textwrap.indent(new_code_snippet, indent_str).rstrip('\n')
+                # No logging for successful indentation adjustments (too verbose)
+            else:
+                get_logger().warning("⚠️ Could not determine original line indentation, returning code unchanged")
+                
         except Exception as e:
-            get_logger().error(f"Error when dedenting code snippet for file {relevant_file}, error: {e}")
+            get_logger().error(f"❌ Error during code indentation adjustment for {relevant_file}:{relevant_lines_start}: {e}")
 
         return new_code_snippet
 
     def validate_one_liner_suggestion_not_repeating_code(self, suggestion):
+        
         try:
+            # Extract and validate suggestion components
             existing_code = suggestion.get('existing_code', '').strip()
+            new_code = suggestion.get('improved_code', '').strip()
+            relevant_file = suggestion.get('relevant_file', '').strip()
+            
+            # Handle ellipsis case (partial code snippets)
             if '...' in existing_code:
                 return suggestion
-            new_code = suggestion.get('improved_code', '').strip()
+            
+            # Validate required components
+            if not existing_code or not new_code or not relevant_file:
+                return suggestion
 
-            relevant_file = suggestion.get('relevant_file', '').strip()
+            # Get diff files for validation
             diff_files = self.git_provider.get_diff_files()
-            for file in diff_files:
+            target_file_found = False
+            
+            # Find target file in diff files
+            for file_idx, file in enumerate(diff_files):
                 if file.filename.strip() == relevant_file:
-                    # protections
+                    target_file_found = True
+                    
+                    # Validate file content availability
                     if not file.head_file:
-                        get_logger().info(f"head_file is empty")
                         return suggestion
+                    
                     head_file = file.head_file
-                    base_file = file.base_file
-                    if existing_code in base_file and existing_code not in head_file and new_code in head_file:
+                    base_file = file.base_file if file.base_file else ""
+                    
+                    # Perform duplication analysis
+                    existing_in_base = existing_code in base_file if base_file else False
+                    existing_in_head = existing_code in head_file
+                    new_in_head = new_code in head_file
+                    
+                    # Apply validation logic: reject if suggesting code that was removed and re-added
+                    if existing_in_base and not existing_in_head and new_in_head:
+                        original_score = suggestion.get("score", "unknown")
                         suggestion["score"] = 0
-                        get_logger().warning(
-                            f"existing_code is in the base file but not in the head file, setting score to 0",
-                            artifact={"suggestion": suggestion})
+                        
+                        pass
+                    
+                    break
+            
+            # Handle case where target file wasn't found
+            if not target_file_found:
+                return suggestion
+                
         except Exception as e:
-            get_logger().exception(f"Error validating one-liner suggestion", artifact={"error": e})
+            pass
 
         return suggestion
 
     def remove_line_numbers(self, patches_diff_list: List[str]) -> List[str]:
-        # create a copy of the patches_diff_list, without line numbers for '__new hunk__' sections
+        get_logger().info("Starting line number removal from patches", 
+                         artifacts={
+                             'total_patches': len(patches_diff_list),
+                             'input_patches_total_length': sum(len(patch) for patch in patches_diff_list)
+                         })
+        
+        # Handle empty input
+        if not patches_diff_list:
+            get_logger().warning("⚠️ No patches provided for line number removal")
+            return []
+        
         try:
+            processing_stats = {
+                'total_patches': len(patches_diff_list),
+                'lines_processed': 0,
+                'lines_cleared': 0,
+                'numeric_lines_removed': 0,
+                'digit_prefixed_lines_processed': 0,
+                'processing_errors': 0
+            }
+            
             self.patches_diff_list_no_line_numbers = []
-            for patches_diff in self.patches_diff_list:
-                patches_diff_lines = patches_diff.splitlines()
-                for i, line in enumerate(patches_diff_lines):
-                    if line.strip():
+            
+            for patch_idx, patches_diff in enumerate(patches_diff_list):
+                get_logger().debug(f"Processing patch {patch_idx + 1}/{len(patches_diff_list)}", 
+                                  artifacts={
+                                      'patch_index': patch_idx,
+                                      'patch_length': len(patches_diff),
+                                      'patch_preview': patches_diff[:200] + "..." if len(patches_diff) > 200 else patches_diff
+                                  })
+                
+                try:
+                    patches_diff_lines = patches_diff.splitlines()
+                    original_line_count = len(patches_diff_lines)
+                    lines_modified_in_patch = 0
+                    
+                    for i, line in enumerate(patches_diff_lines):
+                        processing_stats['lines_processed'] += 1
+                        
+                        # Skip empty lines
+                        if not line.strip():
+                            continue
+                        
+                        # Handle purely numeric lines
                         if line.isnumeric():
                             patches_diff_lines[i] = ''
-                        elif line[0].isdigit():
-                            # find the first letter in the line that starts with a valid letter
+                            processing_stats['lines_cleared'] += 1
+                            processing_stats['numeric_lines_removed'] += 1
+                            lines_modified_in_patch += 1
+                            
+                            get_logger().debug(f"🔢 Removed numeric line: '{line}' at position {i}")
+                            
+                        # Handle lines starting with digits
+                        elif line and line[0].isdigit():
+                            original_line = line
+                            processing_stats['digit_prefixed_lines_processed'] += 1
+                            
+                            # Find the first non-digit character
                             for j, char in enumerate(line):
                                 if not char.isdigit():
-                                    patches_diff_lines[i] = line[j + 1:]
+                                    # Extract content after the first non-digit character
+                                    new_line_content = line[j + 1:] if j + 1 < len(line) else ''
+                                    patches_diff_lines[i] = new_line_content
+                                    lines_modified_in_patch += 1
+                                    
+                                    get_logger().debug(f"🔧 Processed digit-prefixed line", 
+                                                      artifacts={
+                                                          'line_index': i,
+                                                          'original_line': original_line[:100],
+                                                          'extracted_content': new_line_content[:100],
+                                                          'digit_prefix_length': j
+                                                      })
                                     break
-                self.patches_diff_list_no_line_numbers.append('\n'.join(patches_diff_lines))
+                    
+                    # Reconstruct the patch
+                    processed_patch = '\n'.join(patches_diff_lines)
+                    self.patches_diff_list_no_line_numbers.append(processed_patch)
+                    
+                    get_logger().debug(f"✅ Patch {patch_idx + 1} processed successfully", 
+                                      artifacts={
+                                          'original_lines': original_line_count,
+                                          'lines_modified': lines_modified_in_patch,
+                                          'processed_patch_length': len(processed_patch),
+                                          'size_reduction': len(patches_diff) - len(processed_patch)
+                                      })
+                    
+                except Exception as e:
+                    processing_stats['processing_errors'] += 1
+                    get_logger().error(f"❌ Error processing patch {patch_idx + 1}", 
+                                      artifacts={
+                                          'error': str(e),
+                                          'error_type': type(e).__name__,
+                                          'patch_index': patch_idx,
+                                          'patch_preview': patches_diff[:300] if patches_diff else 'Empty patch'
+                                      })
+                    
+                    # Add original patch as fallback
+                    self.patches_diff_list_no_line_numbers.append(patches_diff)
+            
+            # Calculate final statistics
+            output_total_length = sum(len(patch) for patch in self.patches_diff_list_no_line_numbers)
+            input_total_length = sum(len(patch) for patch in patches_diff_list)
+            size_reduction = input_total_length - output_total_length
+            reduction_percentage = (size_reduction / max(1, input_total_length)) * 100
+            
+            get_logger().info("Line number removal completed", 
+                             artifacts={
+                                 'processing_summary': processing_stats,
+                                 'size_metrics': {
+                                     'input_total_length': input_total_length,
+                                     'output_total_length': output_total_length,
+                                     'size_reduction_bytes': size_reduction,
+                                     'reduction_percentage': round(reduction_percentage, 2)
+                                 },
+                                 'success_rate': f"{((processing_stats['total_patches'] - processing_stats['processing_errors']) / max(1, processing_stats['total_patches']) * 100):.1f}%"
+                             })
+            
+            if processing_stats['processing_errors'] > 0:
+                get_logger().warning(f"⚠️ {processing_stats['processing_errors']} patches had processing errors")
+            
+            if reduction_percentage > 50:
+                get_logger().info(f"Significant size reduction achieved: {reduction_percentage:.1f}%")
+            elif reduction_percentage < 5:
+                get_logger().info(f"Minimal size reduction: {reduction_percentage:.1f}% (few line numbers to remove)")
+            
             return self.patches_diff_list_no_line_numbers
+            
         except Exception as e:
-            get_logger().error(f"Error removing line numbers from patches_diff_list, error: {e}")
+            get_logger().error("❌ Critical error during line number removal", 
+                              artifacts={
+                                  'error': str(e),
+                                  'error_type': type(e).__name__,
+                                  'input_patches_count': len(patches_diff_list),
+                                  'fallback_strategy': 'returning original patches'
+                              })
+            
+            get_logger().warning("⚠️ Falling back to original patches due to processing error")
             return patches_diff_list
 
     async def prepare_prediction_main(self, model: str) -> dict:
-        # get PR diff
-        get_logger().info('Fetching diff...')
-        if get_settings().pr_code_suggestions.decouple_hunks:
-            self.patches_diff_list = await get_pr_multi_diffs(self.git_provider,
-                                                        self.token_handler,
-                                                        model,
-                                                        max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                        add_line_numbers=True)  # decouple hunk with line numbers
-            self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)  # decouple hunk
+        get_logger().info("Starting main prediction preparation workflow", 
+                         artifacts={
+                             'model': model,
+                             'decouple_hunks': get_settings().pr_code_suggestions.decouple_hunks,
+                             'max_calls': get_settings().pr_code_suggestions.max_number_of_calls,
+                             'parallel_calls': get_settings().pr_code_suggestions.parallel_calls,
+                             'context_service_enabled': get_settings().csharp_code_context_service.enabled
+                         })
+        
+        workflow_stats = {
+            'diff_fetch_strategy': 'unknown',
+            'patches_retrieved': 0,
+            'context_fetched': False,
+            'ai_calls_made': 0,
+            'suggestions_before_filtering': 0,
+            'suggestions_after_filtering': 0,
+            'score_threshold': 0,
+            'parallel_execution': False
+        }
+        
+        # Phase 1: Fetch PR diff using appropriate strategy
+        try:
+            if get_settings().pr_code_suggestions.decouple_hunks:
+                workflow_stats['diff_fetch_strategy'] = 'decoupled_hunks'
+                get_logger().info("Using decoupled hunks strategy for diff fetching")
+                
+                self.patches_diff_list = await get_pr_multi_diffs(
+                    self.git_provider,
+                    self.token_handler,
+                    model,
+                    max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
+                    add_line_numbers=True
+                )
+                
+                workflow_stats['patches_retrieved'] = len(self.patches_diff_list)
+                get_logger().info(f"✅ Retrieved {len(self.patches_diff_list)} patches with line numbers")
+                
+                # Remove line numbers from patches
+                self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)
+                
+                get_logger().debug("Created patches without line numbers from decoupled hunks")
 
-        else:
-            # non-decoupled hunks
-            self.patches_diff_list_no_line_numbers = await get_pr_multi_diffs(self.git_provider,
-                                                                        self.token_handler,
-                                                                        model,
-                                                                        max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                                        add_line_numbers=False)
-            self.patches_diff_list = await self.convert_to_decoupled_with_line_numbers(
-                self.patches_diff_list_no_line_numbers, model)
-            if not self.patches_diff_list:
-                # fallback to decoupled hunks
-                self.patches_diff_list = await get_pr_multi_diffs(self.git_provider,
-                                                            self.token_handler,
-                                                            model,
-                                                            max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                            add_line_numbers=True)  # decouple hunk with line numbers
-
-        if get_settings().csharp_code_context_service.enabled:
-            get_logger().info('Fetching context...')
-            self.context_data = await get_pr_context(self.git_provider)
-            get_logger().info(f"Got context!")
-        else:
-            get_logger().info('Context fetch is disabled')
+            else:
+                workflow_stats['diff_fetch_strategy'] = 'non_decoupled_hunks'
+                get_logger().info("Using non-decoupled hunks strategy for diff fetching")
+                
+                # First get patches without line numbers
+                self.patches_diff_list_no_line_numbers = await get_pr_multi_diffs(
+                    self.git_provider,
+                    self.token_handler,
+                    model,
+                    max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
+                    add_line_numbers=False
+                )
+                
+                get_logger().info(f"✅ Retrieved {len(self.patches_diff_list_no_line_numbers)} patches without line numbers")
+                
+                # Convert to decoupled with line numbers
+                get_logger().info("Converting to decoupled patches with line numbers...")
+                self.patches_diff_list = await self.convert_to_decoupled_with_line_numbers(
+                    self.patches_diff_list_no_line_numbers, model
+                )
+                
+                if not self.patches_diff_list:
+                    get_logger().warning("⚠️ Conversion to decoupled hunks failed, falling back to decoupled strategy")
+                    workflow_stats['diff_fetch_strategy'] = 'fallback_to_decoupled'
+                    
+                    self.patches_diff_list = await get_pr_multi_diffs(
+                        self.git_provider,
+                        self.token_handler,
+                        model,
+                        max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
+                        add_line_numbers=True
+                    )
+                    
+                    get_logger().info(f"Fallback successful: retrieved {len(self.patches_diff_list)} patches")
+                else:
+                    get_logger().info(f"✅ Conversion successful: {len(self.patches_diff_list)} decoupled patches created")
+                
+                workflow_stats['patches_retrieved'] = len(self.patches_diff_list)
+                
+        except Exception as e:
+            get_logger().error("❌ Critical error during diff fetching", 
+                              artifacts={
+                                  'error': str(e),
+                                  'error_type': type(e).__name__,
+                                  'strategy': workflow_stats['diff_fetch_strategy']
+                              })
+            return None
+        
+        # Phase 2: Fetch context if enabled
+        try:
+            if get_settings().csharp_code_context_service.enabled:
+                get_logger().info("Context service enabled, fetching PR context...")
+                
+                self.context_data = await get_pr_context(self.git_provider)
+                context_length = len(self.context_data) if self.context_data else 0
+                workflow_stats['context_fetched'] = True
+                
+                get_logger().info(f"✅ Context fetched successfully", 
+                                 artifacts={
+                                     'context_length': context_length,
+                                     'context_preview': self.context_data[:200] + "..." if context_length > 200 else self.context_data
+                                 })
+            else:
+                get_logger().info("Context service disabled, skipping context fetch")
+                self.context_data = ""
+                workflow_stats['context_fetched'] = False
+                
+        except Exception as e:
+            get_logger().error("❌ Error fetching context", 
+                              artifacts={
+                                  'error': str(e),
+                                  'error_type': type(e).__name__
+                              })
             self.context_data = ""
+            workflow_stats['context_fetched'] = False
 
-        if self.patches_diff_list:
-            get_logger().info(f"Number of PR chunk calls: {len(self.patches_diff_list)}")
-            get_logger().debug(f"PR diff:", artifact=self.patches_diff_list)
-
-            # parallelize calls to AI:
-            if get_settings().pr_code_suggestions.parallel_calls:
+        # Phase 3: Process patches and make AI predictions
+        if not self.patches_diff_list:
+            get_logger().warning("⚠️ No patches available for processing")
+            workflow_stats['ai_calls_made'] = 0
+            self.data = None
+            return None
+        
+        get_logger().info(f"Processing {len(self.patches_diff_list)} patches for AI predictions", 
+                         artifacts={
+                             'total_patches': len(self.patches_diff_list),
+                             'patches_preview': [patch[:100] + "..." if len(patch) > 100 else patch 
+                                               for patch in self.patches_diff_list[:3]]  # Show first 3 patches
+                         })
+        
+        try:
+            # Determine execution strategy
+            parallel_enabled = get_settings().pr_code_suggestions.parallel_calls
+            workflow_stats['parallel_execution'] = parallel_enabled
+            
+            if parallel_enabled:
+                get_logger().info("Using parallel AI prediction strategy")
+                
                 prediction_list = await asyncio.gather(
                     *[self._get_prediction(model, patches_diff, patches_diff_no_line_numbers) for
                       patches_diff, patches_diff_no_line_numbers in
-                      zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers)])
-                self.prediction_list = prediction_list
+                      zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers)]
+                )
+                
+                get_logger().info(f"Parallel predictions completed: {len(prediction_list)} results")
+                
             else:
+                get_logger().info("Using sequential AI prediction strategy")
+                
                 prediction_list = []
-                for patches_diff, patches_diff_no_line_numbers in zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers):
+                for idx, (patches_diff, patches_diff_no_line_numbers) in enumerate(
+                    zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers)
+                ):
+                    get_logger().debug(f"Making AI call {idx + 1}/{len(self.patches_diff_list)}")
+                    
                     prediction = await self._get_prediction(model, patches_diff, patches_diff_no_line_numbers)
                     prediction_list.append(prediction)
 
+                get_logger().info(f"✅ Sequential predictions completed: {len(prediction_list)} results")
+            
+            self.prediction_list = prediction_list
+            workflow_stats['ai_calls_made'] = len(prediction_list)
+            
+        except Exception as e:
+            get_logger().error("❌ Error during AI prediction phase", 
+                              artifacts={
+                                  'error': str(e),
+                                  'error_type': type(e).__name__,
+                                  'parallel_mode': parallel_enabled,
+                                  'patches_count': len(self.patches_diff_list)
+                              })
+            return None
+        
+                # Phase 4: Aggregate and filter suggestions
+        try:
             data = {"code_suggestions": []}
-            for j, predictions in enumerate(prediction_list):  # each call adds an element to the list
+            score_threshold = max(1, int(get_settings().pr_code_suggestions.suggestions_score_threshold))
+            workflow_stats['score_threshold'] = score_threshold
+            
+            filtering_stats = {
+                'total_predictions': len(prediction_list),
+                'predictions_with_suggestions': 0,
+                'raw_suggestions_count': 0,
+                'passed_threshold': 0,
+                'below_threshold': 0,
+                'processing_errors': 0
+            }
+            
+            get_logger().info(f"[Generating] - Aggregating suggestions with score threshold: {score_threshold}")
+            
+            for j, predictions in enumerate(prediction_list):
                 if "code_suggestions" in predictions:
-                    score_threshold = max(1, int(get_settings().pr_code_suggestions.suggestions_score_threshold))
-                    for i, prediction in enumerate(predictions["code_suggestions"]):
+                    filtering_stats['predictions_with_suggestions'] += 1
+                    call_suggestions = predictions["code_suggestions"]
+                    filtering_stats['raw_suggestions_count'] += len(call_suggestions)
+                    
+                    for i, prediction in enumerate(call_suggestions):
                         try:
                             score = int(prediction.get("score", 1))
+                            
                             if score >= score_threshold:
                                 data["code_suggestions"].append(prediction)
+                                filtering_stats['passed_threshold'] += 1
                             else:
-                                get_logger().info(
-                                    f"Removing suggestions {i} from call {j}, because score is {score}, and score_threshold is {score_threshold}",
-                                    artifact=prediction)
+                                filtering_stats['below_threshold'] += 1
+                                
                         except Exception as e:
-                            get_logger().error(f"Error getting PR diff for suggestion {i} in call {j}, error: {e}",
-                                               artifact={"prediction": prediction})
+                            filtering_stats['processing_errors'] += 1
+            
+            # Update workflow stats
+            workflow_stats['suggestions_before_filtering'] = filtering_stats['raw_suggestions_count']
+            workflow_stats['suggestions_after_filtering'] = filtering_stats['passed_threshold']
+            
             self.data = data
-        else:
-            get_logger().warning(f"Empty PR diff list")
-            self.data = data = None
+            
+            # Log final aggregation results
+            success_rate = (filtering_stats['passed_threshold'] / max(1, filtering_stats['raw_suggestions_count'])) * 100
+            
+            get_logger().info("[Generating] - Suggestion aggregation completed", 
+                             artifacts={
+                                 'summary': {
+                                     'total_suggestions': filtering_stats['raw_suggestions_count'],
+                                     'passed_threshold': filtering_stats['passed_threshold'],
+                                     'filtered_out': filtering_stats['below_threshold'],
+                                     'success_rate': f"{success_rate:.1f}%"
+                                 }
+                             })
+            
+            if filtering_stats['processing_errors'] > 0:
+                get_logger().warning(f"[Generating] - {filtering_stats['processing_errors']} suggestions had processing errors")
+            
+            if success_rate < 30:
+                get_logger().warning(f"[Generating] - Low suggestion success rate: {success_rate:.1f}%")
+            
+        except Exception as e:
+            get_logger().error("[Generating] - Error during suggestion aggregation", 
+                              artifacts={'error': str(e), 'error_type': type(e).__name__})
+            self.data = None
+            return None
+        
+        # Final workflow summary
+        get_logger().info("[Generating] - Main prediction workflow completed", 
+                         artifacts={
+                             'workflow_summary': workflow_stats,
+                             'final_suggestions': len(data["code_suggestions"])
+                         })
+        
+        if not data["code_suggestions"]:
+            get_logger().warning("[Generating] - No suggestions survived the complete workflow")
+        
         return data
 
     async def convert_to_decoupled_with_line_numbers(self, patches_diff_list_no_line_numbers, model) -> List[str]:
@@ -1111,7 +2470,6 @@ class PRCodeSuggestions:
                     if '`' in suggestion_summary:
                         suggestion_summary = replace_code_tags(suggestion_summary)
 
-                    pr_body += f"""\n\n<details><summary>{suggestion_summary}</summary>\n\n___\n\n"""
                     pr_body += f"""
 **{suggestion_content}**
 
@@ -1160,101 +2518,178 @@ class PRCodeSuggestions:
                                           model: str,
                                           prev_suggestions_str: str = "",
                                           dedicated_prompt: str = "") -> str:
+        
         if not suggestion_list:
+            get_logger().warning("[Reflecting] - No suggestions provided for self-reflection")
             return ""
 
+        get_logger().info(f"[Reflecting] - Starting AI self-reflection on {len(suggestion_list)} suggestions using {model}")
+
+        # Prepare suggestion string for prompt
         try:
             suggestion_str = ""
             for i, suggestion in enumerate(suggestion_list):
                 suggestion_str += f"suggestion {i + 1}: " + str(suggestion) + '\n\n'
+                              
+        except Exception as e:
+            get_logger().error("[Reflecting] - Failed to prepare suggestions for reflection", 
+                              artifacts={'error': str(e), 'error_type': type(e).__name__})
+            return ""
 
-            variables = {'suggestion_list': suggestion_list,
-                         'suggestion_str': suggestion_str,
-                         "diff": patches_diff,
-                         'num_code_suggestions': len(suggestion_list),
-                         'prev_suggestions_str': prev_suggestions_str,
-                         "is_ai_metadata": get_settings().get("config.enable_ai_metadata", False),
-                         'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
-                         "include_context": get_settings().get("csharp_code_context_service.enabled", False),
-                         "context": self.context_data
-                         }
+        # Build prompt variables
+        try:
+            variables = {
+                'suggestion_list': suggestion_list,
+                'suggestion_str': suggestion_str,
+                "diff": patches_diff,
+                'num_code_suggestions': len(suggestion_list),
+                'prev_suggestions_str': prev_suggestions_str,
+                "is_ai_metadata": get_settings().get("config.enable_ai_metadata", False),
+                'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
+                "include_context": get_settings().get("csharp_code_context_service.enabled", False),
+                "context": self.context_data
+            }
+            
             environment = Environment(undefined=StrictUndefined)
 
+            # Choose prompt template
             if dedicated_prompt:
+                get_logger().info(f"[Reflecting] - Using dedicated reflection prompt: {dedicated_prompt}")
                 system_prompt_reflect = environment.from_string(
                     get_settings().get(dedicated_prompt).system).render(variables)
                 user_prompt_reflect = environment.from_string(
                     get_settings().get(dedicated_prompt).user).render(variables)
             else:
+                get_logger().info("[Reflecting] - Using standard reflection prompt")
                 system_prompt_reflect = environment.from_string(
                     get_settings().pr_code_suggestions_reflect_prompt.system).render(variables)
                 user_prompt_reflect = environment.from_string(
                     get_settings().pr_code_suggestions_reflect_prompt.user).render(variables)
-
-            # Track AI metrics for self-reflection
-            from pr_agent.algo.token_handler import TokenUsageTracker
-            
-            reflection_token_tracker = TokenUsageTracker()
-            
-            with get_logger().contextualize(command="self_reflect_on_suggestions"):
-                try:
-                    response_reflect, finish_reason_reflect, token_usage = await self.ai_handler.chat_completion(
-                        model=model,
-                        system=system_prompt_reflect,
-                        user=user_prompt_reflect
-                    )
                     
-                    # Track token usage from successful reflection call
-                    reflection_token_tracker.add_usage(token_usage, call_failed=False)
-                    
-                    # Update AI metrics with reflection response data
-                    if DASHBOARD_INTEGRATION_AVAILABLE:
-                        try:
-                            totals = reflection_token_tracker.get_totals()
-                            input_tokens = totals['input_tokens']
-                            output_tokens = totals['output_tokens']
-                            
-                            # Use accurate token counts if available, otherwise estimate
-                            if not reflection_token_tracker.has_usage():
-                                get_logger().warning("No accurate reflection token usage available, falling back to estimation")
-                                # Fallback to tiktoken estimation
-                                input_tokens = self.token_handler.count_tokens(system_prompt_reflect + user_prompt_reflect)
-                                output_tokens = self.token_handler.count_tokens(response_reflect)
-                            
-                            # Update AI metrics for reflection
-                            update_operation_ai_metrics(
-                                model_used=model,
-                                input_tokens=input_tokens,
-                                output_tokens=output_tokens,
-                                estimated_dev_hours_saved=0.1  # Small amount for reflection
-                            )
-                            
-                            get_logger().info(f"Reflection AI metrics updated - Input: {input_tokens}, Output: {output_tokens}, "
-                                            f"Calls: {totals['call_count']}, Failed: {totals['failed_calls']}")
-                            
-                        except Exception as e:
-                            get_logger().debug(f"Failed to update reflection AI metrics: {e}")
-                            
-                except Exception as e:
-                    # Track failed reflection call
-                    reflection_token_tracker.add_usage(None, call_failed=True)
-                    
-                    # Track failed reflection call if dashboard is available
-                    if DASHBOARD_INTEGRATION_AVAILABLE:
-                        try:
-                            # Estimate tokens for failed reflection call
-                            input_tokens = self.token_handler.count_tokens(system_prompt_reflect + user_prompt_reflect)
-                            
-                            update_operation_ai_metrics(
-                                model_used=model,
-                                input_tokens=input_tokens,
-                                output_tokens=0,
-                                estimated_dev_hours_saved=0.0
-                            )
-                        except:
-                            pass  # Ignore dashboard errors during error handling
-                    raise
         except Exception as e:
-            get_logger().info(f"Could not reflect on suggestions, error: {e}")
+            get_logger().error("[Reflecting] - Failed to build reflection prompts", 
+                              artifacts={'error': str(e), 'error_type': type(e).__name__})
             return ""
+
+        # Calculate token estimates
+        prompt_tokens = 0
+        try:
+            prompt_tokens = self.token_handler.count_tokens(system_prompt_reflect + user_prompt_reflect)
+            get_logger().info(f"[Reflecting] - Reflection prompt prepared - {prompt_tokens:,} tokens estimated")
+        except Exception as e:
+            get_logger().warning(f"[Reflecting] - Could not estimate reflection prompt tokens: {e}")
+        
+        # Log prompts at DEBUG level only
+        get_logger().debug("[Reflecting] - Reflection System Prompt:", 
+                          artifacts={'system_prompt': system_prompt_reflect})
+        get_logger().debug("[Reflecting] - Reflection User Prompt:", 
+                          artifacts={'user_prompt': user_prompt_reflect})
+
+        # Track AI metrics for self-reflection
+        from pr_agent.algo.token_handler import TokenUsageTracker
+        reflection_token_tracker = TokenUsageTracker()
+        
+        # Make AI reflection call
+        get_logger().info(f"[Reflecting] - Making AI reflection call to {model}...")
+        try:
+            with get_logger().contextualize(command="self_reflect_on_suggestions"):
+                response_reflect, finish_reason_reflect, token_usage = await self.ai_handler.chat_completion(
+                    model=model,
+                    system=system_prompt_reflect,
+                    user=user_prompt_reflect
+                )
+                
+                # Track metrics for multi-model support
+                self._track_ai_metrics(model, token_usage)
+                
+                # Log raw reflection response at DEBUG level only
+                get_logger().debug("[Reflecting] - Reflection response received:", 
+                                  artifacts={'response': response_reflect, 'finish_reason': finish_reason_reflect})
+                
+                get_logger().info("[Reflecting] - AI reflection call completed successfully")
+                
+        except Exception as e:
+            get_logger().error("[Reflecting] - AI reflection call failed", 
+                              artifacts={'error': str(e), 'error_type': type(e).__name__})
+            return ""
+
+        get_logger().info("[Reflecting] - Self-reflection completed successfully - response ready for analysis")
         return response_reflect
+
+    async def _prepare_prediction(self, model: str) -> dict:
+        get_logger().info("Preparing PR diff for AI analysis...")
+        
+        self.patches_diff = get_pr_diff(self.git_provider,
+                                        self.token_handler,
+                                        model,
+                                        add_line_numbers_to_hunks=True,
+                                        disable_extra_lines=False)
+        self.patches_diff_list = [self.patches_diff]
+        self.patches_diff_no_line_number = self.remove_line_numbers([self.patches_diff])[0]
+
+        if self.patches_diff:
+            get_logger().debug(f"🔍 PR diff prepared", artifact=self.patches_diff)
+            self.prediction = await self._get_prediction(model, self.patches_diff, self.patches_diff_no_line_number)
+        else:
+            get_logger().warning(f"⚠️ Empty PR diff - no changes to analyze")
+            self.prediction = None
+
+        return self.prediction
+
+    def _track_ai_metrics(self, model: str, token_usage: dict):
+        """Track AI metrics for multiple models"""
+        get_logger().debug(f"[AI] - _track_ai_metrics called with model: {model}, token_usage: {token_usage}")
+        
+        if not token_usage:
+            get_logger().debug(f"[AI] - No token usage provided for {model} - skipping tracking")
+            return
+        
+        input_tokens = token_usage.get('input_tokens', 0)
+        output_tokens = token_usage.get('output_tokens', 0)
+        
+        get_logger().debug(f"[AI] - Extracted tokens for {model}: input={input_tokens}, output={output_tokens}")
+        
+        if model not in self.ai_models_metrics:
+            self.ai_models_metrics[model] = {"input_tokens": 0, "output_tokens": 0}
+            get_logger().debug(f"[AI] - Initialized metrics tracking for new model: {model}")
+        
+        self.ai_models_metrics[model]["input_tokens"] += input_tokens
+        self.ai_models_metrics[model]["output_tokens"] += output_tokens
+        
+        get_logger().debug(f"[AI] - Updated metrics for {model}: total_input={self.ai_models_metrics[model]['input_tokens']}, "
+                          f"total_output={self.ai_models_metrics[model]['output_tokens']}")
+        get_logger().debug(f"[AI] - Current ai_models_metrics: {self.ai_models_metrics}")
+
+    def _send_aggregated_ai_metrics(self, estimated_dev_hours_saved: Optional[float] = None):
+        """Send aggregated AI metrics to dashboard"""
+        get_logger().debug(f"[AI] - _send_aggregated_ai_metrics called - Dashboard available: {DASHBOARD_INTEGRATION_AVAILABLE}, "
+                          f"Metrics count: {len(self.ai_models_metrics) if self.ai_models_metrics else 0}")
+        
+        if not DASHBOARD_INTEGRATION_AVAILABLE:
+            get_logger().debug("[AI] - Dashboard integration not available - skipping AI metrics")
+            return
+            
+        if not self.ai_models_metrics:
+            get_logger().debug("[AI] - No AI metrics to send - ai_models_metrics is empty")
+            return
+        
+        try:
+            # Log what we're sending
+            get_logger().debug(f"[AI] - Sending AI metrics: {self.ai_models_metrics}")
+            
+            update_operation_multi_model_ai_metrics(
+                models_data=self.ai_models_metrics,
+                estimated_dev_hours_saved=estimated_dev_hours_saved
+            )
+            
+            # Log summary
+            total_input = sum(data.get('input_tokens', 0) for data in self.ai_models_metrics.values())
+            total_output = sum(data.get('output_tokens', 0) for data in self.ai_models_metrics.values())
+            models_used = list(self.ai_models_metrics.keys())
+            
+            get_logger().info(f"[AI] - Sent aggregated metrics for models: {models_used}, "
+                            f"Total tokens: {total_input + total_output} "
+                            f"(Input: {total_input}, Output: {total_output})")
+            
+        except Exception as e:
+            get_logger().warning(f"[AI] - Failed to send aggregated AI metrics: {e}")

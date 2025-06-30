@@ -377,7 +377,8 @@ class AsyncPersistenceQueue:
             'last_updated', 'completed_at', 'duration', 'error_details', 'response_time',
             'context_fetch_time', 'ai_processing_time', 'model_used', 'input_tokens',
             'output_tokens', 'estimated_dev_hours_saved', 'suggestions_count', 
-            'errors_count', 'warnings_count', 'result_data'
+            'errors_count', 'warnings_count', 'result_data', 'current_step',
+            'ai_models_used', 'total_input_tokens', 'total_output_tokens'
         }
         
         filtered_data = {k: v for k, v in data.items() if k in valid_fields}
@@ -620,7 +621,12 @@ class RobustCacheService:
             'model_used': operation.model_used,
             'input_tokens': operation.input_tokens,
             'output_tokens': operation.output_tokens,
-            'estimated_dev_hours_saved': operation.estimated_dev_hours_saved
+            'estimated_dev_hours_saved': operation.estimated_dev_hours_saved,
+            'current_step': operation.current_step,
+            'ai_models_used': operation.ai_models_used,
+            'total_input_tokens': operation.total_input_tokens,
+            'total_output_tokens': operation.total_output_tokens,
+            'insights': operation.insights
         }
         
     def _log_db_to_dict(self, log) -> Dict[str, Any]:
@@ -1053,13 +1059,14 @@ class RobustCacheService:
     async def force_sync_operation_to_db(self, operation_id: str) -> bool:
         """Force immediate sync of operation from cache to database"""
         try:
-            # Get operation from cache
-            entry = await self.operations_cache.get(f"operation:{operation_id}")
+            # Get operation from cache - FIX: Use correct key format
+            entry = await self.operations_cache.get(operation_id)
             if not entry:
                 logger.warning(f"Operation {operation_id} not found in cache for force sync")
                 return False
                 
             operation_data = entry.data
+            logger.debug(f"Force syncing operation {operation_id} - has AI metrics: {bool(operation_data.get('model_used') or operation_data.get('input_tokens') or operation_data.get('output_tokens'))}")
             
             # Force immediate database update
             from models import OperationDB
@@ -1076,7 +1083,8 @@ class RobustCacheService:
                         'last_updated', 'completed_at', 'duration', 'error_details', 'response_time',
                         'context_fetch_time', 'ai_processing_time', 'model_used', 'input_tokens',
                         'output_tokens', 'estimated_dev_hours_saved', 'suggestions_count', 
-                        'errors_count', 'warnings_count', 'result_data'
+                        'errors_count', 'warnings_count', 'result_data', 'current_step',
+                        'ai_models_used', 'total_input_tokens', 'total_output_tokens', 'insights'
                     }
                     
                     for field, value in operation_data.items():
@@ -1090,7 +1098,7 @@ class RobustCacheService:
                             setattr(operation_db, field, value)
                     
                     db.commit()
-                    logger.debug(f"Force synced operation {operation_id} to database")
+                    logger.info(f"✅ Force synced operation {operation_id} to database - AI metrics: model={operation_data.get('model_used')}, tokens={operation_data.get('input_tokens')}/{operation_data.get('output_tokens')}, hours={operation_data.get('estimated_dev_hours_saved')}")
                     
                     # Mark as clean in cache
                     entry.dirty = False

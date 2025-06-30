@@ -29,6 +29,11 @@ CREATE TABLE operations (
 	input_tokens INTEGER, 
 	output_tokens INTEGER, 
 	estimated_dev_hours_saved FLOAT, 
+	current_step VARCHAR, 
+	ai_models_used JSON, 
+	total_input_tokens INTEGER, 
+	total_output_tokens INTEGER, 
+	insights JSON, 
 	PRIMARY KEY (id)
 );
 

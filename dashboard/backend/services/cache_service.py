@@ -405,8 +405,8 @@ class CacheService:
                 if matches:
                     results.append(job_data.copy())
                     
-            # Sort by creation time (newest first)
-            results.sort(key=lambda x: x.get('started_at', ''), reverse=True)
+            # Sort by creation time (oldest first)
+            results.sort(key=lambda x: x.get('started_at', ''), reverse=False)
             
             return results[:limit]
             
@@ -583,8 +583,8 @@ class CacheService:
                 if matches:
                     results.append(operation_data.copy())
                     
-            # Sort by creation time (newest first)
-            results.sort(key=lambda x: x.get('started_at', ''), reverse=True)
+            # Sort by creation time (oldest first)
+            results.sort(key=lambda x: x.get('started_at', ''), reverse=False)
             
             return results[:limit]
             

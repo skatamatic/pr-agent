@@ -108,58 +108,72 @@ def run(inargs=None, args=None):
             get_logger().debug(f"Failed to extract repository from URL: {e}")
 
     async def inner():
-        # Create job context if dashboard integration is available
-        if DASHBOARD_AVAILABLE and dashboard_enabled:
-            try:
-                # Use job context for dashboard tracking
-                with job_context(
-                    job_type=JobType.CLI,
-                    source="cli",
-                    repository=repository,
-                    pr_url=target_url,
-                    trigger_event="cli_command",
-                    request_id=f"cli-{command}-{os.getpid()}"
-                ) as job_id:
-                    get_logger().info(f"CLI job started with ID: {job_id}")
-                    
-                    try:
-                        # Update job status to running
-                        update_job_status("running")
+        result = None
+        try:
+            # Create job context if dashboard integration is available
+            if DASHBOARD_AVAILABLE and dashboard_enabled:
+                try:
+                    # Use job context for dashboard tracking
+                    with job_context(
+                        job_type=JobType.CLI,
+                        source="cli",
+                        repository=repository,
+                        pr_url=target_url,
+                        trigger_event="cli_command",
+                        request_id=f"cli-{command}-{os.getpid()}"
+                    ) as job_id:
+                        get_logger().info(f"CLI job started with ID: {job_id}")
                         
-                        # Execute the PR-Agent command
-                        if args.issue_url:
-                            result = await asyncio.create_task(PRAgent().handle_request(args.issue_url, [command] + args.rest))
-                        else:
-                            result = await asyncio.create_task(PRAgent().handle_request(args.pr_url, [command] + args.rest))
-                        
-                        # Update job status based on result
-                        if result:
-                            update_job_status("completed", result_summary={"command": command, "success": True})
-                            get_logger().info(f"CLI job {job_id} completed successfully")
-                        else:
-                            update_job_status("failed", error_details="Command returned no result")
-                            get_logger().warning(f"CLI job {job_id} completed with no result")
-                        
-                        return result
-                        
-                    except Exception as e:
-                        # Update job status to failed
-                        update_job_status("failed", error_details=str(e))
-                        get_logger().error(f"CLI job {job_id} failed: {e}")
-                        raise
-                        
-            except Exception as e:
-                get_logger().warning(f"Dashboard job tracking failed, continuing without tracking: {e}")
-                # Fall through to execute without job tracking
-        
-        # Execute without job tracking (fallback or dashboard disabled)
-        get_logger().info("Executing CLI command without dashboard tracking")
-        if args.issue_url:
-            result = await asyncio.create_task(PRAgent().handle_request(args.issue_url, [command] + args.rest))
-        else:
-            result = await asyncio.create_task(PRAgent().handle_request(args.pr_url, [command] + args.rest))
-        
-        return result
+                        try:
+                            # Update job status to running
+                            update_job_status("running")
+                            
+                            # Execute the PR-Agent command
+                            if args.issue_url:
+                                result = await asyncio.create_task(PRAgent().handle_request(args.issue_url, [command] + args.rest))
+                            else:
+                                result = await asyncio.create_task(PRAgent().handle_request(args.pr_url, [command] + args.rest))
+                            
+                            # Update job status based on result
+                            if result:
+                                update_job_status("completed", result_summary={"command": command, "success": True})
+                                get_logger().info(f"CLI job {job_id} completed successfully")
+                            else:
+                                update_job_status("failed", error_details="Command returned no result")
+                                get_logger().warning(f"CLI job {job_id} completed with no result")
+                            
+                            return result
+                            
+                        except Exception as e:
+                            # Update job status to failed
+                            update_job_status("failed", error_details=str(e))
+                            get_logger().error(f"CLI job {job_id} failed: {e}")
+                            raise
+                            
+                except Exception as e:
+                    get_logger().warning(f"Dashboard job tracking failed, continuing without tracking: {e}")
+                    # Fall through to execute without job tracking
+            
+            # Execute without job tracking (fallback or dashboard disabled)
+            if result is None:
+                get_logger().info("Executing CLI command without dashboard tracking")
+                if args.issue_url:
+                    result = await asyncio.create_task(PRAgent().handle_request(args.issue_url, [command] + args.rest))
+                else:
+                    result = await asyncio.create_task(PRAgent().handle_request(args.pr_url, [command] + args.rest))
+            
+            return result
+            
+        finally:
+            # Cleanup dashboard tasks BEFORE the event loop closes
+            if DASHBOARD_AVAILABLE:
+                try:
+                    get_logger().debug("Starting dashboard cleanup...")
+                    from pr_agent.log.job_context import cleanup_all_dashboard_tasks
+                    await cleanup_all_dashboard_tasks()
+                    get_logger().debug("Dashboard cleanup completed")
+                except Exception as e:
+                    get_logger().debug(f"Dashboard cleanup error: {e}")  # Don't fail the main operation
 
     # Execute the async function with proper callback handling
     try:
@@ -179,23 +193,17 @@ def run(inargs=None, args=None):
             
             asyncio.run(cleanup_callbacks())
         
+        # Dashboard cleanup already handled within the event loop
+        
         if not result:
             parser.print_help()
             
     except KeyboardInterrupt:
         get_logger().info("CLI execution interrupted by user")
-        if DASHBOARD_AVAILABLE:
-            try:
-                update_job_status("cancelled", error_details="Interrupted by user")
-            except:
-                pass  # Ignore dashboard errors during cleanup
+        # Job status update and cleanup already handled within the event loop's finally block
     except Exception as e:
         get_logger().error(f"CLI execution failed: {e}")
-        if DASHBOARD_AVAILABLE:
-            try:
-                update_job_status("failed", error_details=str(e))
-            except:
-                pass  # Ignore dashboard errors during cleanup
+        # Job status update and cleanup already handled within the event loop's finally block
         raise
 
 

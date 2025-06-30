@@ -415,8 +415,8 @@ class PRReviewer:
             # Calculate final estimate
             estimated_hours = base_review_hours * complexity_multiplier * model_multiplier
             
-            # Cap at reasonable bounds
-            return max(0.25, min(4.0, estimated_hours))
+            # Cap at reasonable bounds (allow negative values for time wasted)
+            return max(-4.0, min(4.0, estimated_hours))
             
         except Exception as e:
             get_logger().debug(f"Failed to estimate review dev hours: {e}")

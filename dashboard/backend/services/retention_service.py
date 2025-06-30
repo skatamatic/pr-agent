@@ -798,6 +798,80 @@ class RetentionService:
             })
             return {"success": False, "error": error_msg}
     
+    def create_safety_backup(self, compressed: bool = True) -> Dict[str, Any]:
+        """Create a safety database backup before restore operations"""
+        try:
+            if not self.backup_dir.exists():
+                self.backup_dir.mkdir(parents=True, exist_ok=True)
+            
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            backup_filename = f"dashboard_backup_safety_{timestamp}.db"
+            
+            if compressed:
+                backup_filename += ".gz"
+            
+            backup_path = self.backup_dir / backup_filename
+            
+            # Log backup start
+            self._log_to_system('INFO', 
+                f"Starting safety database backup - {backup_filename} (compression: {compressed})",
+                {
+                    'backup_type': 'safety',
+                    'compressed': compressed,
+                    'filename': backup_filename,
+                    'system_event': 'backup_start'
+                }
+            )
+            
+            # Create backup
+            if compressed:
+                with gzip.open(backup_path, 'wt') as f:
+                    # Use Python's sqlite3 module instead of subprocess for cross-platform compatibility
+                    conn = sqlite3.connect(self.db_path)
+                    for line in conn.iterdump():
+                        f.write(f'{line}\n')
+                    conn.close()
+            else:
+                shutil.copy2(self.db_path, backup_path)
+            
+            # Get file info
+            file_size = backup_path.stat().st_size
+            file_size_mb = round(file_size / (1024 * 1024), 2)
+            
+            # Log backup completion
+            self._log_to_system('INFO', 
+                f"Safety database backup completed - {backup_filename} ({file_size_mb} MB)",
+                {
+                    'backup_type': 'safety',
+                    'compressed': compressed,
+                    'filename': backup_filename,
+                    'file_size_mb': file_size_mb,
+                    'file_size_bytes': file_size,
+                    'system_event': 'backup_completed'
+                }
+            )
+            
+            return {
+                "success": True,
+                "filename": backup_filename,
+                "path": str(backup_path),
+                "backup_path": str(backup_path),  # Include backup_path for restore function compatibility
+                "size": file_size,
+                "size_mb": file_size_mb,
+                "compressed": compressed,
+                "type": "safety",
+                "created_at": datetime.utcnow().isoformat()
+            }
+            
+        except Exception as e:
+            error_msg = f"Safety backup failed: {str(e)}"
+            self._log_to_system('ERROR', error_msg, {
+                'backup_type': 'safety',
+                'error': str(e),
+                'system_event': 'backup_failed'
+            })
+            return {"success": False, "error": error_msg}
+    
     def _cleanup_old_backups(self):
         """Remove old backup files to maintain the specified limit"""
         try:
@@ -958,9 +1032,11 @@ class RetentionService:
                     # Extract backup type from filename
                     backup_type = "manual"  # default
                     if "_auto_" in backup_file.name:
-                        backup_type = "auto"
+                        backup_type = "automatic"  # Changed from "auto" to "automatic"
                     elif "_manual_" in backup_file.name:
                         backup_type = "manual"
+                    elif "_safety_" in backup_file.name:
+                        backup_type = "safety"
                     
                     backups.append({
                         "filename": backup_file.name,
@@ -1076,7 +1152,7 @@ class RetentionService:
             
             # Step 1: Create a safety backup of current database
             self._log_to_system("INFO", f"Creating safety backup before restore from {filename}")
-            safety_backup_result = self.create_backup(backup_type="safety")
+            safety_backup_result = self.create_safety_backup()
             
             if not safety_backup_result["success"]:
                 return {

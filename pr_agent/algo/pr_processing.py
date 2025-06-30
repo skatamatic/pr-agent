@@ -86,11 +86,11 @@ async def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 if not github_user_token and get_settings().config.git_provider == "github":
                      get_logger().warning("GITHUB.USER_TOKEN not set; C# service might fail if it needs to clone a private repo.")
                 
-                get_logger().info(f"Requesting C# context for PR: {owner}/{repo_name}#{pr_number}")
+                get_logger().info(f"[Context] - Requesting C# context for PR: {owner}/{repo_name}#{pr_number}")
                 csharp_minimal_contexts_map = await get_csharp_minimal_context(owner, repo_name, pr_number, github_user_token)
                 if csharp_minimal_contexts_map is None: # Handle API call failure or disabled service
                     csharp_minimal_contexts_map = {} 
-                get_logger().info(f"C# Context Map (first 5 keys): {list(csharp_minimal_contexts_map.keys())[:5]}")
+                get_logger().info(f"[Context] - C# Context Map (first 5 keys): {list(csharp_minimal_contexts_map.keys())[:5]}")
 
 
             except Exception as e:
@@ -413,7 +413,7 @@ async def get_pr_context(git_provider: GitProvider):
             for f in lang_group.get('files', [])
         )
         if is_cs_pr:
-            get_logger().info("csharp_code_context_service is enabled and this diff is a csharp one")
+            get_logger().info("[Context] - csharp_code_context_service is enabled and this diff is a csharp one")
             try:
                 owner, repo_name = git_provider.repo.split('/', 1) # Make sure git_provider.repo is in 'owner/repo' format
                 pr_number = git_provider.pr_num # Make sure git_provider.pr_num holds the PR number
@@ -423,11 +423,11 @@ async def get_pr_context(git_provider: GitProvider):
                 if not github_user_token and get_settings().config.git_provider == "github":
                      get_logger().warning("GITHUB.USER_TOKEN not set; C# service might fail if it needs to clone a private repo.")
                 
-                get_logger().info(f"Requesting C# context for PR: {owner}/{repo_name}#{pr_number}")
+                get_logger().info(f"[Context] - Requesting C# context for PR: {owner}/{repo_name}#{pr_number}")
                 csharp_minimal_contexts_map = await get_csharp_minimal_context(owner, repo_name, pr_number, github_user_token)
                 if csharp_minimal_contexts_map is None: # Handle API call failure or disabled service
                     csharp_minimal_contexts_map = {} 
-                get_logger().info(f"C# Context Map (first 5 keys): {list(csharp_minimal_contexts_map.keys())[:5]}")
+                get_logger().info(f"[Context] - C# Context Map (first 5 keys): {list(csharp_minimal_contexts_map.keys())[:5]}")
 
             except Exception as e:
                 get_logger().error(f"Failed to get C# context from API: {e}", exc_info=True)

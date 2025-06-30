@@ -49,7 +49,16 @@ class OperationService:
                 "completed_at": op.completed_at.isoformat() if op.completed_at else None,
                 "operation_type": op.command,  # For compatibility
                 "duration": op.duration,
-                "error_details": op.error_details
+                "error_details": op.error_details,
+                "insights": op.insights,
+                "model_used": op.model_used,
+                "input_tokens": op.input_tokens,
+                "output_tokens": op.output_tokens,
+                "estimated_dev_hours_saved": op.estimated_dev_hours_saved,
+                "current_step": op.current_step,
+                "ai_models_used": op.ai_models_used,
+                "total_input_tokens": op.total_input_tokens,
+                "total_output_tokens": op.total_output_tokens
             })
         
         return APIResponse(data={"operations": operation_list}, total=len(operation_list))

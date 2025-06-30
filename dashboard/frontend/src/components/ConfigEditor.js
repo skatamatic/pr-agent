@@ -570,9 +570,23 @@ const ConfigEditor = ({ navigationTarget = null }) => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
-        <span className="ml-3 text-gray-600 dark:text-gray-300">Loading configuration...</span>
+      <div className="space-y-6">
+        {/* Header section shown during loading */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+          <div className="px-6 py-4 flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <Settings className="h-6 w-6 text-primary-600 dark:text-primary-400" />
+              <div>
+                <h1 className="text-xl font-semibold text-gray-900 dark:text-white">AI Config</h1>
+                <p className="text-sm text-gray-600 dark:text-gray-400">Manage AI models, performance settings, and API keys</p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center justify-center py-12">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+          <span className="ml-3 text-gray-600 dark:text-gray-300">Loading configuration...</span>
+        </div>
       </div>
     );
   }

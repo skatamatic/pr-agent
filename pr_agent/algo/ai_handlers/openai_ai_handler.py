@@ -45,9 +45,9 @@ class OpenAIHandler(BaseAiHandler):
     async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
         try:
             if img_path:
-                get_logger().warning(f"Image path is not supported for OpenAIHandler. Ignoring image path: {img_path}")
-            get_logger().info("System: ", system)
-            get_logger().info("User: ", user)
+                get_logger().warning(f"[AI] - Image path is not supported for OpenAIHandler. Ignoring image path: {img_path}")
+            get_logger().info("[AI] - System: ", system)
+            get_logger().info("[AI] - User: ", user)
             messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
             client = AsyncOpenAI()
             chat_completion = await client.chat.completions.create(
@@ -67,15 +67,15 @@ class OpenAIHandler(BaseAiHandler):
                     'output_tokens': getattr(usage, 'completion_tokens', 0)
                 }
             
-            get_logger().info("AI response", response=resp, messages=messages, finish_reason=finish_reason,
+            get_logger().info("[AI] - AI response", response=resp, messages=messages, finish_reason=finish_reason,
                               model=model, usage=usage)
             return resp, finish_reason, token_usage
         except openai.RateLimitError as e:
-            get_logger().error(f"Rate limit error during LLM inference: {e}")
+            get_logger().error(f"[AI] - Rate limit error during LLM inference: {e}")
             raise
         except openai.APIError as e:
-            get_logger().warning(f"Error during LLM inference: {e}")
+            get_logger().warning(f"[AI] - Error during LLM inference: {e}")
             raise
         except Exception as e:
-            get_logger().warning(f"Unknown error during LLM inference: {e}")
+            get_logger().warning(f"[AI] - Unknown error during LLM inference: {e}")
             raise openai.APIError from e

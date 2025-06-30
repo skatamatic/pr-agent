@@ -137,6 +137,10 @@ class WebSocketService {
       case 'operation_update':
         this.emit('operation_update', data);
         break;
+      case 'operation_step_update':
+        // Handle step updates as operation updates
+        this.emit('operation_update', data);
+        break;
       case 'job_update':
         this.emit('job_update', data);
         break;

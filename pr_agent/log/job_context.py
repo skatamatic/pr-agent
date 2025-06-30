@@ -73,6 +73,10 @@ async def wait_for_pending_tasks(timeout: float = 10.0):
         for task in tasks:
             if not task.done():
                 task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass  # Expected when cancelling
                 if logger:
                     logger.debug(f"Cancelled pending dashboard task: {task}")
     except Exception as e:
@@ -82,7 +86,57 @@ async def wait_for_pending_tasks(timeout: float = 10.0):
         for task in tasks:
             if not task.done():
                 task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass  # Expected when cancelling
 
+async def cleanup_all_dashboard_tasks():
+    """Clean up all dashboard-related tasks and resources"""
+    try:
+        # Wait for pending tasks with a reasonable timeout
+        await wait_for_pending_tasks(timeout=5.0)
+        
+        # Clear the pending tasks list
+        with _task_lock:
+            _pending_tasks.clear()
+        
+        # Clean up dashboard client (close aiohttp sessions)
+        try:
+            from pr_agent.log.dashboard_client import get_dashboard_client
+            client = get_dashboard_client()
+            if client:
+                await client.close()
+                # Reset the global client instance to prevent reuse of closed session
+                import pr_agent.log.dashboard_client as dc_module
+                dc_module._dashboard_client = None
+                if logger:
+                    logger.debug("Dashboard client session closed and reset")
+        except ImportError:
+            pass  # Dashboard client not available
+        except Exception as e:
+            if logger:
+                logger.debug(f"Dashboard client cleanup error: {e}")
+        
+        # Clean up dashboard sink
+        try:
+            from pr_agent.log.dashboard_sink import cleanup_dashboard_sink
+            await cleanup_dashboard_sink()
+            # Reset the global sink instance
+            import pr_agent.log.dashboard_sink as ds_module
+            ds_module._dashboard_sink = None
+        except ImportError:
+            pass  # Dashboard sink not available
+        except Exception as e:
+            if logger:
+                logger.debug(f"Dashboard sink cleanup error: {e}")
+            
+        if logger:
+            logger.debug("Dashboard cleanup completed")
+            
+    except Exception as e:
+        if logger:
+            logger.debug(f"Dashboard cleanup error: {e}")
 
 def extract_repository_from_url(url: Optional[str]) -> Optional[str]:
     """Extract repository name from PR/issue URL"""
@@ -130,9 +184,7 @@ class JobType(str, Enum):
 
 
 class OperationType(str, Enum):
-    STARTING = "starting"
-    FETCHING_CONTEXT = "fetching_context"
-    PROCESSING_PR = "processing_pr"
+    # PR-Agent commands/tools
     REVIEW = "review"
     DESCRIBE = "describe"
     IMPROVE = "improve"
@@ -140,10 +192,23 @@ class OperationType(str, Enum):
     ADD_DOCS = "add_docs"
     UPDATE_CHANGELOG = "update_changelog"
     SIMILAR_ISSUE = "similar_issue"
+    
+    # Process stages
+    STARTING = "starting"
+    FETCHING_CONTEXT = "fetching_context"
+    PROCESSING_PR = "processing_pr"
     SELF_REFLECTING = "self_reflecting"
     PUBLISHING_RESULTS = "publishing_results"
     FINALIZING = "finalizing"
     CLEANUP = "cleanup"
+    
+    # Generating stages (for detailed operation tracking)
+    GENERATING_REVIEW = "generating_review"
+    GENERATING_DESCRIPTION = "generating_description"
+    GENERATING_SUGGESTIONS = "generating_suggestions"
+    GENERATING_QUESTIONS = "generating_questions"
+    GENERATING_LABELS = "generating_labels"
+    ESTIMATING_DEV_TIME = "estimating_dev_time"
 
 
 class JobContext:
@@ -151,6 +216,7 @@ class JobContext:
     
     _context = threading.local()
     _operation_creation_tasks = {}  # Track operation creation tasks by operation_id
+    _current_step = {}  # Track current step by operation_id
     
     @classmethod
     def get_current_job_id(cls) -> Optional[str]:
@@ -161,6 +227,14 @@ class JobContext:
     def get_current_operation_id(cls) -> Optional[str]:
         """Get the current operation ID"""
         return getattr(cls._context, 'operation_id', None)
+    
+    @classmethod
+    def get_current_step(cls) -> Optional[str]:
+        """Get the current operation step"""
+        operation_id = cls.get_current_operation_id()
+        if operation_id:
+            return cls._current_step.get(operation_id)
+        return None
     
     @classmethod
     def get_job_metadata(cls) -> Dict[str, Any]:
@@ -187,72 +261,121 @@ class JobContext:
                 **log_metadata
             ).info(f"Job {job_id} started - {job_metadata.get('job_type', 'unknown')} - {job_metadata.get('repository', 'unknown')}")
         
-        # Send job creation to dashboard (error resilient)
+        # Send job creation to dashboard (error resilient with retries)
         if get_dashboard_client:
-            try:
-                client = get_dashboard_client()
-                if client and client._enabled:
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            # If we're in an async context, schedule the coroutine and track it
-                            task = asyncio.create_task(client.create_job(
-                                job_type=job_metadata.get('job_type', 'manual'),
-                                source=job_metadata.get('source', 'unknown'),
-                                repository=job_metadata.get('repository'),
-                                pr_url=job_metadata.get('pr_url'),
-                                trigger_user=job_metadata.get('trigger_user'),
-                                trigger_event=job_metadata.get('trigger_event'),
-                                installation_id=job_metadata.get('installation_id'),
-                                request_id=job_metadata.get('request_id'),
-                                webhook_payload=job_metadata.get('webhook_payload'),
-                                job_id=job_id
-                            ))
-                            add_pending_task(task)
-                            if logger:
-                                logger.debug(f"Dashboard job creation queued for job {job_id}")
-                        else:
-                            # Event loop exists but not running, use sync fallback
-                            raise RuntimeError("Event loop not running")
-                    except RuntimeError:
-                        # No event loop running, use synchronous fallback
+            max_retries = 3
+            retry_count = 0
+            job_created = False
+            
+            while retry_count < max_retries and not job_created:
+                try:
+                    client = get_dashboard_client()
+                    if client and client._enabled:
                         try:
-                            import requests
-                            job_data = {
-                                'job_type': job_metadata.get('job_type', 'manual'),
-                                'source': job_metadata.get('source', 'unknown'),
-                                'repository': job_metadata.get('repository'),
-                                'pr_url': job_metadata.get('pr_url'),
-                                'trigger_user': job_metadata.get('trigger_user'),
-                                'trigger_event': job_metadata.get('trigger_event'),
-                                'installation_id': job_metadata.get('installation_id'),
-                                'request_id': job_metadata.get('request_id'),
-                                'webhook_payload': job_metadata.get('webhook_payload'),
-                                'job_id': job_id
-                            }
-                            # Remove None values
-                            job_data = {k: v for k, v in job_data.items() if v is not None}
-                            
-                            headers = {"Content-Type": "application/json"}
-                            if client.api_key:
-                                headers["Authorization"] = f"Bearer {client.api_key}"
-                            
-                            url = f"{client.dashboard_url.rstrip('/')}/api/jobs/create"
-                            response = requests.post(url, json=job_data, headers=headers, timeout=10)
-                            
-                            if response.status_code == 200:
+                            loop = asyncio.get_event_loop()
+                            if loop.is_running():
+                                # If we're in an async context, schedule the coroutine and track it
+                                task = asyncio.create_task(client.create_job(
+                                    job_type=job_metadata.get('job_type', 'manual'),
+                                    source=job_metadata.get('source', 'unknown'),
+                                    repository=job_metadata.get('repository'),
+                                    pr_url=job_metadata.get('pr_url'),
+                                    trigger_user=job_metadata.get('trigger_user'),
+                                    trigger_event=job_metadata.get('trigger_event'),
+                                    installation_id=job_metadata.get('installation_id'),
+                                    request_id=job_metadata.get('request_id'),
+                                    webhook_payload=job_metadata.get('webhook_payload'),
+                                    job_id=job_id
+                                ))
+                                add_pending_task(task)
+                                
+                                # For async context, we can't easily wait for completion here
+                                # So we assume success and let the async task handle retries
+                                job_created = True
                                 if logger:
-                                    logger.debug(f"Dashboard job creation successful (sync) for job {job_id}")
+                                    logger.debug(f"Dashboard job creation queued for job {job_id} (attempt {retry_count + 1})")
                             else:
+                                # Event loop exists but not running, use sync fallback
+                                raise RuntimeError("Event loop not running")
+                        except RuntimeError:
+                            # No event loop running, use synchronous fallback with retries
+                            try:
+                                import requests
+                                import time
+                                
+                                job_data = {
+                                    'job_type': job_metadata.get('job_type', 'manual'),
+                                    'source': job_metadata.get('source', 'unknown'),
+                                    'repository': job_metadata.get('repository'),
+                                    'pr_url': job_metadata.get('pr_url'),
+                                    'trigger_user': job_metadata.get('trigger_user'),
+                                    'trigger_event': job_metadata.get('trigger_event'),
+                                    'installation_id': job_metadata.get('installation_id'),
+                                    'request_id': job_metadata.get('request_id'),
+                                    'webhook_payload': job_metadata.get('webhook_payload'),
+                                    'job_id': job_id
+                                }
+                                # Remove None values
+                                job_data = {k: v for k, v in job_data.items() if v is not None}
+                                
+                                headers = {"Content-Type": "application/json"}
+                                if client.api_key:
+                                    headers["Authorization"] = f"Bearer {client.api_key}"
+                                
+                                url = f"{client.dashboard_url.rstrip('/')}/api/jobs/create"
+                                response = requests.post(url, json=job_data, headers=headers, timeout=10)
+                                
+                                if response.status_code == 200:
+                                    job_created = True
+                                    if logger:
+                                        logger.info(f"✅ Dashboard job creation successful (sync) for job {job_id} (attempt {retry_count + 1})")
+                                else:
+                                    retry_count += 1
+                                    if logger:
+                                        logger.warning(f"⚠️ Dashboard job creation failed (sync): {response.status_code} - {response.text} (attempt {retry_count}/{max_retries})")
+                                    
+                                    # Exponential backoff: 0.5s, 1s, 2s
+                                    if retry_count < max_retries:
+                                        delay = 0.5 * (2 ** (retry_count - 1))
+                                        time.sleep(delay)
+                                        
+                            except Exception as sync_e:
+                                retry_count += 1
                                 if logger:
-                                    logger.debug(f"Dashboard job creation failed (sync): {response.status_code}")
-                        except Exception as sync_e:
-                            if logger:
-                                logger.debug(f"Sync dashboard job creation failed for {job_id}: {sync_e}")
-            except Exception as e:
-                # Dashboard integration should never break job execution
+                                    logger.warning(f"⚠️ Sync dashboard job creation failed for {job_id}: {sync_e} (attempt {retry_count}/{max_retries})")
+                                
+                                # Exponential backoff for exceptions too
+                                if retry_count < max_retries:
+                                    import time
+                                    delay = 0.5 * (2 ** (retry_count - 1))
+                                    time.sleep(delay)
+                except Exception as e:
+                    retry_count += 1
+                    if logger:
+                        logger.warning(f"⚠️ Dashboard job creation failed for {job_id}: {e} (attempt {retry_count}/{max_retries})")
+                    
+                    # Exponential backoff for outer exceptions too
+                    if retry_count < max_retries:
+                        import time
+                        delay = 0.5 * (2 ** (retry_count - 1))
+                        time.sleep(delay)
+            
+            # If all retries failed, log a BIG ERROR
+            if not job_created and retry_count >= max_retries:
+                error_msg = f"""
+🚨🚨🚨 CRITICAL DASHBOARD ERROR 🚨🚨🚨
+❌ FAILED TO CREATE JOB IN DASHBOARD AFTER {max_retries} RETRIES!
+❌ Job ID: {job_id}
+❌ Repository: {job_metadata.get('repository', 'Unknown')}
+❌ Job Type: {job_metadata.get('job_type', 'Unknown')}
+❌ This will cause orphaned operations and dashboard inconsistency!
+❌ Please check dashboard connectivity and API endpoints!
+🚨🚨🚨 CRITICAL DASHBOARD ERROR 🚨🚨🚨
+"""
                 if logger:
-                    logger.debug(f"Dashboard job creation failed for {job_id}: {e}")
+                    logger.error(error_msg)
+                else:
+                    print(error_msg)  # Fallback if logger is not available
     
     @classmethod
     def set_operation_context(cls, operation_id: str, operation_metadata: Dict[str, Any]):
@@ -381,6 +504,58 @@ class JobContext:
                 if logger:
                     logger.debug(f"Operation creation failed for {operation_id}: {e}")
 
+    @classmethod
+    def set_current_step(cls, step: str):
+        """Set the current operation step"""
+        operation_id = cls.get_current_operation_id()
+        if operation_id:
+            cls._current_step[operation_id] = step
+            # Send step update to dashboard
+            cls._send_step_update(operation_id, step)
+
+    @classmethod
+    def _send_step_update(cls, operation_id: str, step: str):
+        """Send step update to dashboard"""
+        if get_dashboard_client:
+            try:
+                client = get_dashboard_client()
+                if client and client._enabled:
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            task = asyncio.create_task(client.update_operation_step(operation_id, step))
+                            add_pending_task(task)
+                    except RuntimeError:
+                        # Sync fallback for step updates
+                        try:
+                            import requests
+                            step_data = {'current_step': step}
+                            
+                            headers = {"Content-Type": "application/json"}
+                            if client.api_key:
+                                headers["Authorization"] = f"Bearer {client.api_key}"
+                            
+                            url = f"{client.dashboard_url.rstrip('/')}/api/operations/{operation_id}/step"
+                            response = requests.post(url, json=step_data, headers=headers, timeout=10)
+                            
+                            if response.status_code == 200:
+                                if logger:
+                                    logger.debug(f"Dashboard step update successful (sync) for operation {operation_id}: {step}")
+                            else:
+                                if logger:
+                                    logger.debug(f"Dashboard step update failed (sync) for operation {operation_id}: {response.status_code}")
+                        except Exception as sync_e:
+                            if logger:
+                                logger.debug(f"Sync dashboard step update failed for operation {operation_id}: {sync_e}")
+            except Exception:
+                pass  # Ignore dashboard errors
+
+    @classmethod
+    def clear_current_step(cls, operation_id: str):
+        """Clear the current step for an operation"""
+        if operation_id in cls._current_step:
+            del cls._current_step[operation_id]
+
 
 def create_job(job_type: JobType,
                source: str,
@@ -489,24 +664,40 @@ def get_current_context() -> Dict[str, Any]:
 def bind_logger_context():
     """Bind current job/operation context to logger for automatic inclusion in logs"""
     if not logger:
-        return
+        return logger
     
     context = {}
     
     job_id = JobContext.get_current_job_id()
     if job_id:
         context['job_id'] = job_id
-        context.update(JobContext.get_job_metadata())
+        # Don't include all metadata to avoid duplication
+        context.update({
+            'repository': JobContext.get_job_metadata().get('repository'),
+            'pr_url': JobContext.get_job_metadata().get('pr_url'),
+            'command': JobContext.get_job_metadata().get('command')
+        })
     
     operation_id = JobContext.get_current_operation_id()
     if operation_id:
         context['operation_id'] = operation_id
-        context.update(JobContext.get_operation_metadata())
+        # Don't include all metadata to avoid duplication
+        context.update({
+            'operation_type': JobContext.get_operation_metadata().get('operation_type')
+        })
+    
+    # Remove None values
+    context = {k: v for k, v in context.items() if v is not None}
     
     if context:
         return logger.bind(**context)
     
     return logger
+
+
+def get_contextual_logger():
+    """Get logger with current job/operation context automatically bound"""
+    return bind_logger_context()
 
 
 # Convenience functions for status updates
@@ -582,6 +773,12 @@ def update_operation_status(status: str, error_details: Optional[str] = None, re
         if logger:
             logger.debug("No active operation context - skipping operation status update")
         return
+    
+    # Clear current step when operation completes or fails
+    if status.lower() in ['completed', 'failed']:
+        JobContext.clear_current_step(operation_id)
+        if logger:
+            logger.debug(f"Cleared current step for {status} operation {operation_id}")
     
     # Log the status change
     if logger:
@@ -743,6 +940,103 @@ def update_operation_ai_metrics(model_used: Optional[str] = None,
                 logger.debug(f"Dashboard AI metrics update failed for {operation_id}: {e}")
 
 
+def update_specific_operation_ai_metrics(operation_id: str,
+                                        model_used: Optional[str] = None,
+                                        input_tokens: Optional[int] = None,
+                                        output_tokens: Optional[int] = None,
+                                        estimated_dev_hours_saved: Optional[float] = None):
+    """Update a specific operation's AI metrics (error resilient)"""
+    if not operation_id:
+        if logger:
+            logger.debug("No operation ID provided - skipping AI metrics update")
+        return
+    
+    # Skip if no metrics provided
+    if not any([model_used, input_tokens, output_tokens, estimated_dev_hours_saved]):
+        if logger:
+            logger.debug("No AI metrics provided - skipping update")
+        return
+    
+    # Log the metrics
+    if logger:
+        metrics_info = []
+        if model_used:
+            metrics_info.append(f"model: {model_used}")
+        if input_tokens:
+            metrics_info.append(f"input_tokens: {input_tokens}")
+        if output_tokens:
+            metrics_info.append(f"output_tokens: {output_tokens}")
+        if estimated_dev_hours_saved:
+            metrics_info.append(f"dev_hours_saved: {estimated_dev_hours_saved}")
+        
+        if metrics_info:
+            logger.bind(
+                operation_id=operation_id,
+                model_used=model_used,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                estimated_dev_hours_saved=estimated_dev_hours_saved
+            ).info(f"Operation {operation_id} AI metrics updated: {', '.join(metrics_info)}")
+    
+    # Send to dashboard (error resilient)
+    if get_dashboard_client:
+        try:
+            client = get_dashboard_client()
+            if client and client._enabled:
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # Update the specific operation's AI metrics
+                        task = asyncio.create_task(client.update_operation_ai_metrics(
+                            operation_id=operation_id,
+                            model_used=model_used,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            estimated_dev_hours_saved=estimated_dev_hours_saved
+                        ))
+                        add_pending_task(task)
+                        if logger:
+                            logger.debug(f"Dashboard AI metrics update queued for specific operation {operation_id}")
+                    else:
+                        # Event loop exists but not running, use sync fallback
+                        raise RuntimeError("Event loop not running")
+                except RuntimeError:
+                    # No event loop running, use synchronous fallback
+                    try:
+                        import requests
+                        metrics_data = {
+                            'model_used': model_used,
+                            'input_tokens': input_tokens,
+                            'output_tokens': output_tokens,
+                            'estimated_dev_hours_saved': estimated_dev_hours_saved
+                        }
+                        # Remove None values
+                        metrics_data = {k: v for k, v in metrics_data.items() if v is not None}
+                        
+                        if not metrics_data:
+                            return  # Nothing to update
+                        
+                        headers = {"Content-Type": "application/json"}
+                        if client.api_key:
+                            headers["Authorization"] = f"Bearer {client.api_key}"
+                        
+                        url = f"{client.dashboard_url.rstrip('/')}/api/operations/{operation_id}/ai-metrics"
+                        response = requests.post(url, json=metrics_data, headers=headers, timeout=10)
+                        
+                        if response.status_code == 200:
+                            if logger:
+                                logger.debug(f"Dashboard AI metrics update successful (sync) for specific operation {operation_id}")
+                        else:
+                            if logger:
+                                logger.debug(f"Dashboard AI metrics update failed (sync) for specific operation {operation_id}: {response.status_code}")
+                    except Exception as sync_e:
+                        if logger:
+                            logger.debug(f"Sync dashboard AI metrics update failed for specific operation {operation_id}: {sync_e}")
+        except Exception as e:
+            if logger:
+                logger.debug(f"Dashboard AI metrics update failed for specific operation {operation_id}: {e}")
+
+
 # Dashboard Integration Setup
 def setup_dashboard_integration() -> bool:
     """Setup complete dashboard integration (sink + client)"""
@@ -784,4 +1078,92 @@ def setup_dashboard_integration() -> bool:
     except Exception as e:
         if logger:
             logger.warning(f"Dashboard integration setup failed: {e}")
-        return False  
+        return False
+
+
+def set_operation_step(step: str):
+    """Set the current operation step (with automatic prefixing)"""
+    JobContext.set_current_step(step)
+    if logger:
+        logger.info(f"[{step}] - Starting operation step")
+
+
+def update_operation_multi_model_ai_metrics(models_data: Dict[str, Dict[str, int]], 
+                                           estimated_dev_hours_saved: Optional[float] = None):
+    """
+    Update operation AI metrics for multiple models
+    
+    Args:
+        models_data: {"model_name": {"input_tokens": int, "output_tokens": int}, ...}
+        estimated_dev_hours_saved: Hours saved estimate
+    """
+    operation_id = JobContext.get_current_operation_id()
+    if not operation_id or not logger:
+        return
+    
+    # Calculate totals
+    total_input_tokens = sum(data.get('input_tokens', 0) for data in models_data.values())
+    total_output_tokens = sum(data.get('output_tokens', 0) for data in models_data.values())
+    
+    logger.info(f"AI metrics updated - Models: {list(models_data.keys())}, "
+                f"Total Input: {total_input_tokens}, Total Output: {total_output_tokens}, "
+                f"Dev Hours: {estimated_dev_hours_saved}")
+    
+    # Send to dashboard (error resilient)
+    if get_dashboard_client:
+        try:
+            client = get_dashboard_client()
+            if client and client._enabled:
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # Wait for operation creation first
+                        async def send_metrics_after_creation():
+                            await JobContext.wait_for_operation_creation(operation_id)
+                            await client.update_operation_multi_model_ai_metrics(
+                                operation_id=operation_id,
+                                models_data=models_data,
+                                estimated_dev_hours_saved=estimated_dev_hours_saved
+                            )
+                        
+                        task = asyncio.create_task(send_metrics_after_creation())
+                        add_pending_task(task)
+                        if logger:
+                            logger.debug(f"Dashboard multi-model AI metrics update queued for {operation_id}")
+                    else:
+                        raise RuntimeError("Event loop not running")
+                except RuntimeError:
+                    # Sync fallback for multi-model metrics
+                    try:
+                        import requests
+                        metrics_data = {
+                            'models_data': models_data,
+                            'estimated_dev_hours_saved': estimated_dev_hours_saved
+                        }
+                        # Remove None values
+                        metrics_data = {k: v for k, v in metrics_data.items() if v is not None}
+                        
+                        if not metrics_data:
+                            return
+                        
+                        headers = {"Content-Type": "application/json"}
+                        if client.api_key:
+                            headers["Authorization"] = f"Bearer {client.api_key}"
+                        
+                        url = f"{client.dashboard_url.rstrip('/')}/api/operations/{operation_id}/multi-model-ai-metrics"
+                        response = requests.post(url, json=metrics_data, headers=headers, timeout=10)
+                        
+                        if response.status_code == 200:
+                            if logger:
+                                logger.debug(f"Dashboard multi-model AI metrics update successful (sync) for {operation_id}")
+                        else:
+                            if logger:
+                                logger.debug(f"Dashboard multi-model AI metrics update failed (sync): {response.status_code}")
+                    except Exception as sync_e:
+                        if logger:
+                            logger.debug(f"Sync dashboard multi-model AI metrics update failed for {operation_id}: {sync_e}")
+        except ImportError:
+            pass  # Dashboard client not available
+        except Exception as e:
+            if logger:
+                logger.debug(f"Dashboard multi-model AI metrics update failed for {operation_id}: {e}")  

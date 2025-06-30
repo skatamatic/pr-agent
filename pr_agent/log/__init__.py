@@ -78,4 +78,13 @@ def setup_logger(level: str = "INFO", fmt: LoggingFormat = LoggingFormat.CONSOLE
 
 
 def get_logger(*args, **kwargs):
-    return logger
+    # Try to get contextual logger with job/operation context
+    try:
+        from pr_agent.log.job_context import get_contextual_logger
+        return get_contextual_logger()
+    except ImportError:
+        # Fall back to regular logger if job_context is not available
+        return logger
+    except Exception:
+        # Fall back to regular logger if context binding fails
+        return logger

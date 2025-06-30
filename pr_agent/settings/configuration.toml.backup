@@ -197,10 +197,10 @@ enable_help_text = false
 
 [pr_dev_time_estimation]
 enabled = true
-model = "anthropic/claude-sonnet-4-20250514"
-fallback_to_heuristic = false
-estimation_timeout_seconds = 60
-confidence_threshold = "low"
+model = ""
+fallback_to_heuristic = true
+estimation_timeout_seconds = 30
+confidence_threshold = "medium"
 
 [github]
 deployment_type = "user"
@@ -298,8 +298,3 @@ pr_questions = false
 pr_test = false
 pr_add_docs = false
 pr_update_changelog = false
-
-[DASHBOARD]
-URL = "http://localhost:8000/"
-ENABLED = true
-API_KEY = ""
