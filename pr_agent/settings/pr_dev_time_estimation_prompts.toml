@@ -169,12 +169,14 @@ Consider these key factors specific to PR description generation:
 8. **Cognitive Load Reduction**: Writing descriptions requires mental energy that could be spent on coding. AI generation reduces this cognitive overhead.
 
 Industry benchmarks for PR description writing:
-- Simple changes (1-3 files, <100 lines): 5-15 minutes for manual description
-- Medium changes (4-8 files, 100-300 lines): 15-30 minutes for manual description  
-- Complex changes (9+ files, 300+ lines): 30-60 minutes for manual description
-- Architectural changes: 45-90 minutes for comprehensive description
+- Simple changes (1-3 files, <100 lines): 5 minutes for manual description
+- Medium changes (4-8 files, 100-300 lines): 10 minutes for manual description  
+- Complex changes (9+ files, 300+ lines): 30 minutes for manual description
+- Architectural changes: 45-60 minutes for comprehensive description
 
-Provide a detailed analysis with specific reasoning for your time estimate."""
+Provide a detailed analysis with specific reasoning for your time estimate.  
+total_developer_hours_saved should roughly equate to the sum of the time_impact_analysis values with perhaps some wiggle room if you can justify it.
+Be conservative with estimates - this is just a brief time saver that fills out PR descriptions.  It is not a comprehensive review of the code and is not intended to be an extreme time saver."""
 
 user="""Please analyze the following code diff and AI-generated PR description to estimate developer time savings:
 
