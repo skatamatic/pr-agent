@@ -297,6 +297,11 @@ const OperationInsights = ({ operationId, onClose }) => {
       return renderDescriptionDevTimeInsights(devTimeData);
     }
 
+    // Check if this is review guide-specific insights
+    if (devTimeData.guide_quality_assessment || devTimeData.estimated_manual_scan_time_hours) {
+      return renderReviewGuideDevTimeInsights(devTimeData);
+    }
+
     const { complexity_assessment, review_quality_assessment, time_impact_analysis, final_assessment, processing_summary, individual_suggestions } = devTimeData;
     
     return (
@@ -406,41 +411,50 @@ const OperationInsights = ({ operationId, onClose }) => {
           </div>
         )}
 
-        {/* Review Quality Assessment */}
-        {review_quality_assessment && (
+        {/* Review Guide Quality Assessment - supports both guide_quality_assessment and review_quality_assessment */}
+        {(devTimeData.guide_quality_assessment || review_quality_assessment) && (
           <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6 shadow-sm">
             <div className="flex items-center gap-3 mb-6">
               <Target className="w-5 h-5 text-purple-600 dark:text-purple-400" />
-              <h4 className="text-lg font-semibold text-gray-900 dark:text-white">Review Quality Assessment</h4>
+              <h4 className="text-lg font-semibold text-gray-900 dark:text-white">Review Guide Quality Assessment</h4>
             </div>
             
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
               <div className="text-center p-5 bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-900/20 dark:to-blue-900/30 rounded-xl border border-blue-200 dark:border-blue-800">
                 <div className="text-3xl font-bold text-blue-600 dark:text-blue-400 mb-1">
-                  {review_quality_assessment.review_quality_score || 0}/10
+                  {devTimeData.guide_quality_assessment?.review_guide_score || 
+                   devTimeData.guide_quality_assessment?.quality_score ||
+                   review_quality_assessment?.review_quality_score || 
+                   review_quality_assessment?.quality_score || 0}/10
                 </div>
-                <div className="text-sm font-medium text-blue-700 dark:text-blue-300">Quality Score</div>
+                <div className="text-sm font-medium text-blue-700 dark:text-blue-300">Guide Quality Score</div>
               </div>
               
               <div className="text-center p-5 bg-gradient-to-br from-green-50 to-green-100 dark:from-green-900/20 dark:to-green-900/30 rounded-xl border border-green-200 dark:border-green-800">
                 <div className="text-3xl font-bold text-green-600 dark:text-green-400 mb-1">
-                  {review_quality_assessment.actionable_feedback_count || 0}
+                  {devTimeData.guide_quality_assessment?.actionability_score ||
+                   devTimeData.guide_quality_assessment?.actionable_feedback_count || 
+                   review_quality_assessment?.actionable_feedback_count || 0}
                 </div>
-                <div className="text-sm font-medium text-green-700 dark:text-green-300">Actionable Feedback</div>
+                <div className="text-sm font-medium text-green-700 dark:text-green-300">Actionable Items</div>
               </div>
 
-              <div className="text-center p-5 bg-gradient-to-br from-red-50 to-red-100 dark:from-red-900/20 dark:to-red-900/30 rounded-xl border border-red-200 dark:border-red-800">
-                <div className="text-3xl font-bold text-red-600 dark:text-red-400 mb-1">
-                  {review_quality_assessment.invalid_feedback_count || 0}
+              <div className="text-center p-5 bg-gradient-to-br from-amber-50 to-amber-100 dark:from-amber-900/20 dark:to-amber-900/30 rounded-xl border border-amber-200 dark:border-amber-800">
+                <div className="text-3xl font-bold text-amber-600 dark:text-amber-400 mb-1">
+                  {devTimeData.guide_quality_assessment?.false_positive_count ||
+                   review_quality_assessment?.invalid_feedback_count || 0}
                 </div>
-                <div className="text-sm font-medium text-red-700 dark:text-red-300">Invalid Feedback</div>
+                <div className="text-sm font-medium text-amber-700 dark:text-amber-300">False Positives</div>
               </div>
             </div>
             
             <div className="space-y-3">
               <div className="text-sm font-medium text-gray-600 dark:text-gray-400">Quality Assessment</div>
               <div className="text-sm text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-4 leading-relaxed">
-                {review_quality_assessment.quality_reasoning}
+                {devTimeData.guide_quality_assessment?.guide_quality_reasoning ||
+                 devTimeData.guide_quality_assessment?.quality_reasoning ||
+                 review_quality_assessment?.quality_reasoning ||
+                 'Quality assessment details not available'}
               </div>
             </div>
           </div>
@@ -457,23 +471,36 @@ const OperationInsights = ({ operationId, onClose }) => {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
               <div className="text-center p-4 bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-900/20 dark:to-blue-900/30 rounded-xl border border-blue-200 dark:border-blue-800">
                 <div className="text-lg font-bold text-blue-600 dark:text-blue-400 mb-1">
-                  {formatInsightsTime(time_impact_analysis.author_time_to_process_feedback_hours)}
+                  {formatInsightsTime(
+                    time_impact_analysis.estimated_manual_scan_time_hours ||
+                    time_impact_analysis.manual_scan_time_hours ||
+                    time_impact_analysis.author_time_to_process_feedback_hours ||
+                    0
+                  )}
                 </div>
-                <div className="text-xs font-medium text-blue-700 dark:text-blue-300">Author Processing Time</div>
+                <div className="text-xs font-medium text-blue-700 dark:text-blue-300">Manual Scan Time</div>
               </div>
               
               <div className="text-center p-4 bg-gradient-to-br from-green-50 to-green-100 dark:from-green-900/20 dark:to-green-900/30 rounded-xl border border-green-200 dark:border-green-800">
                 <div className="text-lg font-bold text-green-600 dark:text-green-400 mb-1">
-                  {formatInsightsTime(time_impact_analysis.human_reviewer_time_reduction_hours)}
+                  {formatInsightsTime(
+                    time_impact_analysis.reviewer_time_saved_hours ||
+                    time_impact_analysis.human_reviewer_time_reduction_hours ||
+                    0
+                  )}
                 </div>
-                <div className="text-xs font-medium text-green-700 dark:text-green-300">Reviewer Time Reduction</div>
+                <div className="text-xs font-medium text-green-700 dark:text-green-300">Reviewer Time Saved</div>
               </div>
               
               <div className="text-center p-4 bg-gradient-to-br from-orange-50 to-orange-100 dark:from-orange-900/20 dark:to-orange-900/30 rounded-xl border border-orange-200 dark:border-orange-800">
                 <div className="text-lg font-bold text-orange-600 dark:text-orange-400 mb-1">
-                  {formatInsightsTime(time_impact_analysis.context_switching_overhead_hours)}
+                  {formatInsightsTime(
+                    time_impact_analysis.author_processing_time_hours ||
+                    time_impact_analysis.context_switching_overhead_hours ||
+                    0
+                  )}
                 </div>
-                <div className="text-xs font-medium text-orange-700 dark:text-orange-300">Context Switching</div>
+                <div className="text-xs font-medium text-orange-700 dark:text-orange-300">Author Processing</div>
               </div>
             </div>
             
@@ -506,6 +533,231 @@ const OperationInsights = ({ operationId, onClose }) => {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderReviewGuideDevTimeInsights = (reviewGuideData) => {
+    if (!reviewGuideData) return null;
+
+    const { 
+      complexity_assessment = {}, 
+      guide_quality_assessment = {}, 
+      time_impact_analysis = {}, 
+      final_assessment = {},
+      review_metrics = {}
+    } = reviewGuideData;
+    
+    return (
+      <div className="space-y-6">
+        {/* Summary Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border border-blue-200 dark:border-blue-700 rounded-xl p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-2xl font-bold text-blue-800 dark:text-blue-400">
+                  {formatInsightsTime(final_assessment?.total_developer_hours_saved || review_metrics?.estimated_hours)}
+                </div>
+                <div className="text-sm text-blue-600 dark:text-blue-500">Time Saved</div>
+                <div className="text-xs text-blue-500 dark:text-blue-400 mt-1">
+                  Review Guide
+                </div>
+              </div>
+              <Clock className="h-8 w-8 text-blue-500 dark:text-blue-400" />
+            </div>
+          </div>
+
+          <div className="bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 border border-green-200 dark:border-green-700 rounded-xl p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-2xl font-bold text-green-800 dark:text-green-400 capitalize">
+                  {complexity_assessment?.code_complexity_level}
+                </div>
+                <div className="text-sm text-green-600 dark:text-green-500">Complexity</div>
+              </div>
+              <TrendingUp className="h-8 w-8 text-green-500 dark:text-green-400" />
+            </div>
+          </div>
+
+          <div className="bg-gradient-to-br from-purple-50 to-violet-50 dark:from-purple-900/20 dark:to-violet-900/20 border border-purple-200 dark:border-purple-700 rounded-xl p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex-1">
+                <div className="text-2xl font-bold text-purple-800 dark:text-purple-400 capitalize">
+                  {final_assessment?.confidence_level}
+                </div>
+                <div className="text-sm text-purple-600 dark:text-purple-500">Confidence</div>
+              </div>
+              <div className="ml-2">
+                <span className={`px-2 py-1 text-xs rounded-full font-medium ${
+                  final_assessment?.confidence_level === 'high' 
+                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' 
+                    : final_assessment?.confidence_level === 'medium' 
+                    ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' 
+                    : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                }`}>
+                  {final_assessment?.confidence_level}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Supplementary Tool Notice */}
+        <div className="bg-gradient-to-br from-amber-50 to-yellow-50 dark:from-amber-900/20 dark:to-yellow-900/20 border border-amber-200 dark:border-amber-700 rounded-xl p-4">
+          <div className="flex items-center mb-3">
+            <AlertCircle className="h-5 w-5 text-amber-600 dark:text-amber-400 mr-2" />
+            <h4 className="font-semibold text-amber-800 dark:text-amber-400">Review Guide Tool</h4>
+          </div>
+          <div className="text-sm text-amber-700 dark:text-amber-300">
+            {final_assessment?.supplementary_tool_note || 
+             "This tool provides high-level guidance to supplement detailed code review tools. It identifies focus areas and potential issues but doesn't provide specific fixes."}
+          </div>
+        </div>
+
+        {/* Key Factors */}
+        {final_assessment?.key_factors && (
+          <div className="bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-indigo-900/20 dark:to-blue-900/20 border border-indigo-200 dark:border-indigo-700 rounded-xl p-4">
+            <div className="flex items-center mb-3">
+              <Key className="h-5 w-5 text-indigo-600 dark:text-indigo-400 mr-2" />
+              <h4 className="font-semibold text-indigo-800 dark:text-indigo-400">Key Assessment Factors</h4>
+            </div>
+            <div className="space-y-2">
+              {final_assessment.key_factors.map((factor, index) => (
+                <div key={index} className="flex items-start">
+                  <div className="w-2 h-2 bg-indigo-400 dark:bg-indigo-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
+                  <span className="text-sm text-indigo-700 dark:text-indigo-300">{factor}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Code Complexity Assessment */}
+        {complexity_assessment && (
+          <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6 shadow-sm">
+            <div className="flex items-center gap-3 mb-6">
+              <BarChart3 className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+              <h4 className="text-lg font-semibold text-gray-900 dark:text-white">Code Complexity Assessment</h4>
+            </div>
+            
+            <div className="grid md:grid-cols-2 gap-6 mb-6">
+              <div className="space-y-2">
+                <div className="text-sm font-medium text-gray-600 dark:text-gray-400">Complexity Level</div>
+                <div className={`inline-flex px-4 py-2 rounded-lg text-sm font-semibold ${
+                  complexity_assessment.code_complexity_level === 'simple' ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400' :
+                  complexity_assessment.code_complexity_level === 'moderate' ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400' :
+                  complexity_assessment.code_complexity_level === 'complex' ? 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400' :
+                  'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
+                }`}>
+                  {complexity_assessment.code_complexity_level}
+                </div>
+              </div>
+              
+              <div className="space-y-2">
+                <div className="text-sm font-medium text-gray-600 dark:text-gray-400">Manual Scan Time</div>
+                <div className="text-xl font-bold text-gray-900 dark:text-white">
+                  {formatInsightsTime(complexity_assessment.estimated_manual_scan_time_hours)}
+                </div>
+              </div>
+            </div>
+            
+            <div className="space-y-3">
+              <div className="text-sm font-medium text-gray-600 dark:text-gray-400">Complexity Reasoning</div>
+              <div className="text-sm text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-4 leading-relaxed">
+                {complexity_assessment.complexity_reasoning}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Guide Quality Assessment */}
+        {guide_quality_assessment && (
+          <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6 shadow-sm">
+            <div className="flex items-center gap-3 mb-6">
+              <Target className="w-5 h-5 text-purple-600 dark:text-purple-400" />
+              <h4 className="text-lg font-semibold text-gray-900 dark:text-white">Guide Quality Assessment</h4>
+            </div>
+            
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+              <div className="text-center p-4 bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-900/20 dark:to-blue-900/30 rounded-xl border border-blue-200 dark:border-blue-800">
+                <div className="text-2xl font-bold text-blue-600 dark:text-blue-400 mb-1">
+                  {guide_quality_assessment.guide_quality_score || 0}/10
+                </div>
+                <div className="text-xs font-medium text-blue-700 dark:text-blue-300">Guide Quality</div>
+              </div>
+              
+              <div className="text-center p-4 bg-gradient-to-br from-green-50 to-green-100 dark:from-green-900/20 dark:to-green-900/30 rounded-xl border border-green-200 dark:border-green-800">
+                <div className="text-2xl font-bold text-green-600 dark:text-green-400 mb-1">
+                  {guide_quality_assessment.valid_issues_identified || 0}
+                </div>
+                <div className="text-xs font-medium text-green-700 dark:text-green-300">Valid Issues</div>
+              </div>
+
+              <div className="text-center p-4 bg-gradient-to-br from-yellow-50 to-yellow-100 dark:from-yellow-900/20 dark:to-yellow-900/30 rounded-xl border border-yellow-200 dark:border-yellow-800">
+                <div className="text-2xl font-bold text-yellow-600 dark:text-yellow-400 mb-1">
+                  {guide_quality_assessment.subtle_issues_count || 0}
+                </div>
+                <div className="text-xs font-medium text-yellow-700 dark:text-yellow-300">Subtle Issues</div>
+              </div>
+
+              <div className="text-center p-4 bg-gradient-to-br from-purple-50 to-purple-100 dark:from-purple-900/20 dark:to-purple-900/30 rounded-xl border border-purple-200 dark:border-purple-800">
+                <div className="text-2xl font-bold text-purple-600 dark:text-purple-400 mb-1">
+                  {guide_quality_assessment.focus_areas_provided || 0}
+                </div>
+                <div className="text-xs font-medium text-purple-700 dark:text-purple-300">Focus Areas</div>
+              </div>
+            </div>
+            
+            <div className="space-y-3">
+              <div className="text-sm font-medium text-gray-600 dark:text-gray-400">Quality Reasoning</div>
+              <div className="text-sm text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-4 leading-relaxed">
+                {guide_quality_assessment.quality_reasoning}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Time Impact Analysis */}
+        {time_impact_analysis && (
+          <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6 shadow-sm">
+            <div className="flex items-center gap-3 mb-6">
+              <TrendingUp className="w-5 h-5 text-orange-600 dark:text-orange-400" />
+              <h4 className="text-lg font-semibold text-gray-900 dark:text-white">Time Impact Analysis</h4>
+            </div>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+              <div className="text-center p-4 bg-gradient-to-br from-green-50 to-green-100 dark:from-green-900/20 dark:to-green-900/30 rounded-xl border border-green-200 dark:border-green-800">
+                <div className="text-lg font-bold text-green-600 dark:text-green-400 mb-1">
+                  {formatInsightsTime(time_impact_analysis.initial_scan_time_saved_hours)}
+                </div>
+                <div className="text-xs font-medium text-green-700 dark:text-green-300">Initial Scan Time Saved</div>
+              </div>
+              
+              <div className="text-center p-4 bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-900/20 dark:to-blue-900/30 rounded-xl border border-blue-200 dark:border-blue-800">
+                <div className="text-lg font-bold text-blue-600 dark:text-blue-400 mb-1">
+                  {formatInsightsTime(time_impact_analysis.issue_categorization_time_saved_hours)}
+                </div>
+                <div className="text-xs font-medium text-blue-700 dark:text-blue-300">Categorization Time Saved</div>
+              </div>
+              
+              <div className="text-center p-4 bg-gradient-to-br from-amber-50 to-amber-100 dark:from-amber-900/20 dark:to-amber-900/30 rounded-xl border border-amber-200 dark:border-amber-800">
+                <div className="text-lg font-bold text-amber-600 dark:text-amber-400 mb-1">
+                  {formatInsightsTime(time_impact_analysis.human_investigation_still_required_hours)}
+                </div>
+                <div className="text-xs font-medium text-amber-700 dark:text-amber-300">Still Requires Investigation</div>
+              </div>
+            </div>
+            
+            {time_impact_analysis.net_time_savings_reasoning && (
+              <div className="space-y-3">
+                <div className="text-sm font-medium text-gray-600 dark:text-gray-400">Impact Analysis</div>
+                <div className="text-sm text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-4 leading-relaxed">
+                  {time_impact_analysis.net_time_savings_reasoning}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

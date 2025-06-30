@@ -161,6 +161,7 @@ fold_suggestions_on_self_review=true # Pro feature. if true, the code suggestion
 publish_post_process_suggestion_impact=true
 wiki_page_accepted_suggestions=true
 allow_thumbs_up_down=false
+# model = ""  # Optional: specify model for code suggestions (defaults to config.model if not set)
 
 [pr_custom_prompt] # /custom_prompt #
 prompt = """\

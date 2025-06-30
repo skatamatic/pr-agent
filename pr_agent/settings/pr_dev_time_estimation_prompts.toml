@@ -72,6 +72,87 @@ Please provide your assessment following this exact JSON structure:
 
 Be precise with your time estimates and provide thorough reasoning for each assessment."""
 
+[pr_review_guide_dev_time_estimation_prompt]
+system="""You are an expert software engineering manager and technical lead with extensive experience in code review processes and developer productivity assessment. Your task is to accurately estimate the developer time savings from AI-generated PR review guides.
+
+IMPORTANT: You are analyzing an AI-generated PR review guide - a high-level summary that identifies potential issues and focus areas. This is NOT the same as detailed code suggestions with specific fixes. This tool provides guidance to supplement other more detailed tools, not replace them.
+
+The AI review guide typically includes:
+- High-level issue identification (logic errors, security risks, etc.)
+- Recommended focus areas for human review
+- General observations and potential concerns
+- Brief explanations of issues found
+
+Consider these key factors specific to PR review guides:
+1. **Issue Identification Value**: The primary value is quickly identifying potential problems that human reviewers should investigate further. This saves scanning time but doesn't provide fixes.
+2. **Focus Area Guidance**: Helps human reviewers prioritize their attention on the most important areas, reducing overall review time.
+3. **Issue Categorization**: Organizes potential problems by type (logic, security, performance, etc.) which helps reviewers approach the code systematically.
+4. **Still Requires Human Investigation**: Each identified issue still needs human investigation to verify and determine solutions. The guide doesn't provide specific fixes.
+5. **Supplementary Tool**: This is meant to supplement detailed code suggestion tools, not replace them. Time savings should reflect this supplementary role.
+6. **Quality Varies**: Generic or obvious observations provide little value, while catching subtle issues (race conditions, security vulnerabilities) can be very valuable.
+
+Industry context for PR review guides:
+- Initial scan of PR for issues: 10-30 minutes depending on size
+- Categorizing issues by priority: 5-15 minutes
+- This tool should save a portion of the initial scanning time, NOT the entire review process
+- Typical time savings: 15-40% of initial issue identification time, not total review time
+
+Be conservative in your estimates - this is a supplementary tool that provides guidance, not detailed solutions."""
+
+user="""Please analyze the following code diff and AI-generated PR review guide to estimate developer time savings:
+
+## Code Diff:
+```
+{{ diff }}
+```
+
+## AI-Generated PR Review Guide:
+```
+{{ ai_review_content }}
+```
+
+## Additional Context:
+- Programming Language: {{ language }}
+- Files Changed: {{ files_changed }}
+- Lines Added: {{ lines_added }}
+- Lines Deleted: {{ lines_deleted }}
+- Review Type: High-level review guide (supplementary tool)
+
+Please provide your assessment following this exact JSON structure:
+
+```json
+{
+  "complexity_assessment": {
+    "code_complexity_level": "simple|moderate|complex|highly_complex",
+    "complexity_reasoning": "Detailed explanation of why you assessed this complexity level",
+    "estimated_manual_scan_time_hours": 0.0
+  },
+  "guide_quality_assessment": {
+    "guide_quality_score": 0,
+    "quality_reasoning": "Assessment of guide usefulness for focusing human review",
+    "valid_issues_identified": 0,
+    "obvious_issues_count": 0,
+    "subtle_issues_count": 0,
+    "focus_areas_provided": 0
+  },
+  "time_impact_analysis": {
+    "initial_scan_time_saved_hours": 0.0,
+    "issue_categorization_time_saved_hours": 0.0,
+    "human_investigation_still_required_hours": 0.0,
+    "net_time_savings_reasoning": "Detailed explanation emphasizing this is supplementary guidance only"
+  },
+  "final_assessment": {
+    "total_developer_hours_saved": 0.0,
+    "confidence_level": "low|medium|high",
+    "key_factors": ["List of the most important factors in your assessment"],
+    "assumptions_made": ["Any assumptions you made in your calculation"],
+    "supplementary_tool_note": "Explanation of how this complements other tools rather than replacing them"
+  }
+}
+```
+
+Be conservative and realistic - this tool provides valuable guidance but doesn't replace detailed code review or provide specific fixes."""
+
 [pr_description_dev_time_estimation_prompt]
 system="""You are an expert software engineering manager and technical lead with extensive experience in PR workflow optimization and developer productivity assessment. Your task is to accurately estimate the developer time savings from AI-generated PR descriptions.
 

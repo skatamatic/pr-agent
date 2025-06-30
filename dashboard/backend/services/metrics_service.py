@@ -438,12 +438,16 @@ class MetricsService:
             # Get config for cost calculations
             config = await self.get_or_create_config(db)
             
-            # Query operations with metrics data
+            # Query operations with sufficient data for cost calculations
+            # Include both multi-model and legacy single-model operations
             operations = db.query(OperationDB).filter(
-                (OperationDB.model_used.is_not(None)) |
-                (OperationDB.input_tokens.is_not(None)) |
-                (OperationDB.output_tokens.is_not(None)) |
-                (OperationDB.estimated_dev_hours_saved.is_not(None))
+                # Multi-model operations (new format)
+                (OperationDB.ai_models_used.is_not(None)) |
+                # Legacy single-model operations (old format)
+                (
+                    (OperationDB.model_used.is_not(None)) &
+                    ((OperationDB.input_tokens > 0) | (OperationDB.output_tokens > 0))
+                )
             ).all()
             
             # Aggregate by operation type
@@ -461,9 +465,22 @@ class MetricsService:
                 estimated_dev_hours = operation.estimated_dev_hours_saved or 0.0
                 model_used = operation.model_used
                 
-                # Calculate operation cost
+                # Calculate operation cost - handle both multi-model and legacy data
                 operation_cost = 0.0
-                if model_used and (input_tokens > 0 or output_tokens > 0):
+                
+                # Try multi-model data first
+                if operation.ai_models_used and isinstance(operation.ai_models_used, dict):
+                    for model_name, model_tokens in operation.ai_models_used.items():
+                        model_input_tokens = model_tokens.get('input_tokens', 0)
+                        model_output_tokens = model_tokens.get('output_tokens', 0)
+                        if model_input_tokens > 0 or model_output_tokens > 0:
+                            model_costs = config.model_costs.get(model_name, self.default_model_costs.get(model_name, {'input': 0.01, 'output': 0.03}))
+                            input_cost = (model_input_tokens / 1000) * model_costs.get('input', 0.01)
+                            output_cost = (model_output_tokens / 1000) * model_costs.get('output', 0.03)
+                            operation_cost += input_cost + output_cost
+                
+                # Fallback to legacy single-model data
+                elif model_used and (input_tokens > 0 or output_tokens > 0):
                     model_costs = config.model_costs.get(model_used, self.default_model_costs.get(model_used, {'input': 0.01, 'output': 0.03}))
                     input_cost = (input_tokens / 1000) * model_costs.get('input', 0.01)
                     output_cost = (output_tokens / 1000) * model_costs.get('output', 0.03)
@@ -556,12 +573,16 @@ class MetricsService:
             # Get config for cost calculations
             config = await self.get_or_create_config(db)
             
-            # Query operations with metrics data
+            # Query operations with sufficient data for cost calculations
+            # Include both multi-model and legacy single-model operations
             operations = db.query(OperationDB).filter(
-                (OperationDB.model_used.is_not(None)) |
-                (OperationDB.input_tokens.is_not(None)) |
-                (OperationDB.output_tokens.is_not(None)) |
-                (OperationDB.estimated_dev_hours_saved.is_not(None))
+                # Multi-model operations (new format)
+                (OperationDB.ai_models_used.is_not(None)) |
+                # Legacy single-model operations (old format)
+                (
+                    (OperationDB.model_used.is_not(None)) &
+                    ((OperationDB.input_tokens > 0) | (OperationDB.output_tokens > 0))
+                )
             ).all()
             
             # Aggregate by repository
@@ -579,9 +600,22 @@ class MetricsService:
                 estimated_dev_hours = operation.estimated_dev_hours_saved or 0.0
                 model_used = operation.model_used
                 
-                # Calculate operation cost
+                # Calculate operation cost - handle both multi-model and legacy data
                 operation_cost = 0.0
-                if model_used and (input_tokens > 0 or output_tokens > 0):
+                
+                # Try multi-model data first
+                if operation.ai_models_used and isinstance(operation.ai_models_used, dict):
+                    for model_name, model_tokens in operation.ai_models_used.items():
+                        model_input_tokens = model_tokens.get('input_tokens', 0)
+                        model_output_tokens = model_tokens.get('output_tokens', 0)
+                        if model_input_tokens > 0 or model_output_tokens > 0:
+                            model_costs = config.model_costs.get(model_name, self.default_model_costs.get(model_name, {'input': 0.01, 'output': 0.03}))
+                            input_cost = (model_input_tokens / 1000) * model_costs.get('input', 0.01)
+                            output_cost = (model_output_tokens / 1000) * model_costs.get('output', 0.03)
+                            operation_cost += input_cost + output_cost
+                
+                # Fallback to legacy single-model data
+                elif model_used and (input_tokens > 0 or output_tokens > 0):
                     model_costs = config.model_costs.get(model_used, self.default_model_costs.get(model_used, {'input': 0.01, 'output': 0.03}))
                     input_cost = (input_tokens / 1000) * model_costs.get('input', 0.01)
                     output_cost = (output_tokens / 1000) * model_costs.get('output', 0.03)

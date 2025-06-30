@@ -86,11 +86,9 @@ async def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 if not github_user_token and get_settings().config.git_provider == "github":
                      get_logger().warning("GITHUB.USER_TOKEN not set; C# service might fail if it needs to clone a private repo.")
                 
-                get_logger().info(f"[Context] - Requesting C# context for PR: {owner}/{repo_name}#{pr_number}")
                 csharp_minimal_contexts_map = await get_csharp_minimal_context(owner, repo_name, pr_number, github_user_token)
                 if csharp_minimal_contexts_map is None: # Handle API call failure or disabled service
-                    csharp_minimal_contexts_map = {} 
-                get_logger().info(f"[Context] - C# Context Map (first 5 keys): {list(csharp_minimal_contexts_map.keys())[:5]}")
+                    csharp_minimal_contexts_map = {}
 
 
             except Exception as e:
@@ -350,8 +348,8 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
     return total_tokens, patches, remaining_files_list_new, files_in_patch_list
 
 
-async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelType.REGULAR):
-    all_models = _get_all_models(model_type)
+async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelType.REGULAR, tool_name: str = None):
+    all_models = _get_all_models(model_type, tool_name)
     all_deployments = _get_all_deployments(all_models)
     # try each (model, deployment_id) pair until one is successful, otherwise raise exception
     for i, (model, deployment_id) in enumerate(zip(all_models, all_deployments)):
@@ -370,13 +368,24 @@ async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelT
                 raise Exception(f"Failed to generate prediction with any model of {all_models}")
 
 
-def _get_all_models(model_type: ModelType = ModelType.REGULAR) -> List[str]:
+def _get_all_models(model_type: ModelType = ModelType.REGULAR, tool_name: str = None) -> List[str]:
     if model_type == ModelType.WEAK:
         model = get_model('model_weak')
     elif model_type == ModelType.REASONING:
         model = get_model('model_reasoning')
     elif model_type == ModelType.REGULAR:
-        model = get_settings().config.model
+        # Check if specific tool has a model configured
+        if tool_name == 'pr_reviewer':
+            tool_model = get_settings().get('pr_reviewer.model', '').strip()
+            model = tool_model or get_settings().config.model
+        elif tool_name == 'pr_description':
+            tool_model = get_settings().get('pr_description.model', '').strip()
+            model = tool_model or get_settings().config.model
+        elif tool_name == 'pr_code_suggestions':
+            tool_model = get_settings().get('pr_code_suggestions.model', '').strip()
+            model = tool_model or get_settings().config.model
+        else:
+            model = get_settings().config.model
     else:
         model = get_settings().config.model
     fallback_models = get_settings().config.fallback_models
@@ -413,7 +422,6 @@ async def get_pr_context(git_provider: GitProvider):
             for f in lang_group.get('files', [])
         )
         if is_cs_pr:
-            get_logger().info("[Context] - csharp_code_context_service is enabled and this diff is a csharp one")
             try:
                 owner, repo_name = git_provider.repo.split('/', 1) # Make sure git_provider.repo is in 'owner/repo' format
                 pr_number = git_provider.pr_num # Make sure git_provider.pr_num holds the PR number
@@ -423,11 +431,9 @@ async def get_pr_context(git_provider: GitProvider):
                 if not github_user_token and get_settings().config.git_provider == "github":
                      get_logger().warning("GITHUB.USER_TOKEN not set; C# service might fail if it needs to clone a private repo.")
                 
-                get_logger().info(f"[Context] - Requesting C# context for PR: {owner}/{repo_name}#{pr_number}")
                 csharp_minimal_contexts_map = await get_csharp_minimal_context(owner, repo_name, pr_number, github_user_token)
                 if csharp_minimal_contexts_map is None: # Handle API call failure or disabled service
-                    csharp_minimal_contexts_map = {} 
-                get_logger().info(f"[Context] - C# Context Map (first 5 keys): {list(csharp_minimal_contexts_map.keys())[:5]}")
+                    csharp_minimal_contexts_map = {}
 
             except Exception as e:
                 get_logger().error(f"Failed to get C# context from API: {e}", exc_info=True)

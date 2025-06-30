@@ -605,7 +605,7 @@ class PRCodeSuggestions:
             #     data = await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)
             # else:
             get_logger().info('Preparing predicitions')
-            data = await retry_with_fallback_models(self.prepare_prediction_main, model_type=ModelType.REGULAR)
+            data = await retry_with_fallback_models(self.prepare_prediction_main, model_type=ModelType.REGULAR, tool_name='pr_code_suggestions')
             if not data:
                 data = {"code_suggestions": []}
             self.data = data
@@ -2198,19 +2198,13 @@ class PRCodeSuggestions:
         # Phase 2: Fetch context if enabled
         try:
             if get_settings().csharp_code_context_service.enabled:
-                get_logger().info("Context service enabled, fetching PR context...")
-                
                 self.context_data = await get_pr_context(self.git_provider)
                 context_length = len(self.context_data) if self.context_data else 0
                 workflow_stats['context_fetched'] = True
                 
-                get_logger().info(f"✅ Context fetched successfully", 
-                                 artifacts={
-                                     'context_length': context_length,
-                                     'context_preview': self.context_data[:200] + "..." if context_length > 200 else self.context_data
-                                 })
+                if context_length > 0:
+                    get_logger().info(f"Context fetched for {context_length} characters")
             else:
-                get_logger().info("Context service disabled, skipping context fetch")
                 self.context_data = ""
                 workflow_stats['context_fetched'] = False
                 

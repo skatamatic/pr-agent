@@ -818,11 +818,19 @@ const MetricsView = () => {
       '#EF4444', '#84CC16', '#6B7280', '#F97316', '#EC4899'
     ];
     
+    // Filter out operations with $0 cost to avoid pie chart issues
+    const operationsWithCost = sortedOperations.filter(([, data]) => data.total_cost > 0);
+    
+    // If no operations have cost, return empty array
+    if (operationsWithCost.length === 0) {
+      return [];
+    }
+    
     let currentAngle = 0;
-    return sortedOperations.map(([operationName, data], index) => {
+    return operationsWithCost.map(([operationName, data], index) => {
       const percentage = totals.cost > 0 ? (data.total_cost / totals.cost) * 100 : 0;
       // If only one item, ensure it takes the full circle
-      const sweepAngle = sortedOperations.length === 1 ? 360 : (percentage / 100) * 360;
+      const sweepAngle = operationsWithCost.length === 1 ? 360 : (percentage / 100) * 360;
       
       const slice = {
         operationName,
@@ -857,11 +865,19 @@ const MetricsView = () => {
       '#F43F5E', '#06B6D4', '#8B5CF6', '#F59E0B', '#84CC16'
     ];
     
+    // Filter out repositories with $0 cost to avoid pie chart issues
+    const repositoriesWithCost = sortedRepositories.filter(([, data]) => data.total_cost > 0);
+    
+    // If no repositories have cost, return empty array
+    if (repositoriesWithCost.length === 0) {
+      return [];
+    }
+    
     let currentAngle = 0;
-    return sortedRepositories.map(([repositoryName, data], index) => {
+    return repositoriesWithCost.map(([repositoryName, data], index) => {
       const percentage = totals.cost > 0 ? (data.total_cost / totals.cost) * 100 : 0;
       // If only one item, ensure it takes the full circle
-      const sweepAngle = sortedRepositories.length === 1 ? 360 : (percentage / 100) * 360;
+      const sweepAngle = repositoriesWithCost.length === 1 ? 360 : (percentage / 100) * 360;
       
       const slice = {
         repositoryName,
@@ -1207,6 +1223,19 @@ const MetricsView = () => {
     const pieSlices = generateOperationPieSlices(sortedOperations, totals);
     const currentOperation = sortedOperations[currentOperationIndex];
 
+    // Handle case where no operations have cost data
+    if (pieSlices.length === 0) {
+      return (
+        <div className="text-center py-12">
+          <Zap className="h-12 w-12 text-gray-400 dark:text-gray-500 mx-auto mb-4" />
+          <p className="text-gray-500 dark:text-gray-400">Operations found, but no cost data available.</p>
+          <p className="text-sm text-gray-400 dark:text-gray-500 mt-2">
+            Operations need model usage and token counts to calculate costs.
+          </p>
+        </div>
+      );
+    }
+
     const handleOperationPieSliceClick = (sliceIndex) => {
       setCurrentOperationIndex(sliceIndex);
     };
@@ -1520,6 +1549,19 @@ const MetricsView = () => {
 
     const pieSlices = generateRepositoryPieSlices(sortedRepositories, totals);
     const currentRepository = sortedRepositories[currentRepositoryIndex];
+
+    // Handle case where no repositories have cost data
+    if (pieSlices.length === 0) {
+      return (
+        <div className="text-center py-12">
+          <Star className="h-12 w-12 text-gray-400 dark:text-gray-500 mx-auto mb-4" />
+          <p className="text-gray-500 dark:text-gray-400">Repositories found, but no cost data available.</p>
+          <p className="text-sm text-gray-400 dark:text-gray-500 mt-2">
+            Operations need model usage and token counts to calculate costs.
+          </p>
+        </div>
+      );
+    }
 
     const handleRepositoryPieSliceClick = (sliceIndex) => {
       setCurrentRepositoryIndex(sliceIndex);

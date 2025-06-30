@@ -55,14 +55,27 @@ class DevTimeEstimator:
                 'review_type': 'code_review'
             }
             
-            # Render the prompts
+            # Render the prompts using review-specific prompt
             environment = Environment(undefined=StrictUndefined)
-            system_prompt = environment.from_string(
-                get_settings().pr_dev_time_estimation_prompt.system
-            ).render(variables)
-            user_prompt = environment.from_string(
-                get_settings().pr_dev_time_estimation_prompt.user
-            ).render(variables)
+            
+            # Try to use review-specific prompt first, fall back to general one
+            try:
+                system_prompt = environment.from_string(
+                    get_settings().pr_review_guide_dev_time_estimation_prompt.system
+                ).render(variables)
+                user_prompt = environment.from_string(
+                    get_settings().pr_review_guide_dev_time_estimation_prompt.user
+                ).render(variables)
+                get_logger().info("[DevTime] - Using review-specific dev time estimation prompts")
+            except:
+                # Fallback to general prompt if review-specific doesn't exist
+                system_prompt = environment.from_string(
+                    get_settings().pr_dev_time_estimation_prompt.system
+                ).render(variables)
+                user_prompt = environment.from_string(
+                    get_settings().pr_dev_time_estimation_prompt.user
+                ).render(variables)
+                get_logger().info("[DevTime] - Using general dev time estimation prompts (fallback)")
             
             # Get AI estimation using the correct model
             # First try the specific dev time estimation model from config

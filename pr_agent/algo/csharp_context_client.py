@@ -19,7 +19,6 @@ async def _login_and_get_service_token(client: httpx.AsyncClient, service_settin
 
     login_payload = {"username": username, "password": password}
     
-    get_logger().info(f"[Context] - Attempting login to C# context service at: {login_url} for user: {username}")
     try:
         response = await client.post(login_url, json=login_payload)
         response.raise_for_status() # Will raise an exception for 4xx/5xx errors
@@ -28,7 +27,6 @@ async def _login_and_get_service_token(client: httpx.AsyncClient, service_settin
         if not service_token:
             get_logger().error("[Context] - Token not found in C# context service login response.", artifact=token_data)
             return None
-        get_logger().info("[Context] - Successfully logged into C# context service and obtained token.")
         return service_token
     except httpx.HTTPStatusError as e:
         get_logger().error(f"[Context] - Login to C# context service failed: {e.response.status_code} - {e.response.text}")
@@ -40,7 +38,6 @@ async def _login_and_get_service_token(client: httpx.AsyncClient, service_settin
 async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int, github_token_for_repo_access: str) -> dict | None:
     service_settings = get_settings().csharp_code_context_service
     if not service_settings.get("enabled", False):
-        get_logger().debug("[Context] - C# context service is disabled in configuration.")
         return None
 
     base_url = service_settings.base_url.rstrip('/')
@@ -73,29 +70,41 @@ async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int,
             "mode": service_settings.default_mode
         }
 
-        log_payload_safe = payload_for_analysis.copy()
-        log_payload_safe["token"] = "****" # Mask GitHub token for logging
-        get_logger().info(f"[Context] - Calling C# Context Service for analysis: {analyze_endpoint} with payload: {log_payload_safe}, auth header keys: {list(headers.keys())}")
-
         try:
             response = await client.post(analyze_endpoint, json=payload_for_analysis, headers=headers)
             response.raise_for_status()
 
             api_response_data = response.json()
+            # Process service logs with appropriate log levels
             logs = api_response_data.get("logs", [])
             for log_entry in logs:
-                get_logger().info(f"[Context] {log_entry}")
+                log_lower = log_entry.lower()
+                
+                # Special case: Never treat "flat analysis complete complete" as an error
+                # (it contains source code that might accidentally trigger error keywords)
+                if "flat analysis complete complete" in log_lower:
+                    get_logger().debug(f"[Context] {log_entry}")
+                elif any(keyword in log_lower for keyword in ['error', 'fail', 'exception']):
+                    # Only log actual errors as errors
+                    get_logger().error(f"[Context] {log_entry}")
+                elif any(keyword in log_lower for keyword in ['complete', 'success', 'finished', 'done']):
+                    # Log completion/success messages as debug (less verbose)
+                    get_logger().debug(f"[Context] {log_entry}")
+                elif any(keyword in log_lower for keyword in ['warn', 'warning']):
+                    # Log warnings appropriately
+                    get_logger().warning(f"[Context] {log_entry}")
+                # Skip other log entries to avoid spam
 
             analysis_result = api_response_data.get("result", None)
 
             if isinstance(analysis_result, dict):
-                get_logger().info(f"[Context] - Successfully received context for {len(analysis_result)} C# file(s) from service.")
+                # Summary log only
+                get_logger().info(f"[Context] - C# context retrieved for {len(analysis_result)} file(s)")
                 return analysis_result
             elif analysis_result is None:
-                get_logger().info("[Context] - C# context service returned no result data for analysis.")
                 return {}
             else:
-                get_logger().warning(f"[Context] - C# CodeContextService API (analysis) returned unexpected format for 'result'. Expected dict, got {type(analysis_result)}. Raw: {analysis_result}")
+                get_logger().error(f"[Context] - C# CodeContextService API returned unexpected format for 'result'. Expected dict, got {type(analysis_result)}.")
                 return None
 
         except httpx.HTTPStatusError as e:

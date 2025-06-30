@@ -9,6 +9,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
   const [selectedOperationType, setSelectedOperationType] = useState('all');
   const [selectedRepository, setSelectedRepository] = useState('all');
   const [showSystemLogs, setShowSystemLogs] = useState(true);
+  const [showOnlyArtifacts, setShowOnlyArtifacts] = useState(false);
   const [expandedLogs, setExpandedLogs] = useState(new Set());
   const [expandedMessages, setExpandedMessages] = useState(new Set());
   const [currentPage, setCurrentPage] = useState(1);
@@ -244,7 +245,10 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                          log.message?.includes('[SYSTEM]');
       const matchesSystemLogFilter = showSystemLogs || !isSystemLog;
       
-      return matchesSearch && matchesLevel && matchesRepo && matchesOperationType && matchesStep && matchesExternalOperation && matchesJob && matchesDateRange && matchesSystemLogFilter;
+      // AI Artifacts filter
+      const matchesArtifacts = !showOnlyArtifacts || (log.artifacts && Object.keys(log.artifacts).length > 0);
+      
+      return matchesSearch && matchesLevel && matchesRepo && matchesOperationType && matchesStep && matchesExternalOperation && matchesJob && matchesDateRange && matchesSystemLogFilter && matchesArtifacts;
     });
 
   // Pagination
@@ -279,7 +283,9 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       selectedRepository !== 'all' ||
       dateRange.start ||
       dateRange.end ||
-      (filterId && filterType)
+      (filterId && filterType) ||
+      !showSystemLogs ||
+      showOnlyArtifacts
     );
   };
 
@@ -439,6 +445,10 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       filters.push('Hiding system logs');
     }
     
+    if (showOnlyArtifacts) {
+      filters.push('Only AI artifacts');
+    }
+    
     return filters;
   };
 
@@ -461,6 +471,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     setSelectedStep('all');
     setSelectedRepository('all');
     setShowSystemLogs(true);
+    setShowOnlyArtifacts(false);
     setDateRange({ start: '', end: '' });
     setSearchTerm('');
     setCurrentPage(1);
@@ -724,7 +735,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                 Log Types
               </label>
-              <div className="flex items-center space-x-4">
+              <div className="flex flex-col space-y-3">
                 <label className="flex items-center">
                   <input
                     type="checkbox"
@@ -741,6 +752,22 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                       <path d="M10 2L15.09 8.26L22 9L16 14.74L17.18 21.02L10 17.77L2.82 21.02L4 14.74L-2 9L4.91 8.26L10 2Z"/>
                     </svg>
                     System
+                  </span>
+                </label>
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={showOnlyArtifacts}
+                    onChange={(e) => {
+                      setShowOnlyArtifacts(e.target.checked);
+                      setCurrentPage(1);
+                    }}
+                    className="mr-2 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-700 dark:text-gray-300">Only show logs with AI artifacts</span>
+                  <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400 ml-2">
+                    <Star className="h-3 w-3 mr-1" fill="currentColor" />
+                    AI
                   </span>
                 </label>
               </div>

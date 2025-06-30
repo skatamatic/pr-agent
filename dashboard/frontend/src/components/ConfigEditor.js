@@ -80,11 +80,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
   const availableActions = [
     { key: 'pr_reviewer', label: 'Review', description: 'Automated PR reviews' },
     { key: 'pr_description', label: 'Describe', description: 'Generate PR descriptions' },
-    { key: 'pr_code_suggestions', label: 'Improve', description: 'Code suggestions and improvements' },
-    { key: 'pr_questions', label: 'Ask', description: 'Answer questions about the PR' },
-    { key: 'pr_test', label: 'Test', description: 'Generate unit tests' },
-    { key: 'pr_add_docs', label: 'Documentation', description: 'Add documentation' },
-    { key: 'pr_update_changelog', label: 'Changelog', description: 'Update changelog' }
+    { key: 'pr_code_suggestions', label: 'Improve', description: 'Code suggestions and improvements' }
+    // Hidden: ask, test, documentation, and changelog actions
   ];
 
   // Check if there are any changes - only after initial load is complete and both configs are loaded
@@ -173,7 +170,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
         // PR Reviewer settings
         pr_reviewer: {
           num_max_findings: configData.pr_reviewer?.num_max_findings || 15,
-          extra_instructions: configData.pr_reviewer?.extra_instructions || ''
+          extra_instructions: configData.pr_reviewer?.extra_instructions || '',
+          model: configData.pr_reviewer?.model || ''
         },
         
         // PR Description settings
@@ -181,7 +179,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           extra_instructions: configData.pr_description?.extra_instructions || '',
           publish_labels: configData.pr_description?.publish_labels || false,
           generate_ai_title: configData.pr_description?.generate_ai_title || false,
-          enable_large_pr_handling: configData.pr_description?.enable_large_pr_handling || true
+          enable_large_pr_handling: configData.pr_description?.enable_large_pr_handling || true,
+          model: configData.pr_description?.model || ''
         },
         
         // PR Code Suggestions settings
@@ -190,7 +189,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           focus_only_on_problems: configData.pr_code_suggestions?.focus_only_on_problems || false,
           suggestions_score_threshold: configData.pr_code_suggestions?.suggestions_score_threshold || 0,
           commitable_code_suggestions: configData.pr_code_suggestions?.commitable_code_suggestions || true,
-          dual_publishing_score_threshold: configData.pr_code_suggestions?.dual_publishing_score_threshold || -1
+          dual_publishing_score_threshold: configData.pr_code_suggestions?.dual_publishing_score_threshold || -1,
+          model: configData.pr_code_suggestions?.model || ''
         },
         
         // GitHub settings
@@ -1144,6 +1144,34 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                       Recommended: 10-20 findings for balanced reviews
                     </p>
                   </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      AI Model for Reviews
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Specific AI model to use for code reviews. Leave empty to use the default model configured in General Settings.
+                      </span>
+                    </label>
+                    <select
+                      value={config.pr_reviewer?.model || ''}
+                      onChange={(e) => updateConfig('pr_reviewer.model', e.target.value)}
+                      disabled={!editing}
+                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <option value="">Use default model</option>
+                      <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                      <option value="gpt-4o">GPT-4o</option>
+                      <option value="gpt-4o-mini">GPT-4o Mini</option>
+                      <option value="anthropic/claude-3-opus">Claude 3 Opus</option>
+                      <option value="anthropic/claude-3-sonnet">Claude 3 Sonnet</option>
+                      <option value="anthropic/claude-3-haiku">Claude 3 Haiku</option>
+                      <option value="anthropic/claude-3-5-sonnet">Claude 3.5 Sonnet</option>
+                      <option value="anthropic/claude-3-5-haiku">Claude 3.5 Haiku</option>
+                    </select>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Optional: Override default model for better review quality
+                    </p>
+                  </div>
                 </div>
 
                 <div>
@@ -1235,6 +1263,34 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                       </span>
                     </label>
                   </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    AI Model for Descriptions
+                    <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                      Specific AI model to use for generating PR descriptions. Leave empty to use the default model configured in General Settings.
+                    </span>
+                  </label>
+                  <select
+                    value={config.pr_description?.model || ''}
+                    onChange={(e) => updateConfig('pr_description.model', e.target.value)}
+                    disabled={!editing}
+                    className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <option value="">Use default model</option>
+                    <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                    <option value="gpt-4o">GPT-4o</option>
+                    <option value="gpt-4o-mini">GPT-4o Mini</option>
+                    <option value="anthropic/claude-3-opus">Claude 3 Opus</option>
+                    <option value="anthropic/claude-3-sonnet">Claude 3 Sonnet</option>
+                    <option value="anthropic/claude-3-haiku">Claude 3 Haiku</option>
+                    <option value="anthropic/claude-3-5-sonnet">Claude 3.5 Sonnet</option>
+                    <option value="anthropic/claude-3-5-haiku">Claude 3.5 Haiku</option>
+                  </select>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Optional: Override default model for descriptions
+                  </p>
                 </div>
 
                 <div>
@@ -1353,6 +1409,34 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                       -1 = Disabled, 0+ = Minimum score for commitable suggestions
                     </p>
                   </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    AI Model for Code Suggestions
+                    <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                      Specific AI model to use for generating code suggestions. Leave empty to use the default model configured in General Settings.
+                    </span>
+                  </label>
+                  <select
+                    value={config.pr_code_suggestions?.model || ''}
+                    onChange={(e) => updateConfig('pr_code_suggestions.model', e.target.value)}
+                    disabled={!editing}
+                    className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <option value="">Use default model</option>
+                    <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                    <option value="gpt-4o">GPT-4o</option>
+                    <option value="gpt-4o-mini">GPT-4o Mini</option>
+                    <option value="anthropic/claude-3-opus">Claude 3 Opus</option>
+                    <option value="anthropic/claude-3-sonnet">Claude 3 Sonnet</option>
+                    <option value="anthropic/claude-3-haiku">Claude 3 Haiku</option>
+                    <option value="anthropic/claude-3-5-sonnet">Claude 3.5 Sonnet</option>
+                    <option value="anthropic/claude-3-5-haiku">Claude 3.5 Haiku</option>
+                  </select>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Optional: Override default model for code suggestions
+                  </p>
                 </div>
 
                 <div>
