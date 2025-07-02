@@ -807,7 +807,7 @@ class MetricsService:
             raise
 
     async def _broadcast_metrics_update(self, db: Session):
-        """Broadcast metrics update via WebSocket"""
+        """Broadcast metrics update via WebSocket (without config data)"""
         try:
             if not self.websocket_manager:
                 return
@@ -820,7 +820,12 @@ class MetricsService:
             # Convert summary to dict if it's a Pydantic model
             summary_dict = summary.dict() if hasattr(summary, 'dict') else summary
             
-            # Broadcast using the standard format
+            # CRITICAL: Remove config data from WebSocket broadcasts to prevent overwriting user edits
+            if 'config' in summary_dict:
+                del summary_dict['config']
+                logger.debug("Removed config data from WebSocket broadcast to protect user edits")
+            
+            # Broadcast using the standard format (config-free)
             await self.websocket_manager.broadcast({
                 "type": "metrics_update",
                 "data": {
@@ -829,7 +834,7 @@ class MetricsService:
                     "repositories": repositories
                 }
             })
-            logger.debug("Broadcasted metrics update via WebSocket")
+            logger.debug("Broadcasted metrics update via WebSocket (config data excluded)")
             
         except Exception as e:
             logger.warning(f"Failed to broadcast metrics update: {e}") 

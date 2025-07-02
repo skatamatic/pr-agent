@@ -1,0 +1,70 @@
+/* GitHub Bot Filter - Content Styles */
+
+/* Toggle button styles for GitHub integration */
+#bot-filter-toggle {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  white-space: nowrap !important;
+  user-select: none !important;
+  transition: all 0.15s ease !important;
+}
+
+#bot-filter-toggle:hover {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) !important;
+}
+
+#bot-filter-toggle:active {
+  transform: translateY(1px) !important;
+  box-shadow: 0 0 1px rgba(0, 0, 0, 0.1) !important;
+}
+
+/* Hidden comments indicator */
+[data-bot-filter-hidden] {
+  display: none !important;
+}
+
+/* Fade animation for showing/hiding */
+.bot-filter-fade-in {
+  animation: botFilterFadeIn 0.2s ease-in-out !important;
+}
+
+.bot-filter-fade-out {
+  animation: botFilterFadeOut 0.1s ease-in-out !important;
+}
+
+@keyframes botFilterFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes botFilterFadeOut {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+}
+
+/* Dark mode support for GitHub */
+[data-theme="dark"] #bot-filter-toggle,
+[data-color-mode="dark"] #bot-filter-toggle {
+  background: var(--button-default-bgColor-rest, #21262d) !important;
+  border-color: var(--button-default-borderColor-rest, #30363d) !important;
+  color: var(--button-default-fgColor-rest, #f0f6fc) !important;
+}
+
+[data-theme="dark"] #bot-filter-toggle:hover,
+[data-color-mode="dark"] #bot-filter-toggle:hover {
+  background: var(--button-default-bgColor-hover, #30363d) !important;
+  border-color: var(--button-default-borderColor-hover, #8b949e) !important;
+} 

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GitHub Bot Filter</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <div class="header">
+      <div class="title">
+        <span class="icon">🤖</span>
+        <h1>GitHub Bot Filter</h1>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="status-section">
+        <div class="status-item">
+          <span class="label">Status:</span>
+          <span id="filter-status" class="status-value">Loading...</span>
+        </div>
+        <div class="status-item">
+          <span class="label">Hidden Comments:</span>
+          <span id="hidden-count" class="status-value">0</span>
+        </div>
+      </div>
+
+      <div class="controls-section">
+        <button id="toggle-filter" class="primary-button" disabled>
+          <span class="button-icon">🔄</span>
+          <span class="button-text">Toggle Filter</span>
+        </button>
+      </div>
+
+      <div class="info-section">
+        <div class="info-card">
+          <h3>What this does:</h3>
+          <ul>
+            <li>Hides bot comments on GitHub PRs/Issues</li>
+            <li>Includes PR-Agent, GitHub Actions, Dependabot, etc.</li>
+            <li>Adds a toggle button directly on GitHub pages</li>
+            <li>Remembers your preference across sessions</li>
+          </ul>
+        </div>
+
+        <div class="bot-types">
+          <h3>Detected Bot Types:</h3>
+          <div class="bot-list">
+            <span class="bot-tag">GitHub Actions</span>
+            <span class="bot-tag">PR-Agent</span>
+            <span class="bot-tag">Dependabot</span>
+            <span class="bot-tag">Renovate</span>
+            <span class="bot-tag">Codecov</span>
+            <span class="bot-tag">Custom Bots</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <div class="github-status">
+        <span id="github-indicator" class="indicator">●</span>
+        <span id="github-status-text">Not on GitHub</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html> 

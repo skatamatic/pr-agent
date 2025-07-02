@@ -1,0 +1,35 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2da44e;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1a7f37;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background circle -->
+  <circle cx="64" cy="64" r="60" fill="url(#bgGradient)" stroke="#0d2818" stroke-width="2"/>
+  
+  <!-- Robot head -->
+  <rect x="40" y="35" width="48" height="40" rx="8" fill="#f0f6fc" stroke="#24292f" stroke-width="2"/>
+  
+  <!-- Robot eyes -->
+  <circle cx="52" cy="50" r="4" fill="#2da44e"/>
+  <circle cx="76" cy="50" r="4" fill="#2da44e"/>
+  
+  <!-- Robot mouth -->
+  <rect x="56" y="62" width="16" height="3" rx="1.5" fill="#24292f"/>
+  
+  <!-- Robot antennae -->
+  <line x1="52" y1="35" x2="52" y2="25" stroke="#24292f" stroke-width="2"/>
+  <line x1="76" y1="35" x2="76" y2="25" stroke="#24292f" stroke-width="2"/>
+  <circle cx="52" cy="25" r="3" fill="#fd7e14"/>
+  <circle cx="76" cy="25" r="3" fill="#fd7e14"/>
+  
+  <!-- Filter symbol -->
+  <path d="M 30 85 L 98 85 L 85 95 L 43 95 Z" fill="#f0f6fc" stroke="#24292f" stroke-width="2"/>
+  <line x1="50" y1="95" x2="50" y2="105" stroke="#24292f" stroke-width="3"/>
+  <line x1="78" y1="95" x2="78" y2="105" stroke="#24292f" stroke-width="3"/>
+  
+  <!-- "OFF" indicator when disabled -->
+  <text x="64" y="115" text-anchor="middle" font-family="Arial, sans-serif" font-size="8" font-weight="bold" fill="#f0f6fc">FILTER</text>
+</svg> 

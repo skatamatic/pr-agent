@@ -2087,8 +2087,8 @@ const RepositoryManager = () => {
                         {/* Best Practices Tab */}
                         {getRepoActiveTab(repo.id) === 'best-practices' && (
                           <div className="space-y-6 tab-enter">
-                            <div className="bg-gradient-to-r from-purple-50 to-indigo-50 dark:from-purple-900/20 dark:to-indigo-900/20 rounded-lg p-6 border border-purple-200 dark:border-purple-700">
-                              <div className="flex items-center justify-between mb-6">
+                            <div className="space-y-6">
+                              <div className="flex items-center justify-between">
                                 <h4 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
                                   <Shield className="h-5 w-5 mr-2 text-purple-600 dark:text-purple-400" />
                                   Repository Best Practices
@@ -2272,10 +2272,11 @@ const RepositoryManager = () => {
                                   </div>
                                 )
                               )}
+                              </div>
                             </div>
-                          </div>
                         )}
-
+                        </div>
+                        
                         {/* PR-Agent Config Tab */}
                         {getRepoActiveTab(repo.id) === 'pr-agent-config' && (
                           <div className="space-y-6 tab-enter">
@@ -2449,7 +2450,6 @@ const RepositoryManager = () => {
                         )}
                       </div>
                     </div>
-                  </div>
                 )}
               </div>
             ))}

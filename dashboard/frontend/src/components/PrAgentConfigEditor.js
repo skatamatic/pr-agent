@@ -4,7 +4,6 @@ import {
   Save, 
   Brain, 
   X,
-  Edit,
   MessageSquare,
   FileText,
   Lightbulb,
@@ -12,7 +11,6 @@ import {
   GitBranch,
   ExternalLink,
   Database,
-  CheckSquare,
   Github,
   Gauge,
   Clock,
@@ -35,7 +33,6 @@ const PrAgentConfigEditor = ({
   const [globalConfigData, setGlobalConfigData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [editing, setEditing] = useState(false);
   const [activeTab, setActiveTab] = useState('models');
   const [prStatus, setPrStatus] = useState(null);
   const [hasExistingConfig, setHasExistingConfig] = useState(false);
@@ -78,15 +75,7 @@ const PrAgentConfigEditor = ({
     ]
   };
 
-  const availableActions = [
-    { key: 'pr_reviewer', label: 'Review', description: 'Automated PR reviews' },
-    { key: 'pr_description', label: 'Describe', description: 'Generate PR descriptions' },
-    { key: 'pr_code_suggestions', label: 'Improve', description: 'Code suggestions and improvements' },
-    { key: 'pr_questions', label: 'Questions', description: 'Generate questions about changes' },
-    { key: 'pr_test', label: 'Test', description: 'Generate test cases' },
-    { key: 'pr_add_docs', label: 'Documentation', description: 'Add documentation' },
-    { key: 'pr_update_changelog', label: 'Changelog', description: 'Update changelog' }
-  ];
+
 
   const configSections = {
     models: {
@@ -112,16 +101,6 @@ const PrAgentConfigEditor = ({
         { key: 'csharp_code_context_service.timeout', label: 'Timeout (seconds)', type: 'number', min: 30, max: 600, description: 'Service timeout in seconds' }
       ]
     },
-    actions: {
-      title: 'Enabled Actions',
-      icon: CheckSquare,
-      fields: availableActions.map(action => ({
-        key: `enabled_actions.${action.key}`,
-        label: action.label,
-        type: 'boolean',
-        description: action.description
-      }))
-    },
     reviewer: {
       title: 'PR Reviewer',
       icon: MessageSquare,
@@ -136,7 +115,7 @@ const PrAgentConfigEditor = ({
       icon: Lightbulb,
       fields: [
         { key: 'pr_code_suggestions.suggestions_score_threshold', label: 'Score Threshold', type: 'number', min: 0, max: 10, description: 'Minimum score for suggestions' },
-        { key: 'pr_code_suggestions.commit_eligibility_threshold', label: 'Commit Threshold', type: 'number', min: 0, max: 1, step: 0.1, description: 'Threshold for commitable suggestions' },
+        { key: 'pr_code_suggestions.commit_eligibility_threshold', label: 'Commit Threshold', type: 'number', min: 0, max: 10, step: 1, description: 'Threshold for commitable suggestions (0-10)' },
         { key: 'pr_code_suggestions.commitable_code_suggestions', label: 'Commitable Suggestions', type: 'boolean', description: 'Allow direct commits of suggestions' },
         { key: 'pr_code_suggestions.focus_only_on_problems', label: 'Focus Only on Problems', type: 'boolean', description: 'Only suggest fixes for actual problems' },
         { key: 'pr_code_suggestions.dual_publishing_score_threshold', label: 'Dual Publishing Threshold', type: 'number', min: -1, max: 10, description: 'Threshold for dual publishing (-1 to disable)' },
@@ -218,9 +197,6 @@ const PrAgentConfigEditor = ({
       setOverrides(existingOverrides);
       setOriginalOverrides(JSON.parse(JSON.stringify(existingOverrides)));
       setHasExistingConfig(hasConfig);
-      
-      // Set editing state based on whether config exists
-      setEditing(!hasConfig); // Start in edit mode if no config exists (create mode)
       
       // Set PR status
       setPrStatus({
@@ -327,7 +303,6 @@ const PrAgentConfigEditor = ({
       }
 
       setOriginalOverrides(JSON.parse(JSON.stringify(overrides)));
-      setEditing(false);
       showSuccess('Configuration saved and PR created successfully!');
       
       // Pass result data to parent and close dialog
@@ -378,14 +353,9 @@ const PrAgentConfigEditor = ({
   };
 
   const cancelEdit = () => {
-    if (hasExistingConfig) {
-      // Revert changes for existing configs
-      setOverrides(JSON.parse(JSON.stringify(originalOverrides)));
-      setEditing(false);
-    } else {
-      // Close modal for new configs
-      onClose();
-    }
+    // Revert any changes and close modal
+    setOverrides(JSON.parse(JSON.stringify(originalOverrides)));
+    onClose();
   };
 
   // Revert field to global default
@@ -400,11 +370,9 @@ const PrAgentConfigEditor = ({
     const isFieldOverridden = isOverridden(field.key);
     
     const fieldClasses = `w-full rounded-lg px-3 py-2 transition-all duration-200 ${
-      !editing 
-        ? 'bg-gray-50 dark:bg-gray-700 text-gray-500 dark:text-gray-400 cursor-not-allowed' 
-        : isFieldOverridden
-          ? 'bg-blue-50 dark:bg-gray-700 border-2 border-blue-300 dark:border-blue-500/50 focus:border-blue-500 dark:focus:border-blue-400 text-gray-900 dark:text-gray-100'
-          : 'bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 focus:border-gray-500 dark:focus:border-gray-400 text-gray-900 dark:text-gray-100'
+      isFieldOverridden
+        ? 'bg-blue-50 dark:bg-gray-700 border-2 border-blue-300 dark:border-blue-500/50 focus:border-blue-500 dark:focus:border-blue-400 text-gray-900 dark:text-gray-100'
+        : 'bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 focus:border-gray-500 dark:focus:border-gray-400 text-gray-900 dark:text-gray-100'
     } focus:outline-none focus:ring-0`;
 
     let fieldElement;
@@ -415,7 +383,6 @@ const PrAgentConfigEditor = ({
           <select
             value={currentValue || ''}
             onChange={(e) => updateOverride(field.key, e.target.value)}
-            disabled={!editing}
             className={fieldClasses}
           >
             <option value="">
@@ -423,25 +390,45 @@ const PrAgentConfigEditor = ({
                 ? 'Use default model' 
                 : 'Use global default'}
             </option>
-            {field.options && Object.entries(field.options).map(([category, models]) => (
-              <optgroup key={category} label={category.charAt(0).toUpperCase() + category.slice(1)}>
-                {models.map(model => (
-                  <option key={model} value={model}>{model}</option>
-                ))}
-              </optgroup>
-            ))}
-            {field.options?.effort && field.options.effort.map(effort => (
-              <option key={effort} value={effort}>{effort}</option>
-            ))}
-            {field.options?.depth && field.options.depth.map(depth => (
-              <option key={depth} value={depth}>Level {depth}</option>
-            ))}
-            {field.options?.mode && field.options.mode.map(mode => (
-              <option key={mode} value={mode}>{mode}</option>
-            ))}
-            {field.options?.level && field.options.level.map(level => (
-              <option key={level} value={level}>Level {level}</option>
-            ))}
+            {field.options && (() => {
+              // Handle complex options with categories (like models)
+              if (field.options.reasoning || field.options.budget || field.options.premium) {
+                return Object.entries(field.options).map(([category, models]) => (
+                  <optgroup key={category} label={category.charAt(0).toUpperCase() + category.slice(1)}>
+                    {models.map(model => (
+                      <option key={model} value={model}>{model}</option>
+                    ))}
+                  </optgroup>
+                ));
+              }
+              
+              // Handle simple arrays (effort, depth, mode, level)
+              if (field.options.effort) {
+                return field.options.effort.map(effort => (
+                  <option key={effort} value={effort}>{effort.charAt(0).toUpperCase() + effort.slice(1)}</option>
+                ));
+              }
+              
+              if (field.options.depth) {
+                return field.options.depth.map(depth => (
+                  <option key={depth} value={depth}>Level {depth}</option>
+                ));
+              }
+              
+              if (field.options.mode) {
+                return field.options.mode.map(mode => (
+                  <option key={mode} value={mode}>{mode}</option>
+                ));
+              }
+              
+              if (field.options.level) {
+                return field.options.level.map(level => (
+                  <option key={level} value={level}>Level {level}</option>
+                ));
+              }
+              
+              return null;
+            })()}
           </select>
         );
         break;
@@ -451,18 +438,15 @@ const PrAgentConfigEditor = ({
           <div className="flex items-center space-x-3">
             <button
               type="button"
-              onClick={() => editing && updateOverride(field.key, !currentValue)}
-              disabled={!editing}
-              className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 ${
-                !editing ? 'opacity-50 cursor-not-allowed' : ''
-              } ${
+              onClick={() => updateOverride(field.key, !currentValue)}
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-offset-2 ${
                 currentValue 
                   ? isFieldOverridden 
-                    ? 'bg-blue-600 dark:bg-blue-500' 
-                    : 'bg-gray-600 dark:bg-gray-500'
-                  : 'bg-gray-200 dark:bg-gray-700'
+                    ? 'bg-blue-600 dark:bg-blue-500 focus:ring-blue-500' 
+                    : 'bg-green-600 dark:bg-green-500 focus:ring-green-500'
+                  : 'bg-gray-200 dark:bg-gray-700 focus:ring-gray-500'
               } ${
-                isFieldOverridden && editing
+                isFieldOverridden
                   ? 'ring-2 ring-blue-300 dark:ring-blue-500/50'
                   : ''
               }`}
@@ -489,7 +473,6 @@ const PrAgentConfigEditor = ({
             min={field.min}
             max={field.max}
             step={field.step}
-            disabled={!editing}
             placeholder="Use global default"
             className={fieldClasses}
           />
@@ -501,7 +484,6 @@ const PrAgentConfigEditor = ({
           <textarea
             value={currentValue || ''}
             onChange={(e) => updateOverride(field.key, e.target.value)}
-            disabled={!editing}
             placeholder="Use global default"
             rows={9}
             className={`${fieldClasses} resize-vertical`}
@@ -515,7 +497,6 @@ const PrAgentConfigEditor = ({
             type="password"
             value={currentValue || ''}
             onChange={(e) => updateOverride(field.key, e.target.value)}
-            disabled={!editing}
             placeholder="Use global default"
             className={fieldClasses}
           />
@@ -528,7 +509,6 @@ const PrAgentConfigEditor = ({
             type="text"
             value={currentValue || ''}
             onChange={(e) => updateOverride(field.key, e.target.value)}
-            disabled={!editing}
             placeholder={field.placeholder || 'Use global default'}
             className={fieldClasses}
           />
@@ -550,16 +530,14 @@ const PrAgentConfigEditor = ({
               <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200">
                 Overridden
               </span>
-              {editing && (
-                <button
-                  onClick={() => revertField(field.key)}
-                  className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-blue-700 dark:hover:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/20 transition-colors"
-                  title="Revert to global default"
-                >
-                  <RotateCcw className="h-3 w-3 mr-1" />
-                  Revert
-                </button>
-              )}
+              <button
+                onClick={() => revertField(field.key)}
+                className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-blue-700 dark:hover:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/20 transition-colors"
+                title="Revert to global default"
+              >
+                <RotateCcw className="h-3 w-3 mr-1" />
+                Revert
+              </button>
             </div>
           )}
         </div>
@@ -595,47 +573,25 @@ const PrAgentConfigEditor = ({
           </div>
           
           <div className="flex items-center space-x-3">
-            {!editing && hasExistingConfig ? (
-              // Edit mode - show Edit button for existing configs
-              <>
-                <button
-                  onClick={() => setEditing(true)}
-                  className="flex items-center px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-                >
-                  <Edit className="h-4 w-4 mr-2" />
-                  Edit
-                </button>
-                <button
-                  onClick={onClose}
-                  className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-                >
-                  <X className="w-5 h-5 text-gray-500 dark:text-gray-400" />
-                </button>
-              </>
-            ) : (
-              // Create/Edit mode - show Cancel + Save
-              <>
-                <button
-                  onClick={cancelEdit}
-                  className="flex items-center px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-                >
-                  <X className="h-4 w-4 mr-2" />
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSave}
-                  disabled={saving || (!hasChanges() && hasExistingConfig)}
-                  className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
-                    !saving && (hasChanges() || !hasExistingConfig)
-                      ? 'text-white bg-blue-600 hover:bg-blue-700'
-                      : 'text-gray-400 bg-gray-200 dark:bg-gray-700 cursor-not-allowed'
-                  }`}
-                >
-                  <Save className="h-4 w-4 mr-2" />
-                  {saving ? 'Creating PR...' : hasExistingConfig ? 'Save & Update PR' : 'Create Config & PR'}
-                </button>
-              </>
-            )}
+            <button
+              onClick={cancelEdit}
+              className="flex items-center px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+            >
+              <X className="h-4 w-4 mr-2" />
+              Cancel
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={saving || (!hasChanges() && hasExistingConfig)}
+              className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                !saving && (hasChanges() || !hasExistingConfig)
+                  ? 'text-white bg-blue-600 hover:bg-blue-700'
+                  : 'text-gray-400 bg-gray-200 dark:bg-gray-700 cursor-not-allowed'
+              }`}
+            >
+              <Save className="h-4 w-4 mr-2" />
+              {saving ? 'Creating PR...' : hasExistingConfig ? 'Save & Update PR' : 'Create Config & PR'}
+            </button>
           </div>
         </div>
 

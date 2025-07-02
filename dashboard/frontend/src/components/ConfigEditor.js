@@ -7,7 +7,6 @@ import {
   Key, 
   Zap, 
   Database, 
-  CheckSquare,
   AlertCircle,
   Info,
   X,
@@ -76,12 +75,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
     ]
   };
 
-  const availableActions = [
-    { key: 'pr_reviewer', label: 'Review', description: 'Automated PR reviews' },
-    { key: 'pr_description', label: 'Describe', description: 'Generate PR descriptions' },
-    { key: 'pr_code_suggestions', label: 'Improve', description: 'Code suggestions and improvements' }
-    // Hidden: ask, test, documentation, and changelog actions
-  ];
+
 
   // Check if there are any changes - only after initial load is complete and both configs are loaded
   // Use a more stable comparison to prevent flickering - start with explicit false
@@ -155,16 +149,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           url: configData.csharp_code_context_service?.url || ''
         },
         
-        // Enabled actions
-        enabled_actions: configData.enabled_actions || {
-          pr_reviewer: true,
-          pr_description: true,
-          pr_code_suggestions: true,
-          pr_questions: true,
-          pr_test: false,
-          pr_add_docs: false,
-          pr_update_changelog: false
-        },
+
         
         // PR Reviewer settings
         pr_reviewer: {
@@ -187,7 +172,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           extra_instructions: configData.pr_code_suggestions?.extra_instructions || '',
           focus_only_on_problems: configData.pr_code_suggestions?.focus_only_on_problems || false,
           suggestions_score_threshold: configData.pr_code_suggestions?.suggestions_score_threshold || 0,
-          commit_eligibility_threshold: configData.pr_code_suggestions?.commit_eligibility_threshold || 0.7,
+          commit_eligibility_threshold: configData.pr_code_suggestions?.commit_eligibility_threshold || 7,
           commitable_code_suggestions: configData.pr_code_suggestions?.commitable_code_suggestions || true,
           dual_publishing_score_threshold: configData.pr_code_suggestions?.dual_publishing_score_threshold || -1,
           model: configData.pr_code_suggestions?.model || ''
@@ -263,15 +248,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           default_mode: 'Minified',
           timeout: 180
         },
-        enabled_actions: {
-          pr_reviewer: true,
-          pr_description: true,
-          pr_code_suggestions: true,
-          pr_questions: true,
-          pr_test: false,
-          pr_add_docs: false,
-          pr_update_changelog: false
-        },
+
         pr_reviewer: {
           num_max_findings: 15,
           extra_instructions: ''
@@ -286,7 +263,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           extra_instructions: '',
           focus_only_on_problems: false,
           suggestions_score_threshold: 0,
-          commit_eligibility_threshold: 0.7,
+          commit_eligibility_threshold: 7,
           commitable_code_suggestions: true,
           dual_publishing_score_threshold: -1
         },
@@ -426,8 +403,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
     
     if (config.pr_code_suggestions?.commit_eligibility_threshold !== undefined) {
       const threshold = config.pr_code_suggestions.commit_eligibility_threshold;
-      if (threshold < 0 || threshold > 1) {
-        errors['pr_code_suggestions.commit_eligibility_threshold'] = 'Commit eligibility threshold must be between 0.0 and 1.0';
+      if (threshold < 0 || threshold > 10 || !Number.isInteger(threshold)) {
+        errors['pr_code_suggestions.commit_eligibility_threshold'] = 'Commit eligibility threshold must be an integer between 0 and 10';
       }
     }
 
@@ -712,17 +689,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 <Database className="h-4 w-4 mr-3 flex-shrink-0" />
                 <span className="truncate">Code Context</span>
               </button>
-              <button
-                onClick={() => setActiveTab('actions')}
-                className={`w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                  activeTab === 'actions'
-                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm'
-                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50'
-                }`}
-              >
-                <CheckSquare className="h-4 w-4 mr-3 flex-shrink-0" />
-                <span className="truncate">Enabled Actions</span>
-              </button>
+
               <button
                 onClick={() => setActiveTab('pr-reviewer')}
                 className={`w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
@@ -1054,58 +1021,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           </div>
         )}
 
-        {/* Enabled Actions Tab */}
-        {activeTab === 'actions' && (
-          <div className="space-y-8 animate-in slide-in-from-right-4 fade-in duration-300">
-            <SectionHeader title="Enabled Actions" icon={CheckSquare}>
-              <div className="space-y-4 pt-4">
-                <p className="text-sm text-gray-600 dark:text-gray-400">Select which PR-Agent actions are available for use:</p>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {availableActions.map(action => {
-                    const isEnabled = config.enabled_actions?.[action.key] || false;
-                    
-                    return (
-                      <div
-                        key={action.key}
-                        onClick={() => editing && updateConfig(`enabled_actions.${action.key}`, !isEnabled)}
-                        className={`relative p-4 rounded-lg border-2 transition-all duration-300 ${
-                          isEnabled
-                            ? `border-green-300 dark:border-green-600 bg-gradient-to-br from-green-50 to-green-100 dark:from-green-900/30 dark:to-green-800/30 ${
-                                editing ? 'shadow-lg shadow-green-200/40 dark:shadow-green-400/20' : ''
-                              }`
-                            : `border-gray-200 dark:border-gray-700 bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-800/50 dark:to-gray-700/50 ${
-                                editing ? 'shadow-lg shadow-gray-200/40 dark:shadow-gray-400/20' : ''
-                              }`
-                        } ${
-                          editing 
-                            ? 'cursor-pointer hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-2xl hover:-translate-y-1 transform shadow-lg' 
-                            : 'cursor-default shadow-sm'
-                        }`}
-                      >
-                        <div>
-                          <h4 className={`text-base font-medium transition-colors ${
-                            isEnabled
-                              ? 'text-green-800 dark:text-green-200'
-                              : 'text-gray-700 dark:text-gray-300'
-                          }`}>
-                            {action.label}
-                          </h4>
-                          <p className={`text-sm mt-1 transition-colors ${
-                            isEnabled
-                              ? 'text-green-600 dark:text-green-300'
-                              : 'text-gray-500 dark:text-gray-400'
-                          }`}>
-                            {action.description}
-                          </p>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </SectionHeader>
-          </div>
-        )}
+
 
         {/* PR Reviewer Tab */}
         {activeTab === 'pr-reviewer' && (
@@ -1391,16 +1307,16 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                       Commit Eligibility Threshold
                       <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                        Minimum confidence score (0.0-1.0) for suggestions to show commit buttons. Lower values allow more auto-commits.
+                        Minimum confidence score (0-10) for suggestions to show commit buttons. Lower values allow more auto-commits.
                       </span>
                     </label>
                     <input
                       type="number"
-                      step="0.1"
-                      value={config.pr_code_suggestions?.commit_eligibility_threshold || 0.7}
-                      onChange={(e) => updateConfig('pr_code_suggestions.commit_eligibility_threshold', parseFloat(e.target.value))}
+                      step="1"
+                      value={config.pr_code_suggestions?.commit_eligibility_threshold || 7}
+                      onChange={(e) => updateConfig('pr_code_suggestions.commit_eligibility_threshold', parseInt(e.target.value))}
                       min="0"
-                      max="1"
+                      max="10"
                       disabled={!editing}
                       className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
                     />
@@ -1851,7 +1767,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
 
                 <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md p-4">
                   <div className="flex items-start">
-                    <CheckSquare className="h-5 w-5 text-green-600 dark:text-green-400 mr-2 mt-0.5" />
+                    <Gauge className="h-5 w-5 text-green-600 dark:text-green-400 mr-2 mt-0.5" />
                     <div className="text-green-800 dark:text-green-200 text-sm">
                       <p className="font-medium mb-1">Dashboard Benefits:</p>
                       <ul className="list-disc list-inside space-y-1 text-xs">

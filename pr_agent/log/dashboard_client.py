@@ -327,9 +327,6 @@ class DashboardClient:
             from pr_agent.log.job_context import JobContext
             operation_id = JobContext.get_current_operation_id()
             
-            if logger:
-                logger.info(f"[INSIGHTS DEBUG] Current operation ID from context: {operation_id}")
-            
             if not operation_id:
                 if logger:
                     logger.warning("No operation ID available for insights update - insights will not be saved!")
@@ -341,10 +338,6 @@ class DashboardClient:
             headers = {"Content-Type": "application/json"}
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
-            
-            if logger:
-                logger.info(f"[INSIGHTS DEBUG] Sending insights to URL: {url}")
-                logger.info(f"[INSIGHTS DEBUG] Insights data keys: {list(insights.keys())}")
             
             async with aiohttp.ClientSession() as session:
                 async with session.put(url, json=insights_data, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:

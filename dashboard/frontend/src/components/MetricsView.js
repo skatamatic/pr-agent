@@ -271,8 +271,9 @@ const MetricsView = () => {
   }, [handleThrottledMetricsUpdate, restartAdaptivePolling]);
 
   useEffect(() => {
-    // Initial data load
+    // Initial data load - fetch metrics and config separately
     fetchData();
+    fetchConfigData();
 
     // Listen for WebSocket events that indicate new activity
     const handleJobUpdate = () => handleNewActivity();
@@ -301,8 +302,34 @@ const MetricsView = () => {
     };
   }, [handleNewActivity, handleThrottledMetricsUpdate, restartAdaptivePolling]);
 
+  // COMPLETELY SEPARATE: Config data loading (isolated from live metrics updates)
+  const fetchConfigData = async () => {
+    try {
+      console.log('MetricsView: Fetching config data separately');
+      const configRes = await apiService.get('/api/metrics/config');
+      const configData = configRes.data?.data || configRes.data;
+      
+      // Update server config state for reset functionality
+      setConfig(configData);
+      
+      // Only populate form if not already loaded or if user hasn't made edits
+      if (!configLoaded || (!userHasEditedConfig && activeTab === 'configuration')) {
+        setEditableConfig({
+          developer_hourly_rate: configData.developer_hourly_rate || 75,
+          hours_multiplier: configData.hours_multiplier || 1.0,
+          model_costs: configData.model_costs || {}
+        });
+        setConfigLoaded(true);
+        console.log('MetricsView: Config form populated from server');
+      }
+    } catch (err) {
+      console.error('Error fetching config data:', err);
+      setError('Failed to load configuration data');
+    }
+  };
+
+  // LIVE METRICS DATA ONLY: No config data to prevent overwriting user edits
   const fetchData = async () => {
-    
     try {
       // Only show loading spinner on initial load, not on refresh
       if (metricsData.total_operations === 0 && !operationData && !repositoryData) {
@@ -316,15 +343,14 @@ const MetricsView = () => {
       const previousOperations = JSON.stringify(operationData);
       const previousRepositories = JSON.stringify(repositoryData);
       
-      const [summaryRes, configRes, operationRes, repositoryRes] = await Promise.all([
+      // CRITICAL: Only fetch live metrics data, NO CONFIG DATA
+      const [summaryRes, operationRes, repositoryRes] = await Promise.all([
         apiService.get('/api/metrics/summary'),
-        apiService.get('/api/metrics/config'),
         apiService.get('/api/metrics/operations'),
         apiService.get('/api/metrics/repositories')
       ]);
 
       const summary = summaryRes.data?.data || summaryRes.data;
-      const configData = configRes.data?.data || configRes.data;
       const operationBreakdown = operationRes.data?.data || operationRes.data;
       const repositoryBreakdown = repositoryRes.data?.data || repositoryRes.data;
 
@@ -365,52 +391,19 @@ const MetricsView = () => {
         'gpt-3.5-turbo'
       ];
 
-      // Apply the new data
+      // Apply ONLY the live metrics data (NO CONFIG DATA)
       setMetricsData(summary);
       setOperationData(operationBreakdown);
       setRepositoryData(repositoryBreakdown);
-      setConfig(configData);
       setAvailableModels(availableModels);
       
-      // CRITICAL: Completely block form updates when user is actively editing
-      const isUserActivelyEditing = (
-        activeTab === 'configuration' && userHasEditedConfig
-      );
-      
-      // Only update config in these specific cases:
-      // 1. Initial load (configLoaded = false)
-      // 2. Right after successful save (justSavedConfig = true)
-      // 3. NEVER when user is actively editing on config tab
-      const shouldUpdateConfig = !isUserActivelyEditing && (
-        (!configLoaded) || (justSavedConfig)
-      );
-      
-      if (shouldUpdateConfig) {
-        console.log('MetricsView: Updating config form', { 
-          configLoaded, 
-          justSavedConfig, 
-          userHasEditedConfig, 
-          activeTab,
-          isUserActivelyEditing 
-        });
-        
-        setEditableConfig({
-          developer_hourly_rate: configData.developer_hourly_rate || 75,
-          hours_multiplier: configData.hours_multiplier || 1.0,
-          model_costs: configData.model_costs || {}
-        });
-        
-        if (!configLoaded) {
-          setConfigLoaded(true);
-        }
-        if (justSavedConfig) {
-          setJustSavedConfig(false);
-        }
-      } else if (isUserActivelyEditing) {
-        console.log('MetricsView: Blocking config update - user is actively editing');
+      // Reset justSavedConfig flag without updating form to prevent future overwrites
+      if (justSavedConfig) {
+        setJustSavedConfig(false);
       }
       
       setLastUpdated(new Date());
+      console.log('MetricsView: Live metrics data updated (config data untouched)');
     } catch (err) {
       console.error('Error fetching metrics:', err);
       setError('Failed to load metrics data');
@@ -437,16 +430,29 @@ const MetricsView = () => {
   const handleSaveConfig = async () => {
     try {
       setSaving(true);
+      
+      // Save the config
       await apiService.post('/api/metrics/config', editableConfig);
       
       // Clear the edit flag since we just saved
       setUserHasEditedConfig(false);
       
-      // Set flag to allow form update on next fetchData call
+      // Set flag to allow one-time refresh of metrics data (but not config form)
       setJustSavedConfig(true);
+      
+      // Update the server config state to match what we just saved
+      // This ensures the reset button works correctly
+      setConfig({
+        ...config,
+        developer_hourly_rate: editableConfig.developer_hourly_rate,
+        hours_multiplier: editableConfig.hours_multiplier,
+        model_costs: editableConfig.model_costs
+      });
       
       // Trigger metrics recalculation with the new config
       await handleRecalculate();
+      
+      console.log('MetricsView: Config saved successfully, form preserved');
     } catch (err) {
       console.error('Error saving config:', err);
       setError('Failed to save configuration');
@@ -524,6 +530,17 @@ const MetricsView = () => {
     { id: 'repositories', name: 'Repository Breakdown', icon: GitBranch },
     { id: 'configuration', name: 'Configuration', icon: Settings }
   ];
+
+  // Handle tab switching - fetch config data when switching to config tab
+  const handleTabChange = (tabId) => {
+    // If switching to configuration tab, ensure we have fresh config data
+    if (tabId === 'configuration' && !userHasEditedConfig) {
+      console.log('MetricsView: Switching to config tab - fetching fresh config data');
+      fetchConfigData();
+    }
+    
+    setActiveTab(tabId);
+  };
 
   const renderTabContent = () => {
     if (!hasData && activeTab !== 'configuration') {
@@ -2287,7 +2304,7 @@ const MetricsView = () => {
           return (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => handleTabChange(tab.id)}
               className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                 activeTab === tab.id
                   ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
