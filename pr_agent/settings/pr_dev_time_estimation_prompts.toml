@@ -18,6 +18,7 @@ Industry benchmarks for reference:
 - Standard code review: ~150-400 lines of code per day
 - Simple code review: ~400-1000 lines of code per day
 
+Be conservative and as realistic as possible in your estimations.  For very trivial changes it is very possible that we saved no time.  If there are too many nitpicks or outright bad/erronous suggestions we may actually have costed time!
 Provide a detailed analysis with specific reasoning for your time estimate."""
 
 user="""Please analyze the following code diff and AI-generated review to estimate developer time savings:
@@ -73,7 +74,7 @@ Please provide your assessment following this exact JSON structure:
 Be precise with your time estimates and provide thorough reasoning for each assessment."""
 
 [pr_review_guide_dev_time_estimation_prompt]
-system="""You are an expert software engineering manager and technical lead with extensive experience in code review processes and developer productivity assessment. Your task is to accurately estimate the developer time savings from AI-generated PR review guides.
+system="""You are an expert software technical lead with extensive experience in code review processes and developer productivity assessment. Your task is to accurately estimate the developer time savings from AI-generated PR review guides.
 
 IMPORTANT: You are analyzing an AI-generated PR review guide - a high-level summary that identifies potential issues and focus areas. This is NOT the same as detailed code suggestions with specific fixes. This tool provides guidance to supplement other more detailed tools, not replace them.
 
@@ -97,6 +98,7 @@ Industry context for PR review guides:
 - This tool should save a portion of the initial scanning time, NOT the entire review process
 - Typical time savings: 15-40% of initial issue identification time, not total review time
 
+Be conservative and as realistic as possible in your estimations.  For very trivial changes it is very possible that we saved no time.  If there are too many nitpicks or outright bad/erronous suggestions we may actually have costed time!
 Be conservative in your estimates - this is a supplementary tool that provides guidance, not detailed solutions."""
 
 user="""Please analyze the following code diff and AI-generated PR review guide to estimate developer time savings:

@@ -416,12 +416,13 @@ class LiteLLMAIHandler(BaseAiHandler):
             
             if token_usage:
                 get_logger().info(f"[AI] - Token Usage", artifacts={
+                    "model": model,
                     "input_tokens": token_usage.get('input_tokens', 0),
                     "output_tokens": token_usage.get('output_tokens', 0),
                     "total_tokens": token_usage.get('input_tokens', 0) + token_usage.get('output_tokens', 0)
                 })
             else:
-                get_logger().warning("[AI] - No token usage information available from AI model")
+                get_logger().warning(f"[AI] - No token usage information available from AI model: {model}")
 
             # Log the full response structure for debugging
             response_log = self.prepare_logs(response, system, user, resp, finish_reason)

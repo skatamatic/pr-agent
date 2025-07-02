@@ -95,6 +95,10 @@ class PRReviewer:
             get_settings().set("config.enable_ai_metadata", False)
             get_logger().debug(f"AI metadata is disabled for this command")
 
+        # Load best practices from repository
+        from pr_agent.algo.utils import get_best_practices_content
+        best_practices_content = get_best_practices_content(self.git_provider)
+        
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -120,6 +124,7 @@ class PRReviewer:
             "date": datetime.datetime.now().strftime('%Y-%m-%d'),
             "include_context": get_settings().get("csharp_code_context_service.enabled", False),
             "context": "",  # context empty for initial calculation
+            "best_practices": best_practices_content,  # Repository best practices content
         }
 
         self.token_handler = TokenHandler(

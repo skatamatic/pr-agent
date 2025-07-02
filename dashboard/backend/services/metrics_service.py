@@ -460,19 +460,26 @@ class MetricsService:
             
             for operation in operations:
                 op_type = operation.operation_type or "unknown"
-                input_tokens = operation.input_tokens or 0
-                output_tokens = operation.output_tokens or 0
                 estimated_dev_hours = operation.estimated_dev_hours_saved or 0.0
-                model_used = operation.model_used
                 
-                # Calculate operation cost - handle both multi-model and legacy data
+                # Calculate operation cost and tokens - handle both multi-model and legacy data
                 operation_cost = 0.0
+                operation_input_tokens = 0
+                operation_output_tokens = 0
+                models_used_in_operation = set()
                 
-                # Try multi-model data first
+                # Try multi-model data first (preferred)
                 if operation.ai_models_used and isinstance(operation.ai_models_used, dict):
                     for model_name, model_tokens in operation.ai_models_used.items():
                         model_input_tokens = model_tokens.get('input_tokens', 0)
                         model_output_tokens = model_tokens.get('output_tokens', 0)
+                        
+                        # Accumulate tokens from all models
+                        operation_input_tokens += model_input_tokens
+                        operation_output_tokens += model_output_tokens
+                        models_used_in_operation.add(model_name)
+                        
+                        # Calculate cost for this model
                         if model_input_tokens > 0 or model_output_tokens > 0:
                             model_costs = config.model_costs.get(model_name, self.default_model_costs.get(model_name, {'input': 0.01, 'output': 0.03}))
                             input_cost = (model_input_tokens / 1000) * model_costs.get('input', 0.01)
@@ -480,11 +487,19 @@ class MetricsService:
                             operation_cost += input_cost + output_cost
                 
                 # Fallback to legacy single-model data
-                elif model_used and (input_tokens > 0 or output_tokens > 0):
-                    model_costs = config.model_costs.get(model_used, self.default_model_costs.get(model_used, {'input': 0.01, 'output': 0.03}))
-                    input_cost = (input_tokens / 1000) * model_costs.get('input', 0.01)
-                    output_cost = (output_tokens / 1000) * model_costs.get('output', 0.03)
-                    operation_cost = input_cost + output_cost
+                else:
+                    operation_input_tokens = operation.input_tokens or 0
+                    operation_output_tokens = operation.output_tokens or 0
+                    model_used = operation.model_used
+                    
+                    if model_used:
+                        models_used_in_operation.add(model_used)
+                    
+                    if model_used and (operation_input_tokens > 0 or operation_output_tokens > 0):
+                        model_costs = config.model_costs.get(model_used, self.default_model_costs.get(model_used, {'input': 0.01, 'output': 0.03}))
+                        input_cost = (operation_input_tokens / 1000) * model_costs.get('input', 0.01)
+                        output_cost = (operation_output_tokens / 1000) * model_costs.get('output', 0.03)
+                        operation_cost = input_cost + output_cost
                 
                 # Initialize operation type if not exists
                 if op_type not in operation_breakdown:
@@ -501,10 +516,10 @@ class MetricsService:
                         'models_used': set()
                     }
                 
-                # Update breakdown
+                # Update breakdown with calculated values
                 operation_breakdown[op_type]['operations_count'] += 1
-                operation_breakdown[op_type]['input_tokens'] += input_tokens
-                operation_breakdown[op_type]['output_tokens'] += output_tokens
+                operation_breakdown[op_type]['input_tokens'] += operation_input_tokens
+                operation_breakdown[op_type]['output_tokens'] += operation_output_tokens
                 operation_breakdown[op_type]['estimated_dev_hours'] += estimated_dev_hours
                 operation_breakdown[op_type]['total_cost'] += operation_cost
                 
@@ -515,13 +530,13 @@ class MetricsService:
                 if operation.status in ['completed', 'published']:
                     operation_breakdown[op_type]['successful_operations'] += 1
                 
-                if model_used:
-                    operation_breakdown[op_type]['models_used'].add(model_used)
+                # Add all models used in this operation
+                operation_breakdown[op_type]['models_used'].update(models_used_in_operation)
                 
-                # Update totals
+                # Update totals with calculated values
                 total_operations += 1
-                total_input_tokens += input_tokens
-                total_output_tokens += output_tokens
+                total_input_tokens += operation_input_tokens
+                total_output_tokens += operation_output_tokens
                 total_dev_hours += estimated_dev_hours
                 total_cost += operation_cost
             
@@ -595,19 +610,27 @@ class MetricsService:
             
             for operation in operations:
                 repo = operation.repo or "unknown"
-                input_tokens = operation.input_tokens or 0
-                output_tokens = operation.output_tokens or 0
                 estimated_dev_hours = operation.estimated_dev_hours_saved or 0.0
-                model_used = operation.model_used
                 
-                # Calculate operation cost - handle both multi-model and legacy data
+                # Calculate operation cost and tokens - handle both multi-model and legacy data
                 operation_cost = 0.0
+                operation_input_tokens = 0
+                operation_output_tokens = 0
+                models_used_in_operation = set()
+                operation_types_in_operation = set()
                 
-                # Try multi-model data first
+                # Try multi-model data first (preferred)
                 if operation.ai_models_used and isinstance(operation.ai_models_used, dict):
                     for model_name, model_tokens in operation.ai_models_used.items():
                         model_input_tokens = model_tokens.get('input_tokens', 0)
                         model_output_tokens = model_tokens.get('output_tokens', 0)
+                        
+                        # Accumulate tokens from all models
+                        operation_input_tokens += model_input_tokens
+                        operation_output_tokens += model_output_tokens
+                        models_used_in_operation.add(model_name)
+                        
+                        # Calculate cost for this model
                         if model_input_tokens > 0 or model_output_tokens > 0:
                             model_costs = config.model_costs.get(model_name, self.default_model_costs.get(model_name, {'input': 0.01, 'output': 0.03}))
                             input_cost = (model_input_tokens / 1000) * model_costs.get('input', 0.01)
@@ -615,11 +638,23 @@ class MetricsService:
                             operation_cost += input_cost + output_cost
                 
                 # Fallback to legacy single-model data
-                elif model_used and (input_tokens > 0 or output_tokens > 0):
-                    model_costs = config.model_costs.get(model_used, self.default_model_costs.get(model_used, {'input': 0.01, 'output': 0.03}))
-                    input_cost = (input_tokens / 1000) * model_costs.get('input', 0.01)
-                    output_cost = (output_tokens / 1000) * model_costs.get('output', 0.03)
-                    operation_cost = input_cost + output_cost
+                else:
+                    operation_input_tokens = operation.input_tokens or 0
+                    operation_output_tokens = operation.output_tokens or 0
+                    model_used = operation.model_used
+                    
+                    if model_used:
+                        models_used_in_operation.add(model_used)
+                    
+                    if model_used and (operation_input_tokens > 0 or operation_output_tokens > 0):
+                        model_costs = config.model_costs.get(model_used, self.default_model_costs.get(model_used, {'input': 0.01, 'output': 0.03}))
+                        input_cost = (operation_input_tokens / 1000) * model_costs.get('input', 0.01)
+                        output_cost = (operation_output_tokens / 1000) * model_costs.get('output', 0.03)
+                        operation_cost = input_cost + output_cost
+                
+                # Track operation type
+                if operation.operation_type:
+                    operation_types_in_operation.add(operation.operation_type)
                 
                 # Initialize repository if not exists
                 if repo not in repository_breakdown:
@@ -638,10 +673,10 @@ class MetricsService:
                         'unique_jobs': set()
                     }
                 
-                # Update breakdown
+                # Update breakdown with calculated values
                 repository_breakdown[repo]['operations_count'] += 1
-                repository_breakdown[repo]['input_tokens'] += input_tokens
-                repository_breakdown[repo]['output_tokens'] += output_tokens
+                repository_breakdown[repo]['input_tokens'] += operation_input_tokens
+                repository_breakdown[repo]['output_tokens'] += operation_output_tokens
                 repository_breakdown[repo]['estimated_dev_hours'] += estimated_dev_hours
                 repository_breakdown[repo]['total_cost'] += operation_cost
                 
@@ -652,19 +687,17 @@ class MetricsService:
                 if operation.status in ['completed', 'published']:
                     repository_breakdown[repo]['successful_operations'] += 1
                 
-                if operation.operation_type:
-                    repository_breakdown[repo]['operation_types'].add(operation.operation_type)
-                
-                if model_used:
-                    repository_breakdown[repo]['models_used'].add(model_used)
+                # Add all operation types and models used in this operation
+                repository_breakdown[repo]['operation_types'].update(operation_types_in_operation)
+                repository_breakdown[repo]['models_used'].update(models_used_in_operation)
                 
                 if operation.job_id:
                     repository_breakdown[repo]['unique_jobs'].add(operation.job_id)
                 
-                # Update totals
+                # Update totals with calculated values
                 total_operations += 1
-                total_input_tokens += input_tokens
-                total_output_tokens += output_tokens
+                total_input_tokens += operation_input_tokens
+                total_output_tokens += operation_output_tokens
                 total_dev_hours += estimated_dev_hours
                 total_cost += operation_cost
             

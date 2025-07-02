@@ -1219,7 +1219,9 @@ const Notifications = () => {
 
           {events.length === 0 ? (
             <div className="text-center py-12 bg-gray-50 dark:bg-gray-900 rounded-lg">
-              <div className="text-4xl mb-4">📋</div>
+              <div className="mx-auto w-16 h-16 bg-gray-100 dark:bg-gray-700 rounded-full flex items-center justify-center mb-4">
+                <Bell className="h-8 w-8 text-gray-400 dark:text-gray-500" />
+              </div>
               <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No notification events</h3>
               <p className="text-gray-600 dark:text-gray-400">
                 {eventTypeFilter || repositoryFilter 

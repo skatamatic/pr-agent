@@ -128,6 +128,24 @@ class RepositoryDB(Base):
     config_last_checked = Column(DateTime, nullable=True)
     effective_config = Column(JSON, nullable=True)  # Merged config with overrides
     
+    # Best practices tracking
+    has_best_practices = Column(Boolean, default=False)  # best_practices.md exists
+    best_practices_content = Column(Text, nullable=True)  # Cached content
+    best_practices_last_fetched = Column(DateTime, nullable=True)
+    best_practices_pr_url = Column(String, nullable=True)  # Pending PR URL
+    best_practices_pr_number = Column(Integer, nullable=True)  # Pending PR number
+    best_practices_pr_branch = Column(String, nullable=True)  # Branch name for pending PR
+    best_practices_pr_status = Column(String, nullable=True)  # "pending", "merged", "closed"
+    
+    # PR-Agent config tracking
+    has_pr_agent_config = Column(Boolean, default=False)  # .pr_agent.toml exists
+    pr_agent_config_content = Column(Text, nullable=True)  # Cached content
+    pr_agent_config_last_fetched = Column(DateTime, nullable=True)
+    pr_agent_config_pr_url = Column(String, nullable=True)  # Pending PR URL
+    pr_agent_config_pr_number = Column(Integer, nullable=True)  # Pending PR number
+    pr_agent_config_pr_branch = Column(String, nullable=True)  # Branch name for pending PR
+    pr_agent_config_pr_status = Column(String, nullable=True)  # "pending", "merged", "closed"
+    
     # Monitoring settings
     monitor_prs = Column(Boolean, default=True)
     monitor_issues = Column(Boolean, default=False)
@@ -498,7 +516,7 @@ class MetricsTimeSeriesPoint(BaseModel):
 
 class DashboardConfig(BaseModel):
     refresh_interval: int = Field(default=5, description="Refresh interval in seconds")
-    max_logs_display: int = Field(default=1000, description="Maximum logs to display")
+    max_logs_display: int = Field(default=10000, description="Maximum logs to display")
     max_operations_display: int = Field(default=100, description="Maximum operations to display")
     enable_realtime: bool = Field(default=True, description="Enable real-time updates")
     log_levels: List[LogLevel] = Field(default=[LogLevel.INFO, LogLevel.WARNING, LogLevel.ERROR, LogLevel.CRITICAL])
@@ -553,6 +571,24 @@ class Repository(BaseModel):
     has_workflow_config: bool = Field(default=False, description="Has GitHub Actions workflow with PR-Agent configuration")
     config_last_checked: Optional[str] = None
     effective_config: Optional[Dict[str, Any]] = Field(default=None, description="Merged configuration")
+    
+        # Best practices tracking
+    has_best_practices: bool = Field(default=False, description="Has best_practices.md file")
+    best_practices_content: Optional[str] = Field(default=None, description="Cached best practices content")
+    best_practices_last_fetched: Optional[str] = None
+    best_practices_pr_url: Optional[str] = Field(default=None, description="Pending best practices PR URL")
+    best_practices_pr_number: Optional[int] = Field(default=None, description="Pending best practices PR number")
+    best_practices_pr_branch: Optional[str] = Field(default=None, description="Pending best practices PR branch")
+    best_practices_pr_status: Optional[str] = Field(default=None, description="Pending PR status: pending, merged, closed")
+    
+    # PR-Agent config tracking
+    has_pr_agent_config: bool = Field(default=False, description="Has .pr_agent.toml file")
+    pr_agent_config_content: Optional[str] = Field(default=None, description="Cached PR-Agent config content")
+    pr_agent_config_last_fetched: Optional[str] = None
+    pr_agent_config_pr_url: Optional[str] = Field(default=None, description="Pending PR-Agent config PR URL")
+    pr_agent_config_pr_number: Optional[int] = Field(default=None, description="Pending PR-Agent config PR number")
+    pr_agent_config_pr_branch: Optional[str] = Field(default=None, description="Pending PR-Agent config PR branch")
+    pr_agent_config_pr_status: Optional[str] = Field(default=None, description="Pending PR status: pending, merged, closed")
     
     # Monitoring settings
     monitor_prs: bool = Field(default=True, description="Monitor pull requests")

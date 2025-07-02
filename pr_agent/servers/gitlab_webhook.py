@@ -219,6 +219,13 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
             object_attributes = data.get('object_attributes', {})
             if object_attributes.get('action') in ['open', 'reopen']:
                 url = object_attributes.get('url')
+                
+                # Guard: Skip PRs created by PR Agent Dashboard
+                mr_description = object_attributes.get('description', '') or ''
+                if "This PR was created automatically via PR Agent Dashboard" in mr_description:
+                    get_logger().info(f"Skipping MR processing - MR was created by PR Agent Dashboard: {url}")
+                    return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "Skipped - MR created by PR Agent Dashboard"}))
+                
                 get_logger().info(f"New merge request: {url}")
                 if is_draft(data):
                     get_logger().info(f"Skipping draft MR: {url}")

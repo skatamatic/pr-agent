@@ -149,9 +149,46 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     }
   };
 
-  // Show a star icon only if the log has artifacts
+  // Helper function to check if log has meaningful artifacts
+  const hasArtifacts = (log) => {
+    if (!log.artifacts) return false;
+    
+    // Check if artifacts contains actual data
+    if (typeof log.artifacts === 'object' && log.artifacts !== null) {
+      // For objects, check if it has keys and non-empty values
+      const entries = Object.entries(log.artifacts);
+      if (entries.length === 0) return false;
+      
+      // Check if any values are non-empty
+      const hasContent = entries.some(([key, value]) => {
+        if (value == null) return false;
+        if (typeof value === 'string') return value.trim().length > 0;
+        if (typeof value === 'object' && value !== null) return Object.keys(value).length > 0;
+        if (Array.isArray(value)) return value.length > 0;
+        return true; // Numbers, booleans, etc.
+      });
+      
+      return hasContent;
+    }
+    
+    // For non-object artifacts (strings, arrays, etc.)
+    if (typeof log.artifacts === 'string') {
+      return log.artifacts.trim().length > 0;
+    }
+    
+    if (Array.isArray(log.artifacts)) {
+      return log.artifacts.length > 0;
+    }
+    
+    // Fallback: if we reach here and artifacts exists, it's probably meaningful
+    // This catches edge cases where artifacts might be in an unexpected format
+    return true;
+  };
+
+  // Show a star icon only if the log has meaningful artifacts
   const getLogIcon = (log) => {
-    return log.artifacts ? Star : null;
+    const hasArtifactsResult = hasArtifacts(log);
+    return hasArtifactsResult ? Star : null;
   };
 
   // Helper function to get step display styling (simplified)
@@ -246,7 +283,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       const matchesSystemLogFilter = showSystemLogs || !isSystemLog;
       
       // AI Artifacts filter
-      const matchesArtifacts = !showOnlyArtifacts || (log.artifacts && Object.keys(log.artifacts).length > 0);
+      const matchesArtifacts = !showOnlyArtifacts || hasArtifacts(log);
       
       return matchesSearch && matchesLevel && matchesRepo && matchesOperationType && matchesStep && matchesExternalOperation && matchesJob && matchesDateRange && matchesSystemLogFilter && matchesArtifacts;
     });
@@ -475,6 +512,10 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     setDateRange({ start: '', end: '' });
     setSearchTerm('');
     setCurrentPage(1);
+  };
+
+  const renderArtifactValue = (value) => {
+    return typeof value === 'object' ? JSON.stringify(value, null, 2) : value;
   };
 
   return (
@@ -951,10 +992,23 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                       >
                         <td className="w-24 px-4 py-4 whitespace-nowrap">
                           <div className="flex items-center">
-                            {LogIcon && <LogIcon className="h-4 w-4 mr-2 text-yellow-500 dark:text-yellow-400" fill="currentColor" title="This log has artifacts" />}
                             <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${getLevelColor(log.level)}`}>
                               {log.level?.toUpperCase()}
                             </span>
+                            {LogIcon && (
+                              <div className="relative group -ml-1">
+                                <LogIcon 
+                                  className="h-3 w-3 text-yellow-500 dark:text-yellow-400 flex-shrink-0 cursor-help transition-all duration-200 hover:text-yellow-600 dark:hover:text-yellow-300 hover:scale-110" 
+                                  fill="currentColor"
+                                  style={{ minWidth: '12px', minHeight: '12px' }}
+                                />
+                                {/* Enhanced tooltip */}
+                                <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 dark:bg-gray-700 text-white text-xs rounded-lg shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-50">
+                                  AI Artifacts Available
+                                  <div className="absolute top-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-900 dark:border-t-gray-700"></div>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         </td>
                         <td className="w-40 px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
@@ -1192,8 +1246,8 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                                 </div>
                               </div>
 
-                              {/* Artifacts section - AI prompts and responses - Full Width */}
-                              {log.artifacts && (
+                                            {/* Artifacts section - AI prompts and responses - Full Width */}
+              {hasArtifacts(log) && (
                                 <div className="mt-6">
                                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 flex items-center">
                                     AI Artifacts
@@ -1208,7 +1262,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                                               {key.replace(/_/g, ' ')}:
                                             </div>
                                             <div className="text-xs font-mono text-gray-600 dark:text-gray-400 whitespace-pre-wrap break-words">
-                                              {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
+                                              {renderArtifactValue(value)}
                                             </div>
                                           </div>
                                         ))}

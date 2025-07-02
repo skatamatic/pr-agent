@@ -72,6 +72,15 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
     commands_to_run = []
 
     if data["eventKey"] == "pr:opened":
+        # Guard: Skip PRs created by PR Agent Dashboard
+        pr_description = data.get("pullRequest", {}).get("description", "") or ""
+        if "This PR was created automatically via PR Agent Dashboard" in pr_description:
+            get_logger().info(f"Skipping PR processing - PR was created by PR Agent Dashboard: {pr_url}")
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content=jsonable_encoder({"message": "Skipped - PR created by PR Agent Dashboard"})
+            )
+        
         apply_repo_settings(pr_url)
         if get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
             get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {pr_url}", **log_context)

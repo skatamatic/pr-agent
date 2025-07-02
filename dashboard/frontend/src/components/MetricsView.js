@@ -22,7 +22,28 @@ import {
   ArrowUp,
   ArrowDown,
   GitBranch,
-  FolderGit2
+  FolderGit2,
+  // New icons for replacing emojis
+  Gem,
+  Heart,
+  Wrench,
+  Search,
+  FileText,
+  Rocket,
+  TestTube,
+  Book,
+  List,
+  Link,
+  Radar,
+  Cog,
+  Lightbulb,
+  Send,
+  CheckCircle,
+  Brush,
+  Sparkles,
+  HelpCircle,
+  Tag,
+  Timer
 } from 'lucide-react';
 import apiService from '../services/api';
 import ViewHeader from './ViewHeader';
@@ -176,6 +197,8 @@ const MetricsView = () => {
   const [configLoaded, setConfigLoaded] = useState(false);
   // Track whether user has made edits to prevent overwriting during auto-refresh
   const [userHasEditedConfig, setUserHasEditedConfig] = useState(false);
+  // Track when we've just saved config to allow one-time update
+  const [justSavedConfig, setJustSavedConfig] = useState(false);
 
   // Adaptive polling interval calculation
   const getPollingInterval = () => {
@@ -349,16 +372,42 @@ const MetricsView = () => {
       setConfig(configData);
       setAvailableModels(availableModels);
       
-      // Only update editableConfig on initial load or after successful save
-      // This prevents overwriting user edits during metric updates
-      // Don't update if user has made edits that haven't been saved
-      if (!configLoaded && !userHasEditedConfig) {
+      // CRITICAL: Completely block form updates when user is actively editing
+      const isUserActivelyEditing = (
+        activeTab === 'configuration' && userHasEditedConfig
+      );
+      
+      // Only update config in these specific cases:
+      // 1. Initial load (configLoaded = false)
+      // 2. Right after successful save (justSavedConfig = true)
+      // 3. NEVER when user is actively editing on config tab
+      const shouldUpdateConfig = !isUserActivelyEditing && (
+        (!configLoaded) || (justSavedConfig)
+      );
+      
+      if (shouldUpdateConfig) {
+        console.log('MetricsView: Updating config form', { 
+          configLoaded, 
+          justSavedConfig, 
+          userHasEditedConfig, 
+          activeTab,
+          isUserActivelyEditing 
+        });
+        
         setEditableConfig({
           developer_hourly_rate: configData.developer_hourly_rate || 75,
           hours_multiplier: configData.hours_multiplier || 1.0,
           model_costs: configData.model_costs || {}
         });
-        setConfigLoaded(true);
+        
+        if (!configLoaded) {
+          setConfigLoaded(true);
+        }
+        if (justSavedConfig) {
+          setJustSavedConfig(false);
+        }
+      } else if (isUserActivelyEditing) {
+        console.log('MetricsView: Blocking config update - user is actively editing');
       }
       
       setLastUpdated(new Date());
@@ -390,20 +439,11 @@ const MetricsView = () => {
       setSaving(true);
       await apiService.post('/api/metrics/config', editableConfig);
       
-      // Refresh config after save to get latest values from server
-      const configRes = await apiService.get('/api/metrics/config');
-      const configData = configRes.data?.data || configRes.data;
-      setConfig(configData);
-      
-      // Update editableConfig with the saved values from server
-      setEditableConfig({
-        developer_hourly_rate: configData.developer_hourly_rate || 75,
-        hours_multiplier: configData.hours_multiplier || 1.0,
-        model_costs: configData.model_costs || {}
-      });
-      
       // Clear the edit flag since we just saved
       setUserHasEditedConfig(false);
+      
+      // Set flag to allow form update on next fetchData call
+      setJustSavedConfig(true);
       
       // Trigger metrics recalculation with the new config
       await handleRecalculate();
@@ -425,6 +465,8 @@ const MetricsView = () => {
       });
       // Clear the edit flag since we reset to saved values
       setUserHasEditedConfig(false);
+      // Clear just saved flag to prevent unwanted updates
+      setJustSavedConfig(false);
     }
   };
 
@@ -767,46 +809,46 @@ const MetricsView = () => {
   const getModelTier = (model) => {
     const cleanName = model.replace('anthropic/', '').replace('openai/', '');
     if (model.includes('claude-opus-4') || model.includes('claude-sonnet-4') || model.includes('o1') || model.includes('o3') || model.includes('o4')) {
-      return { tier: 'premium', icon: '💎', name: cleanName, color: 'from-amber-50 to-yellow-50 dark:from-amber-900/20 dark:to-yellow-900/20 border-amber-200 dark:border-amber-700' };
+      return { tier: 'premium', icon: Gem, name: cleanName, color: 'from-amber-50 to-yellow-50 dark:from-amber-900/20 dark:to-yellow-900/20 border-amber-200 dark:border-amber-700' };
     }
     if ((model.includes('claude-3-5') || model.includes('gpt-4')) && !model.includes('claude-opus-4') && !model.includes('claude-sonnet-4')) {
-      return { tier: 'standard', icon: '⚡', name: cleanName, color: 'from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border-blue-200 dark:border-blue-700' };
+      return { tier: 'standard', icon: Zap, name: cleanName, color: 'from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border-blue-200 dark:border-blue-700' };
     }
     if (model.includes('gpt-3.5') || model.includes('mini')) {
-      return { tier: 'budget', icon: '💚', name: cleanName, color: 'from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 border-green-200 dark:border-green-700' };
+      return { tier: 'budget', icon: Heart, name: cleanName, color: 'from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 border-green-200 dark:border-green-700' };
     }
-    return { tier: 'other', icon: '🔧', name: cleanName, color: 'from-gray-50 to-slate-50 dark:from-gray-900/20 dark:to-slate-900/20 border-gray-200 dark:border-gray-700' };
+    return { tier: 'other', icon: Wrench, name: cleanName, color: 'from-gray-50 to-slate-50 dark:from-gray-900/20 dark:to-slate-900/20 border-gray-200 dark:border-gray-700' };
   };
 
   const getOperationType = (operation) => {
     const operationMap = {
       // PR-Agent commands/tools
-      'review': { icon: '🔍', name: 'Review', description: 'AI-powered code review' },
-      'describe': { icon: '📝', name: 'Describe', description: 'PR description generation' },
-      'improve': { icon: '🚀', name: 'Improve', description: 'Code improvement suggestions' },
-      'test': { icon: '🧪', name: 'Test', description: 'Test generation and analysis' },
-      'add_docs': { icon: '📚', name: 'Add Docs', description: 'Documentation generation' },
-      'update_changelog': { icon: '📋', name: 'Changelog', description: 'Changelog updates' },
-      'similar_issue': { icon: '🔗', name: 'Similar Issue', description: 'Similar issue detection' },
+      'review': { icon: Search, name: 'Review', description: 'AI-powered code review' },
+      'describe': { icon: FileText, name: 'Describe', description: 'PR description generation' },
+      'improve': { icon: Rocket, name: 'Improve', description: 'Code improvement suggestions' },
+      'test': { icon: TestTube, name: 'Test', description: 'Test generation and analysis' },
+      'add_docs': { icon: Book, name: 'Add Docs', description: 'Documentation generation' },
+      'update_changelog': { icon: List, name: 'Changelog', description: 'Changelog updates' },
+      'similar_issue': { icon: Link, name: 'Similar Issue', description: 'Similar issue detection' },
       
       // Process stages
-      'starting': { icon: '🚀', name: 'Starting', description: 'Operation initialization' },
-      'fetching_context': { icon: '📡', name: 'Fetch Context', description: 'Context data retrieval' },
-      'processing_pr': { icon: '⚙️', name: 'Process PR', description: 'PR data processing' },
-      'self_reflecting': { icon: '🤔', name: 'Self Reflect', description: 'AI self-reflection process' },
-      'publishing_results': { icon: '📤', name: 'Publish', description: 'Results publication' },
-      'finalizing': { icon: '✅', name: 'Finalizing', description: 'Operation completion' },
-      'cleanup': { icon: '🧹', name: 'Cleanup', description: 'Resource cleanup' },
+      'starting': { icon: Rocket, name: 'Starting', description: 'Operation initialization' },
+      'fetching_context': { icon: Radar, name: 'Fetch Context', description: 'Context data retrieval' },
+      'processing_pr': { icon: Cog, name: 'Process PR', description: 'PR data processing' },
+      'self_reflecting': { icon: Lightbulb, name: 'Self Reflect', description: 'AI self-reflection process' },
+      'publishing_results': { icon: Send, name: 'Publish', description: 'Results publication' },
+      'finalizing': { icon: CheckCircle, name: 'Finalizing', description: 'Operation completion' },
+      'cleanup': { icon: Brush, name: 'Cleanup', description: 'Resource cleanup' },
       
       // Generating stages (detailed operation tracking)
-      'generating_review': { icon: '🔍✨', name: 'Generating Review', description: 'AI generating code review' },
-      'generating_description': { icon: '📝✨', name: 'Generating Description', description: 'AI generating PR description' },
-      'generating_suggestions': { icon: '🚀✨', name: 'Generating Suggestions', description: 'AI generating code suggestions' },
-      'generating_questions': { icon: '❓✨', name: 'Generating Questions', description: 'AI generating PR questions' },
-      'generating_labels': { icon: '🏷️✨', name: 'Generating Labels', description: 'AI generating PR labels' },
-      'estimating_dev_time': { icon: '⏱️✨', name: 'Estimating Dev Time', description: 'AI estimating development time saved' },
+      'generating_review': { icon: Search, name: 'Generating Review', description: 'AI generating code review' },
+      'generating_description': { icon: FileText, name: 'Generating Description', description: 'AI generating PR description' },
+      'generating_suggestions': { icon: Sparkles, name: 'Generating Suggestions', description: 'AI generating code suggestions' },
+      'generating_questions': { icon: HelpCircle, name: 'Generating Questions', description: 'AI generating PR questions' },
+      'generating_labels': { icon: Tag, name: 'Generating Labels', description: 'AI generating PR labels' },
+      'estimating_dev_time': { icon: Timer, name: 'Estimating Dev Time', description: 'AI estimating development time saved' },
       
-      'unknown': { icon: '❓', name: 'Unknown', description: 'Unknown operation type' }
+      'unknown': { icon: HelpCircle, name: 'Unknown', description: 'Unknown operation type' }
     };
     
     return operationMap[operation] || operationMap['unknown'];
@@ -1049,7 +1091,9 @@ const MetricsView = () => {
                       <div key={modelName} className="w-full flex-shrink-0 p-6 flex flex-col">
                         {/* Model Header */}
                         <div className="flex items-center space-x-3 mb-4">
-                          <div className="text-2xl">{modelTier.icon}</div>
+                          <div className="w-8 h-8 flex items-center justify-center">
+                            {React.createElement(modelTier.icon, { className: "h-6 w-6 text-blue-600 dark:text-blue-400" })}
+                          </div>
                           <div className="flex-1">
                             <h3 className="text-lg font-bold text-gray-900 dark:text-white">
                               {modelName.replace('anthropic/', '').replace('openai/', '')}
@@ -1364,7 +1408,9 @@ const MetricsView = () => {
                       <div key={operationName} className="w-full flex-shrink-0 p-6 flex flex-col">
                         {/* Operation Header */}
                         <div className="flex items-center space-x-3 mb-4">
-                          <div className="text-2xl">{operationType.icon}</div>
+                          <div className="w-8 h-8 flex items-center justify-center">
+                            {React.createElement(operationType.icon, { className: "h-6 w-6 text-blue-600 dark:text-blue-400" })}
+                          </div>
                           <div className="flex-1">
                             <h3 className="text-lg font-bold text-gray-900 dark:text-white">
                               {operationType.name}

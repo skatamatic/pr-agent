@@ -531,7 +531,7 @@ class RobustCacheService:
                 cutoff = datetime.utcnow() - timedelta(days=30)
                 recent_jobs = db.query(JobDB).filter(
                     JobDB.started_at >= cutoff
-                ).order_by(JobDB.started_at.desc()).limit(1000).all()
+                ).order_by(JobDB.started_at.desc()).limit(10000).all()
                 
                 for job in recent_jobs:
                     job_data = self._job_db_to_dict(job)
@@ -554,7 +554,7 @@ class RobustCacheService:
                 log_cutoff = datetime.utcnow() - timedelta(days=7)
                 recent_logs = db.query(LogEntryDB).filter(
                     LogEntryDB.timestamp >= log_cutoff
-                ).order_by(LogEntryDB.timestamp.desc()).limit(5000).all()
+                ).order_by(LogEntryDB.timestamp.desc()).limit(10000).all()
                 
                 for log in recent_logs:
                     log_data = self._log_db_to_dict(log)

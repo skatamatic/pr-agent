@@ -24,11 +24,13 @@ import {
   Key,
   EyeOff,
   Shield,
-  Server
+  Server,
+  ExternalLink
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
+import PrAgentConfigEditor from './PrAgentConfigEditor';
 
 const RepositoryManager = () => {
   const [repositories, setRepositories] = useState([]);
@@ -68,6 +70,17 @@ const RepositoryManager = () => {
   const [dismissedInfo, setDismissedInfo] = useState(() => {
     return localStorage.getItem('dismissedRepositoryInfo') === 'true';
   });
+  const [bestPracticesData, setBestPracticesData] = useState({});
+  const [isEditingBestPractices, setIsEditingBestPractices] = useState({});
+  const [editedBestPracticesContent, setEditedBestPracticesContent] = useState({});
+  const [savingBestPractices, setSavingBestPractices] = useState({});
+  const [loadingBestPractices, setLoadingBestPractices] = useState(new Set());
+  
+  // PR-Agent config states
+  const [prAgentConfigData, setPrAgentConfigData] = useState({});
+  const [showPrAgentConfigEditor, setShowPrAgentConfigEditor] = useState(null);
+  const [loadingPrAgentConfig, setLoadingPrAgentConfig] = useState(new Set());
+  const [checkingPrStatus, setCheckingPrStatus] = useState(new Set());
 
   const fetchRepositories = useCallback(async () => {
     try {
@@ -84,6 +97,115 @@ const RepositoryManager = () => {
   useEffect(() => {
     fetchRepositories();
   }, [fetchRepositories]);
+
+  // Inject custom CSS for best practices markdown styling
+  useEffect(() => {
+    if (!document.getElementById('best-practices-styles')) {
+      const style = document.createElement('style');
+      style.id = 'best-practices-styles';
+      style.textContent = `
+        .best-practices-markdown * {
+          color: #374151 !important;
+        }
+        .best-practices-markdown h1,
+        .best-practices-markdown h2,
+        .best-practices-markdown h3,
+        .best-practices-markdown h4,
+        .best-practices-markdown h5,
+        .best-practices-markdown h6 {
+          color: #111827 !important;
+          font-weight: 600 !important;
+          margin-top: 1.5em !important;
+          margin-bottom: 0.5em !important;
+        }
+        .best-practices-markdown p,
+        .best-practices-markdown li {
+          color: #4b5563 !important;
+          line-height: 1.6 !important;
+        }
+        .best-practices-markdown code {
+          background-color: #f3f4f6 !important;
+          color: #7c3aed !important;
+          padding: 0.125rem 0.25rem !important;
+          border-radius: 0.25rem !important;
+          font-size: 0.875em !important;
+        }
+        .best-practices-markdown pre {
+          background-color: #f8fafc !important;
+          color: #1f2937 !important;
+          padding: 1rem !important;
+          border-radius: 0.5rem !important;
+          overflow-x: auto !important;
+          border: 1px solid #e5e7eb !important;
+        }
+        .best-practices-markdown pre code {
+          background-color: transparent !important;
+          color: #1f2937 !important;
+          padding: 0 !important;
+        }
+        .best-practices-markdown blockquote {
+          border-left: 4px solid #a855f7 !important;
+          padding: 1rem !important;
+          margin: 1rem 0 !important;
+          color: #6b7280 !important;
+          font-style: italic !important;
+          background-color: #f9fafb !important;
+          border-radius: 0.25rem !important;
+        }
+        .best-practices-markdown a {
+          color: #7c3aed !important;
+          text-decoration: none !important;
+        }
+        .best-practices-markdown a:hover {
+          text-decoration: underline !important;
+        }
+        .best-practices-markdown strong {
+          color: #111827 !important;
+          font-weight: 600 !important;
+        }
+        
+        /* Dark theme overrides */
+        .dark .best-practices-markdown * {
+          color: #d1d5db !important;
+        }
+        .dark .best-practices-markdown h1,
+        .dark .best-practices-markdown h2,
+        .dark .best-practices-markdown h3,
+        .dark .best-practices-markdown h4,
+        .dark .best-practices-markdown h5,
+        .dark .best-practices-markdown h6 {
+          color: #f9fafb !important;
+        }
+        .dark .best-practices-markdown p,
+        .dark .best-practices-markdown li {
+          color: #d1d5db !important;
+        }
+        .dark .best-practices-markdown code {
+          background-color: #374151 !important;
+          color: #c084fc !important;
+        }
+        .dark .best-practices-markdown pre {
+          background-color: #111827 !important;
+          color: #f3f4f6 !important;
+        }
+        .dark .best-practices-markdown pre code {
+          color: #f3f4f6 !important;
+        }
+        .dark .best-practices-markdown blockquote {
+          border-left-color: #8b5cf6 !important;
+          color: #9ca3af !important;
+          background-color: #374151 !important;
+        }
+        .dark .best-practices-markdown a {
+          color: #c084fc !important;
+        }
+        .dark .best-practices-markdown strong {
+          color: #f9fafb !important;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+  }, []);
 
   const handleSubmit = async (e, repoId = null) => {
     e.preventDefault();
@@ -226,6 +348,13 @@ const RepositoryManager = () => {
         };
         setFormData(repoData);
         setOriginalFormData({...repoData});
+        
+        // Auto-fetch best practices if token is configured and not already loaded
+        if (getTokenStatus(repo) === 'configured' && 
+            !bestPracticesData[repoId] && 
+            !loadingBestPractices.has(repoId)) {
+          loadBestPractices(repoId);
+        }
       }
     }
   };
@@ -534,6 +663,269 @@ const RepositoryManager = () => {
         loading: false,
         error: errorMsg
       }));
+    }
+  };
+
+  const loadBestPractices = async (repoId, forceRefresh = false) => {
+    setLoadingBestPractices(prev => new Set([...prev, repoId]));
+    
+    try {
+      const response = await api.get(`/api/repositories/${repoId}/best-practices?force_refresh=${forceRefresh}`);
+      setBestPracticesData(prev => ({
+        ...prev,
+        [repoId]: {
+          ...response.data.data,
+          error: null
+        }
+      }));
+    } catch (error) {
+      console.error('Failed to load best practices:', error);
+      const errorMsg = error.response?.data?.detail || 'Failed to load best practices';
+      setBestPracticesData(prev => ({
+        ...prev,
+        [repoId]: {
+          exists: false,
+          content: null,
+          error: errorMsg
+        }
+      }));
+    } finally {
+      setLoadingBestPractices(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(repoId);
+        return newSet;
+      });
+    }
+  };
+
+  const startEditingBestPractices = (repoId) => {
+    const currentContent = bestPracticesData[repoId]?.content || '';
+    setEditedBestPracticesContent(prev => ({
+      ...prev,
+      [repoId]: currentContent
+    }));
+    setIsEditingBestPractices(prev => ({
+      ...prev,
+      [repoId]: true
+    }));
+  };
+
+  const cancelEditingBestPractices = (repoId) => {
+    setIsEditingBestPractices(prev => ({
+      ...prev,
+      [repoId]: false
+    }));
+    setEditedBestPracticesContent(prev => ({
+      ...prev,
+      [repoId]: ''
+    }));
+  };
+
+  const saveBestPractices = async (repoId) => {
+    const content = editedBestPracticesContent[repoId];
+    if (!content || !content.trim()) {
+      showError('Content cannot be empty');
+      return;
+    }
+
+    setSavingBestPractices(prev => ({
+      ...prev,
+      [repoId]: true
+    }));
+
+    try {
+      const response = await api.put(`/api/repositories/${repoId}/best-practices`, {
+        content: content.trim()
+      });
+
+      const prData = response.data.data;
+      showSuccess(
+        'Best Practices PR Created!', 
+        `${prData.action === 'created_new_pr' ? 'Created' : 'Updated'} PR #${prData.pr_number} - ${prData.action === 'created_new_pr' ? 'Review and merge to activate' : 'Added new commit to existing PR'}`
+      );
+
+      // Update best practices data with PR info
+      setBestPracticesData(prev => ({
+        ...prev,
+        [repoId]: {
+          ...prev[repoId],
+          has_pending_pr: true,
+          pr_url: prData.pr_url,
+          pr_number: prData.pr_number,
+          pr_status: 'pending'
+        }
+      }));
+
+      // Exit edit mode
+      setIsEditingBestPractices(prev => ({
+        ...prev,
+        [repoId]: false
+      }));
+      setEditedBestPracticesContent(prev => ({
+        ...prev,
+        [repoId]: ''
+      }));
+
+    } catch (error) {
+      console.error('Error saving best practices:', error);
+      showError('Failed to save', error.response?.data?.detail || 'Failed to create/update best practices PR');
+    } finally {
+      setSavingBestPractices(prev => ({
+        ...prev,
+        [repoId]: false
+      }));
+    }
+  };
+
+  const checkPRStatus = async (repoId) => {
+    try {
+      const response = await api.post(`/api/repositories/${repoId}/best-practices/check-pr-status`);
+      const statusData = response.data.data;
+      
+      if (statusData.status === 'merged') {
+        showSuccess('PR Merged!', 'Best practices PR was merged. Content updated.');
+        // Refresh the best practices data
+        await loadBestPractices(repoId, true);
+      } else if (statusData.status === 'closed') {
+        showSuccess('PR Closed', 'Best practices PR was closed without merging.');
+        // Update local state
+        setBestPracticesData(prev => ({
+          ...prev,
+          [repoId]: {
+            ...prev[repoId],
+            has_pending_pr: false,
+            pr_status: 'closed'
+          }
+        }));
+      }
+    } catch (error) {
+      console.error('Error checking PR status:', error);
+    }
+  };
+
+  // PR-Agent Configuration Functions
+  const loadPrAgentConfig = async (repoId, forceRefresh = false) => {
+    if (loadingPrAgentConfig.has(repoId) && !forceRefresh) {
+      return;
+    }
+
+    try {
+      setLoadingPrAgentConfig(prev => new Set([...prev, repoId]));
+      
+      const response = await api.getRepositoryPrAgentConfig(repoId, forceRefresh);
+      const data = response.data?.data || {};
+      
+      setPrAgentConfigData(prev => ({
+        ...prev,
+        [repoId]: data
+      }));
+
+      // If there's a pending PR, check its status automatically
+      if (data.pr_status === 'pending') {
+        // Check PR status after a short delay to avoid overwhelming the API
+        setTimeout(() => {
+          checkPrAgentConfigPRStatus(repoId);
+        }, 1000);
+      }
+      
+    } catch (error) {
+      console.error('Error loading PR-Agent config:', error);
+      showError('Error', 'Failed to load PR-Agent configuration');
+    } finally {
+      setLoadingPrAgentConfig(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(repoId);
+        return newSet;
+      });
+    }
+  };
+
+  const openPrAgentConfigEditor = (repoId) => {
+    setShowPrAgentConfigEditor(repoId);
+    loadPrAgentConfig(repoId);
+  };
+
+  const closePrAgentConfigEditor = () => {
+    setShowPrAgentConfigEditor(null);
+  };
+
+  const handlePrAgentConfigSave = async (result) => {
+    if (result && showPrAgentConfigEditor) {
+      // Refresh the PR-Agent config data
+      await loadPrAgentConfig(showPrAgentConfigEditor, true);
+      
+      // Update the repository data to reflect the new PR status
+      setRepositories(prev => prev.map(repo => 
+        repo.id === showPrAgentConfigEditor 
+          ? { 
+              ...repo, 
+              pr_agent_config_pr_status: result.status,
+              pr_agent_config_pr_url: result.pr_url,
+              pr_agent_config_pr_number: result.pr_number,
+              has_pr_agent_config: true
+            }
+          : repo
+      ));
+      
+      // Dialog is closed automatically by the PrAgentConfigEditor
+    }
+  };
+
+  const checkPrAgentConfigPRStatus = async (repoId) => {
+    try {
+      setCheckingPrStatus(prev => new Set([...prev, repoId]));
+      
+      const response = await api.checkPrAgentConfigPrStatus(repoId);
+      const statusData = response.data.data;
+      
+      if (statusData.status === 'merged') {
+        showSuccess('PR Merged!', 'PR-Agent config PR was merged. Configuration updated.');
+        // Refresh the PR-Agent config data
+        await loadPrAgentConfig(repoId, true);
+        // Clear PR status from repositories state
+        setRepositories(prev => prev.map(repo => 
+          repo.id === repoId
+            ? { 
+                ...repo, 
+                pr_agent_config_pr_status: null,
+                pr_agent_config_pr_url: null,
+                pr_agent_config_pr_number: null,
+                has_pr_agent_config: true
+              }
+            : repo
+        ));
+      } else if (statusData.status === 'closed') {
+        showSuccess('PR Closed', 'PR-Agent config PR was closed without merging.');
+        // Update local state
+        setPrAgentConfigData(prev => ({
+          ...prev,
+          [repoId]: {
+            ...prev[repoId],
+            has_pending_pr: false,
+            pr_status: 'closed'
+          }
+        }));
+        // Clear PR status from repositories state
+        setRepositories(prev => prev.map(repo => 
+          repo.id === repoId
+            ? { 
+                ...repo, 
+                pr_agent_config_pr_status: null,
+                pr_agent_config_pr_url: null,
+                pr_agent_config_pr_number: null
+              }
+            : repo
+        ));
+      }
+    } catch (error) {
+      console.error('Error checking PR-Agent config PR status:', error);
+      showError('Error', 'Failed to check PR status');
+    } finally {
+      setCheckingPrStatus(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(repoId);
+        return newSet;
+      });
     }
   };
 
@@ -1045,7 +1437,7 @@ const RepositoryManager = () => {
                               <button
                                 onClick={() => checkRunnerHealth(repo.id)}
                                 disabled={checkingHealth.has(repo.id)}
-                                className="flex items-center px-4 py-2 text-sm font-medium text-green-600 bg-green-50 dark:bg-green-900/30 dark:text-green-400 rounded-lg hover:bg-green-100 dark:hover:bg-green-900/50 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                                className="flex items-center px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                               >
                                 {checkingHealth.has(repo.id) ? (
                                   <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
@@ -1058,7 +1450,7 @@ const RepositoryManager = () => {
                                 <button
                                   onClick={() => checkRepositoryConfig(repo.id)}
                                   disabled={checkingConfig.has(repo.id)}
-                                  className="flex items-center px-4 py-2 text-sm font-medium text-blue-600 bg-blue-50 dark:bg-blue-900/30 dark:text-blue-400 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  className="flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   {checkingConfig.has(repo.id) ? (
                                     <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
@@ -1072,14 +1464,14 @@ const RepositoryManager = () => {
 
                               <button
                                 onClick={() => startEdit(repo.id)}
-                                className="flex items-center px-4 py-2 text-sm font-medium text-blue-600 bg-blue-50 dark:bg-blue-900/30 dark:text-blue-400 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors duration-200"
+                                className="flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 rounded-lg transition-colors duration-200 shadow-sm"
                               >
                                 <Edit className="h-4 w-4 mr-2" />
                                 Edit
                               </button>
                               <button
                                 onClick={() => handleDelete(repo)}
-                                className="flex items-center px-4 py-2 text-sm font-medium text-red-600 bg-red-50 dark:bg-red-900/30 dark:text-red-400 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/50 transition-colors duration-200"
+                                className="flex items-center px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-600 rounded-lg transition-colors duration-200 shadow-sm"
                               >
                                 <Trash2 className="h-4 w-4 mr-2" />
                                 Delete
@@ -1168,6 +1560,54 @@ const RepositoryManager = () => {
                             <Settings className="h-4 w-4 mr-2" />
                             <span>Features</span>
                           </button>
+                          
+                          {/* Best Practices Tab - Disabled if no auth token */}
+                          <button
+                            onClick={() => {
+                              if (getTokenStatus(repo) === 'configured') {
+                                setRepoActiveTab(repo.id, 'best-practices');
+                                // Auto-fetch best practices if not already loaded
+                                if (!bestPracticesData[repo.id] && !loadingBestPractices.has(repo.id)) {
+                                  loadBestPractices(repo.id);
+                                }
+                              }
+                            }}
+                            disabled={getTokenStatus(repo) !== 'configured'}
+                            className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                              getTokenStatus(repo) !== 'configured'
+                                ? 'text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-50'
+                                : getRepoActiveTab(repo.id) === 'best-practices'
+                                ? 'bg-white dark:bg-gray-700 text-purple-600 dark:text-purple-400 shadow-sm'
+                                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                            }`}
+                          >
+                            <Shield className="h-4 w-4 mr-2" />
+                            <span>Best Practices</span>
+                          </button>
+
+                          {/* PR-Agent Config Tab - Disabled if no auth token */}
+                          <button
+                            onClick={() => {
+                              if (getTokenStatus(repo) === 'configured') {
+                                setRepoActiveTab(repo.id, 'pr-agent-config');
+                                // Auto-fetch PR-Agent config if not already loaded
+                                if (!prAgentConfigData[repo.id] && !loadingPrAgentConfig.has(repo.id)) {
+                                  loadPrAgentConfig(repo.id);
+                                }
+                              }
+                            }}
+                            disabled={getTokenStatus(repo) !== 'configured'}
+                            className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                              getTokenStatus(repo) !== 'configured'
+                                ? 'text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-50'
+                                : getRepoActiveTab(repo.id) === 'pr-agent-config'
+                                ? 'bg-white dark:bg-gray-700 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                            }`}
+                          >
+                            <Settings className="h-4 w-4 mr-2" />
+                            <span>PR-Agent Config</span>
+                          </button>
                         </div>
                       </div>
 
@@ -1220,7 +1660,7 @@ const RepositoryManager = () => {
                                   <div className="flex items-center justify-end">
                                     <button
                                       onClick={() => loadEffectiveConfig(repo.id)}
-                                      className="flex items-center px-3 py-2 text-sm font-medium text-purple-600 bg-purple-50 dark:bg-purple-900/30 dark:text-purple-400 rounded-lg hover:bg-purple-100 dark:hover:bg-purple-900/50 transition-colors duration-200 border border-purple-200 dark:border-purple-700"
+                                      className="flex items-center px-3 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 rounded-lg transition-colors duration-200 shadow-sm"
                                     >
                                       <Eye className="h-4 w-4 mr-2" />
                                       View Effective Config
@@ -1357,8 +1797,9 @@ const RepositoryManager = () => {
 
                                   {/* Configuration Not Checked */}
                                   {!repo.config_last_checked && (
-                                    <div className="text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3">
-                                      <span className="font-medium">⚠</span> Configuration not yet checked. Use "Check Config" button above.
+                                    <div className="text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3 flex items-center">
+                                      <AlertCircle className="h-4 w-4 mr-2 flex-shrink-0" />
+                                      <span className="font-medium">Configuration not yet checked. Use "Check Config" button above.</span>
                                     </div>
                                   )}
                                 </div>
@@ -1642,6 +2083,370 @@ const RepositoryManager = () => {
                             </div>
                           </div>
                         )}
+
+                        {/* Best Practices Tab */}
+                        {getRepoActiveTab(repo.id) === 'best-practices' && (
+                          <div className="space-y-6 tab-enter">
+                            <div className="bg-gradient-to-r from-purple-50 to-indigo-50 dark:from-purple-900/20 dark:to-indigo-900/20 rounded-lg p-6 border border-purple-200 dark:border-purple-700">
+                              <div className="flex items-center justify-between mb-6">
+                                <h4 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
+                                  <Shield className="h-5 w-5 mr-2 text-purple-600 dark:text-purple-400" />
+                                  Repository Best Practices
+                                </h4>
+                                <div className="flex items-center space-x-2">
+                                  {/* PR Status Display */}
+                                  {bestPracticesData[repo.id]?.has_pending_pr && (
+                                    <div className="flex items-center bg-yellow-50 dark:bg-yellow-900/20 text-yellow-800 dark:text-yellow-200 px-3 py-1 rounded-lg border border-yellow-200 dark:border-yellow-700 mr-2">
+                                      <GitBranch className="h-4 w-4 mr-1" />
+                                      <span className="text-sm font-medium">
+                                        PR #{bestPracticesData[repo.id].pr_number} Pending
+                                      </span>
+                                      <a 
+                                        href={bestPracticesData[repo.id].pr_url} 
+                                        target="_blank" 
+                                        rel="noopener noreferrer"
+                                        className="ml-1 hover:text-yellow-900 dark:hover:text-yellow-100"
+                                      >
+                                        <ExternalLink className="h-3 w-3" />
+                                      </a>
+                                      <button
+                                        onClick={() => checkPRStatus(repo.id)}
+                                        className="ml-2 hover:text-yellow-900 dark:hover:text-yellow-100"
+                                        title="Check PR status"
+                                      >
+                                        <RefreshCw className="h-3 w-3" />
+                                      </button>
+                                    </div>
+                                  )}
+                                  
+                                  {!isEditingBestPractices[repo.id] && (
+                                    <>
+                                      <button
+                                        onClick={() => loadBestPractices(repo.id, true)}
+                                        disabled={loadingBestPractices.has(repo.id)}
+                                        className="flex items-center px-3 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                      >
+                                        <RefreshCw className={`h-4 w-4 mr-2 ${loadingBestPractices.has(repo.id) ? 'animate-spin' : ''}`} />
+                                        {loadingBestPractices.has(repo.id) ? 'Loading...' : 'Refresh'}
+                                      </button>
+                                      <button
+                                        onClick={() => startEditingBestPractices(repo.id)}
+                                        className="flex items-center px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                      >
+                                        <Edit className="h-4 w-4 mr-2" />
+                                        {bestPracticesData[repo.id]?.exists ? 'Edit' : 'Create'}
+                                      </button>
+                                    </>
+                                  )}
+                                  
+                                  {isEditingBestPractices[repo.id] && (
+                                    <>
+                                      <button
+                                        onClick={() => cancelEditingBestPractices(repo.id)}
+                                        className="flex items-center px-3 py-2 text-sm font-medium text-white bg-gray-600 hover:bg-gray-700 dark:bg-gray-500 dark:hover:bg-gray-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                      >
+                                        <X className="h-4 w-4 mr-2" />
+                                        Cancel
+                                      </button>
+                                      <button
+                                        onClick={() => saveBestPractices(repo.id)}
+                                        disabled={savingBestPractices[repo.id] || !editedBestPracticesContent[repo.id]?.trim()}
+                                        className="flex items-center px-3 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                                      >
+                                        <GitBranch className={`h-4 w-4 mr-2 ${savingBestPractices[repo.id] ? 'animate-spin' : ''}`} />
+                                        {savingBestPractices[repo.id] ? 'Creating PR...' : 'Create PR'}
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                              
+                              {/* Edit Mode */}
+                              {isEditingBestPractices[repo.id] ? (
+                                <div className="space-y-4">
+                                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                                    <div className="flex items-start">
+                                      <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3 mt-0.5 flex-shrink-0" />
+                                      <div>
+                                        <h6 className="font-medium text-blue-800 dark:text-blue-200 mb-2">Creating/Updating via Pull Request</h6>
+                                        <div className="text-sm text-blue-700 dark:text-blue-300 space-y-1">
+                                          <p>• Changes will be submitted as a pull request for review</p>
+                                          <p>• PR-Agent will automatically enforce practices once the PR is merged</p>
+                                          <p>• Further edits will add commits to the same PR branch</p>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                  
+                                  <div className="bg-white dark:bg-gray-800 rounded-lg border border-purple-100 dark:border-purple-700 overflow-hidden">
+                                    <div className="bg-purple-50 dark:bg-purple-900/30 px-4 py-3 border-b border-purple-100 dark:border-purple-700">
+                                      <h5 className="font-medium text-purple-900 dark:text-purple-200 text-sm flex items-center">
+                                        <Edit className="h-4 w-4 mr-2" />
+                                        Editing: best_practices.md
+                                      </h5>
+                                    </div>
+                                    <div className="p-4">
+                                      <textarea
+                                        value={editedBestPracticesContent[repo.id] || ''}
+                                        onChange={(e) => setEditedBestPracticesContent(prev => ({
+                                          ...prev,
+                                          [repo.id]: e.target.value
+                                        }))}
+                                        placeholder="# Best Practices&#10;&#10;## Coding Standards&#10;- Use clear, descriptive variable names&#10;- Write unit tests for all functions&#10;- Follow consistent formatting&#10;&#10;## Code Review Guidelines&#10;- All PRs require at least one review&#10;- Test coverage must be above 80%&#10;&#10;## Documentation&#10;- Update README for any API changes&#10;- Add inline comments for complex logic"
+                                        className="w-full h-96 px-4 py-3 border border-gray-200 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white font-mono text-sm resize-none"
+                                      />
+                                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                                        Use Markdown formatting. Define your coding standards, style guides, and development practices.
+                                      </p>
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                /* View Mode */
+                                loadingBestPractices.has(repo.id) ? (
+                                  <div className="flex items-center justify-center py-8">
+                                    <RefreshCw className="h-6 w-6 text-purple-600 dark:text-purple-400 animate-spin mr-3" />
+                                    <span className="text-gray-600 dark:text-gray-400">Loading best practices...</span>
+                                  </div>
+                                ) : bestPracticesData[repo.id]?.error ? (
+                                  <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+                                    <div className="flex items-center">
+                                      <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 mr-3" />
+                                      <div>
+                                        <h5 className="font-medium text-red-800 dark:text-red-200">Error Loading Best Practices</h5>
+                                        <p className="text-red-700 dark:text-red-300 text-sm mt-1">{bestPracticesData[repo.id].error}</p>
+                                      </div>
+                                    </div>
+                                  </div>
+                                ) : bestPracticesData[repo.id]?.exists ? (
+                                  <div className="bg-white dark:bg-gray-800 rounded-lg border border-purple-100 dark:border-purple-700 overflow-hidden">
+                                    <div className="bg-purple-50 dark:bg-purple-900/30 px-4 py-3 border-b border-purple-100 dark:border-purple-700 flex items-center justify-between">
+                                      <h5 className="font-medium text-purple-900 dark:text-purple-200 text-sm flex items-center">
+                                        <FileText className="h-4 w-4 mr-2" />
+                                        best_practices.md
+                                      </h5>
+                                      {bestPracticesData[repo.id].last_fetched && (
+                                        <span className="text-xs text-purple-700 dark:text-purple-300">
+                                          Updated: {new Date(bestPracticesData[repo.id].last_fetched).toLocaleString()}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="px-4 py-3">
+                                      <div 
+                                        className="prose prose-sm max-w-none best-practices-markdown"
+                                        dangerouslySetInnerHTML={{
+                                          __html: bestPracticesData[repo.id].content_html || 'No content available'
+                                        }}
+                                      />
+                                    </div>
+                                  </div>
+                                ) : bestPracticesData[repo.id] !== undefined ? (
+                                  <div className="text-center py-8">
+                                    <Shield className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500 mb-4" />
+                                    <h5 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No Best Practices Found</h5>
+                                    <p className="text-gray-500 dark:text-gray-400 mb-4">
+                                      Create a <code className="bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded text-sm">best_practices.md</code> file to define coding standards and guidelines.
+                                    </p>
+                                    <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 text-left max-w-2xl mx-auto">
+                                      <div className="flex items-start">
+                                        <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3 mt-0.5 flex-shrink-0" />
+                                        <div>
+                                          <h6 className="font-medium text-blue-800 dark:text-blue-200 mb-2">How Best Practices Work</h6>
+                                          <div className="text-sm text-blue-700 dark:text-blue-300 space-y-2">
+                                            <p>• Click "Create" to add a <code>best_practices.md</code> file via pull request</p>
+                                            <p>• Define coding standards, style guides, and development practices</p>
+                                            <p>• PR-Agent will automatically check code against these practices</p>
+                                            <p>• Violations will be flagged as "best practice" suggestions</p>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="text-center py-8">
+                                    <Shield className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500 mb-4" />
+                                    <h5 className="text-lg font-medium text-gray-900 dark:text-white mb-2">Best Practices</h5>
+                                    <p className="text-gray-500 dark:text-gray-400 mb-4">
+                                      Click "Refresh" to check for a best_practices.md file in your repository.
+                                    </p>
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* PR-Agent Config Tab */}
+                        {getRepoActiveTab(repo.id) === 'pr-agent-config' && (
+                          <div className="space-y-6 tab-enter">
+                            <div className="bg-gradient-to-r from-indigo-50 to-purple-50 dark:from-indigo-900/20 dark:to-purple-900/20 rounded-lg p-6 border border-indigo-200 dark:border-indigo-700">
+                              <div className="flex items-center justify-between mb-6">
+                                <h4 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
+                                  <Settings className="h-5 w-5 mr-2 text-indigo-600 dark:text-indigo-400" />
+                                  PR-Agent Configuration
+                                </h4>
+                                <div className="flex items-center space-x-2">
+                                  {/* PR Status Display */}
+                                  {prAgentConfigData[repo.id]?.pr_status === 'pending' && prAgentConfigData[repo.id]?.pr_url && (
+                                    <div className="flex items-center bg-yellow-50 dark:bg-yellow-900/20 text-yellow-800 dark:text-yellow-200 px-3 py-1 rounded-lg border border-yellow-200 dark:border-yellow-700 mr-2">
+                                      <GitBranch className="h-4 w-4 mr-1" />
+                                      <span className="text-sm font-medium">
+                                        {checkingPrStatus.has(repo.id) ? (
+                                          <>
+                                            <RefreshCw className="h-3 w-3 animate-spin inline mr-1" />
+                                            Checking PR #{prAgentConfigData[repo.id].pr_number}...
+                                          </>
+                                        ) : (
+                                          <>
+                                            PR #{prAgentConfigData[repo.id].pr_number} Pending
+                                          </>
+                                        )}
+                                      </span>
+                                      <a 
+                                        href={prAgentConfigData[repo.id].pr_url} 
+                                        target="_blank" 
+                                        rel="noopener noreferrer"
+                                        className="ml-1 hover:text-yellow-900 dark:hover:text-yellow-100"
+                                      >
+                                        <ExternalLink className="h-3 w-3" />
+                                      </a>
+                                      <button
+                                        onClick={() => checkPrAgentConfigPRStatus(repo.id)}
+                                        disabled={checkingPrStatus.has(repo.id)}
+                                        className="ml-2 hover:text-yellow-900 dark:hover:text-yellow-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        title={checkingPrStatus.has(repo.id) ? "Checking..." : "Check PR status"}
+                                      >
+                                        <RefreshCw className={`h-3 w-3 ${checkingPrStatus.has(repo.id) ? 'animate-spin' : ''}`} />
+                                      </button>
+                                    </div>
+                                  )}
+                                  
+                                  <button
+                                    onClick={() => loadPrAgentConfig(repo.id, true)}
+                                    disabled={loadingPrAgentConfig.has(repo.id)}
+                                    className="flex items-center px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    <RefreshCw className={`h-4 w-4 mr-2 ${loadingPrAgentConfig.has(repo.id) ? 'animate-spin' : ''}`} />
+                                    {loadingPrAgentConfig.has(repo.id) ? 'Loading...' : 'Refresh'}
+                                  </button>
+                                  <button
+                                    onClick={() => openPrAgentConfigEditor(repo.id)}
+                                    className="flex items-center px-3 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                  >
+                                    <Edit className="h-4 w-4 mr-2" />
+                                    {prAgentConfigData[repo.id]?.has_config ? 'Edit Config' : 'Create Config'}
+                                  </button>
+                                </div>
+                              </div>
+                              
+                              {/* Config Status */}
+                              {loadingPrAgentConfig.has(repo.id) ? (
+                                <div className="flex items-center justify-center py-8">
+                                  <RefreshCw className="h-6 w-6 text-indigo-600 dark:text-indigo-400 animate-spin mr-3" />
+                                  <span className="text-gray-600 dark:text-gray-400">Loading PR-Agent configuration...</span>
+                                </div>
+                              ) : prAgentConfigData[repo.id]?.parse_error ? (
+                                <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+                                  <div className="flex items-center">
+                                    <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 mr-3" />
+                                    <div>
+                                      <h5 className="font-medium text-red-800 dark:text-red-200">Configuration Parse Error</h5>
+                                      <p className="text-red-700 dark:text-red-300 text-sm mt-1">{prAgentConfigData[repo.id].parse_error}</p>
+                                      <p className="text-red-600 dark:text-red-400 text-xs mt-2">Please fix the TOML syntax to resolve this error.</p>
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : prAgentConfigData[repo.id]?.has_config ? (
+                                <div className="bg-white dark:bg-gray-800 rounded-lg border border-indigo-100 dark:border-indigo-700 overflow-hidden">
+                                  <div className="bg-indigo-50 dark:bg-indigo-900/30 px-4 py-3 border-b border-indigo-100 dark:border-indigo-700 flex items-center justify-between">
+                                    <h5 className="font-medium text-indigo-900 dark:text-indigo-200 text-sm flex items-center">
+                                      <FileText className="h-4 w-4 mr-2" />
+                                      .pr_agent.toml
+                                    </h5>
+                                    {prAgentConfigData[repo.id].last_fetched && (
+                                      <span className="text-xs text-indigo-700 dark:text-indigo-300">
+                                        Updated: {new Date(prAgentConfigData[repo.id].last_fetched).toLocaleString()}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="px-4 py-3">
+                                                        {prAgentConfigData[repo.id].parsed_config ? (
+                      <div className="space-y-4">
+                        <div className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+                          <strong>Overridden Settings:</strong>
+                        </div>
+                        <div className="space-y-3">
+                          {Object.entries(prAgentConfigData[repo.id].parsed_config).map(([section, settings]) => (
+                            <div key={section} className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 border border-gray-200 dark:border-gray-600">
+                              <div className="font-mono text-sm font-semibold text-gray-900 dark:text-white mb-3 pb-2 border-b border-gray-200 dark:border-gray-600">
+                                [{section}]
+                              </div>
+                              <div className="space-y-2">
+                                {Object.entries(settings || {}).map(([key, value]) => (
+                                  <div key={key} className="flex items-start justify-between">
+                                    <div className="font-mono text-xs text-gray-700 dark:text-gray-300 font-medium">
+                                      {key}
+                                    </div>
+                                    <div className="font-mono text-xs text-gray-600 dark:text-gray-400 ml-3 text-right max-w-xs">
+                                      {Array.isArray(value) 
+                                        ? `[${value.join(', ')}]`
+                                        : typeof value === 'object'
+                                          ? JSON.stringify(value)
+                                          : String(value).length > 50
+                                            ? `${String(value).substring(0, 50)}...`
+                                            : String(value)
+                                      }
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                                      <div className="bg-gray-50 dark:bg-gray-700 rounded p-3">
+                                        <pre className="text-xs text-gray-700 dark:text-gray-300 font-mono whitespace-pre-wrap">
+                                          {prAgentConfigData[repo.id].content || 'No content available'}
+                                        </pre>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              ) : prAgentConfigData[repo.id] !== undefined ? (
+                                <div className="text-center py-8">
+                                  <Settings className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500 mb-4" />
+                                  <h5 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No Configuration Override Found</h5>
+                                  <p className="text-gray-500 dark:text-gray-400 mb-4">
+                                    Create a <code className="bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded text-sm">.pr_agent.toml</code> file to override global settings for this repository.
+                                  </p>
+                                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 text-left max-w-2xl mx-auto">
+                                    <div className="flex items-start">
+                                      <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3 mt-0.5 flex-shrink-0" />
+                                      <div>
+                                        <h6 className="font-medium text-blue-800 dark:text-blue-200 mb-2">How Repository Configuration Works</h6>
+                                        <div className="text-sm text-blue-700 dark:text-blue-300 space-y-2">
+                                          <p>• Click "Create Config" to add repository-specific settings</p>
+                                          <p>• Override any global PR-Agent setting for this repository</p>
+                                          <p>• Configure models, thresholds, prompts, and behavior</p>
+                                          <p>• Changes are deployed via pull request for review</p>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="text-center py-8">
+                                  <Settings className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500 mb-4" />
+                                  <h5 className="text-lg font-medium text-gray-900 dark:text-white mb-2">PR-Agent Configuration</h5>
+                                  <p className="text-gray-500 dark:text-gray-400 mb-4">
+                                    Click "Refresh" to check for a .pr_agent.toml file in your repository.
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1651,6 +2456,17 @@ const RepositoryManager = () => {
           </div>
         )}
       </div>
+
+      {/* PR-Agent Config Editor Modal */}
+      {showPrAgentConfigEditor && (
+        <PrAgentConfigEditor
+          repositoryId={showPrAgentConfigEditor}
+          repositoryName={repositories.find(r => r.id === showPrAgentConfigEditor)?.name || 'Repository'}
+          isOpen={true}
+          onClose={closePrAgentConfigEditor}
+          onSave={handlePrAgentConfigSave}
+        />
+      )}
 
       {/* Effective Configuration Modal */}
       {effectiveConfigModal.show && (

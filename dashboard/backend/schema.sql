@@ -90,6 +90,19 @@ CREATE TABLE repositories (
 	config_last_checked DATETIME, 
 	effective_config JSON, 
 	has_workflow_config BOOLEAN DEFAULT FALSE, 
+	has_best_practices BOOLEAN DEFAULT FALSE, 
+	best_practices_content TEXT, 
+	best_practices_last_fetched DATETIME, 
+	best_practices_pr_url VARCHAR, 
+	best_practices_pr_number INTEGER, 
+	best_practices_pr_branch VARCHAR, 
+	best_practices_pr_status VARCHAR, 
+	pr_agent_config_content TEXT, 
+	pr_agent_config_last_fetched DATETIME, 
+	pr_agent_config_pr_url VARCHAR, 
+	pr_agent_config_pr_number INTEGER, 
+	pr_agent_config_pr_branch VARCHAR, 
+	pr_agent_config_pr_status VARCHAR, 
 	PRIMARY KEY (id)
 );
 

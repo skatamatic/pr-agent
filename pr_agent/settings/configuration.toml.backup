@@ -171,6 +171,7 @@ publish_output_no_suggestions=true
 apply_suggestions_checkbox=true
 # suggestions scoring
 suggestions_score_threshold=0 # [0-10]| recommend not to set this value above 8, since above it may clip highly relevant suggestions
+commit_eligibility_threshold=0.7  # Minimum score (0.0-1.0) for a suggestion to be considered directly committable
 new_score_mechanism=true
 new_score_mechanism_th_high=9
 new_score_mechanism_th_medium=7

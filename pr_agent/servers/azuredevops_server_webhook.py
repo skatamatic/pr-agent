@@ -119,6 +119,16 @@ async def handle_request_azure(data, log_context):
     if data["eventType"] == "git.pullrequest.created":
         # API V1 (latest)
         pr_url = unquote(data["resource"]["_links"]["web"]["href"].replace("_apis/git/repositories", "_git"))
+        
+        # Guard: Skip PRs created by PR Agent Dashboard
+        pr_description = data.get("resource", {}).get("description", "") or ""
+        if "This PR was created automatically via PR Agent Dashboard" in pr_description:
+            get_logger().info(f"Skipping PR processing - PR was created by PR Agent Dashboard: {pr_url}")
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content=jsonable_encoder({"message": "Skipped - PR created by PR Agent Dashboard"})
+            )
+        
         log_context["event"] = data["eventType"]
         log_context["api_url"] = pr_url
         await _perform_commands_azure("pr_commands", PRAgent(), pr_url, log_context)

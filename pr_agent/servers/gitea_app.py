@@ -90,6 +90,12 @@ async def handle_pr_event(body: Dict[str, Any], event: str, action: str, agent: 
 
     # Handle PR based on action
     if action in ["opened", "reopened"]:
+        # Guard: Skip PRs created by PR Agent Dashboard
+        pr_description = pr.get('body', '') or ''
+        if "This PR was created automatically via PR Agent Dashboard" in pr_description:
+            get_logger().info(f"Skipping PR processing - PR was created by PR Agent Dashboard: {api_url}")
+            return
+        
         commands = get_settings().get("gitea.pr_commands", [])
         for command in commands:
             await agent.handle_request(api_url, command)

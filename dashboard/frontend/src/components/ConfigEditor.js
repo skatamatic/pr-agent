@@ -17,8 +17,7 @@ import {
   FileText,
   Lightbulb,
   Github,
-  Gauge,
-  Shield
+  Gauge
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
@@ -188,6 +187,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           extra_instructions: configData.pr_code_suggestions?.extra_instructions || '',
           focus_only_on_problems: configData.pr_code_suggestions?.focus_only_on_problems || false,
           suggestions_score_threshold: configData.pr_code_suggestions?.suggestions_score_threshold || 0,
+          commit_eligibility_threshold: configData.pr_code_suggestions?.commit_eligibility_threshold || 0.7,
           commitable_code_suggestions: configData.pr_code_suggestions?.commitable_code_suggestions || true,
           dual_publishing_score_threshold: configData.pr_code_suggestions?.dual_publishing_score_threshold || -1,
           model: configData.pr_code_suggestions?.model || ''
@@ -286,6 +286,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           extra_instructions: '',
           focus_only_on_problems: false,
           suggestions_score_threshold: 0,
+          commit_eligibility_threshold: 0.7,
           commitable_code_suggestions: true,
           dual_publishing_score_threshold: -1
         },
@@ -420,6 +421,13 @@ const ConfigEditor = ({ navigationTarget = null }) => {
       const threshold = config.pr_code_suggestions.suggestions_score_threshold;
       if (threshold < 0 || threshold > 10) {
         errors['pr_code_suggestions.suggestions_score_threshold'] = 'Score threshold must be between 0 and 10';
+      }
+    }
+    
+    if (config.pr_code_suggestions?.commit_eligibility_threshold !== undefined) {
+      const threshold = config.pr_code_suggestions.commit_eligibility_threshold;
+      if (threshold < 0 || threshold > 1) {
+        errors['pr_code_suggestions.commit_eligibility_threshold'] = 'Commit eligibility threshold must be between 0.0 and 1.0';
       }
     }
 
@@ -759,17 +767,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 <Github className="h-4 w-4 mr-3 flex-shrink-0" />
                 <span className="truncate">GitHub</span>
               </button>
-              <button
-                onClick={() => setActiveTab('best-practices')}
-                className={`w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                  activeTab === 'best-practices'
-                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm'
-                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50'
-                }`}
-              >
-                <Shield className="h-4 w-4 mr-3 flex-shrink-0" />
-                <span className="truncate">Best Practices</span>
-              </button>
+
               <button
                 onClick={() => setActiveTab('dashboard')}
                 className={`w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
@@ -1391,6 +1389,30 @@ const ConfigEditor = ({ navigationTarget = null }) => {
 
                   <div>
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Commit Eligibility Threshold
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Minimum confidence score (0.0-1.0) for suggestions to show commit buttons. Lower values allow more auto-commits.
+                      </span>
+                    </label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={config.pr_code_suggestions?.commit_eligibility_threshold || 0.7}
+                      onChange={(e) => updateConfig('pr_code_suggestions.commit_eligibility_threshold', parseFloat(e.target.value))}
+                      min="0"
+                      max="1"
+                      disabled={!editing}
+                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      0 = All suggestions get commit buttons, 10 = Only safest changes
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                       Dual Publishing Score Threshold
                       <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
                         Minimum score for suggestions to be made commitable. -1 disables dual publishing.
@@ -1754,192 +1776,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           </div>
         )}
 
-        {/* Best Practices Tab */}
-        {activeTab === 'best-practices' && (
-          <div className="space-y-8 animate-in slide-in-from-right-4 fade-in duration-300">
-            <SectionHeader title="Best Practices Settings" icon={Shield}>
-              <div className="space-y-6 pt-4">
-                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-4">
-                  <div className="flex items-center">
-                    <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2" />
-                    <span className="text-blue-800 dark:text-blue-200 text-sm">
-                      Configure organizational best practices and automated pattern detection to ensure code quality and consistency.
-                    </span>
-                  </div>
-                </div>
 
-                {/* Global Best Practices */}
-                <div className="space-y-4">
-                  <h4 className="text-md font-medium text-gray-900 dark:text-white">Global Best Practices</h4>
-                  
-                  <div className="flex items-center space-x-3">
-                    <input
-                      type="checkbox"
-                      id="enable-global-best-practices"
-                      checked={config.best_practices?.enable_global_best_practices || false}
-                      onChange={(e) => updateConfig('best_practices.enable_global_best_practices', e.target.checked)}
-                      disabled={!editing}
-                      className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
-                    />
-                    <label htmlFor="enable-global-best-practices" className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                      Enable global best practices enforcement
-                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                        Apply organization-wide coding standards and practices across all repositories.
-                      </span>
-                    </label>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        Organization Name
-                        <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                          Your organization's name for customized best practice recommendations.
-                        </span>
-                      </label>
-                      <input
-                        type="text"
-                        value={config.best_practices?.organization_name || ''}
-                        onChange={(e) => updateConfig('best_practices.organization_name', e.target.value)}
-                        disabled={!editing}
-                        placeholder="e.g., Acme Corp"
-                        className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        Max Lines Allowed
-                        <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                          Maximum lines for best practices content to prevent token limit issues.
-                        </span>
-                      </label>
-                      <input
-                        type="number"
-                        value={config.best_practices?.max_lines_allowed || 800}
-                        onChange={(e) => updateConfig('best_practices.max_lines_allowed', parseInt(e.target.value))}
-                        min="100"
-                        max="2000"
-                        disabled={!editing}
-                        className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Best Practices Content
-                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                        Define your organization's specific coding standards, patterns, and practices that AI should enforce.
-                      </span>
-                    </label>
-                    <textarea
-                      value={config.best_practices?.content || ''}
-                      onChange={(e) => updateConfig('best_practices.content', e.target.value)}
-                      disabled={!editing}
-                      placeholder="e.g., Always use async/await instead of .Result on async methods. Prefer dependency injection over static dependencies. Use early returns to reduce nesting..."
-                      rows={8}
-                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed resize-vertical"
-                    />
-                  </div>
-                </div>
-
-                {/* Auto Best Practices */}
-                <div className="space-y-4 border-t border-gray-200 dark:border-gray-700 pt-6">
-                  <h4 className="text-md font-medium text-gray-900 dark:text-white">Automated Best Practices</h4>
-                  
-                  <div className="space-y-3">
-                    <div className="flex items-center space-x-3">
-                      <input
-                        type="checkbox"
-                        id="enable-auto-best-practices"
-                        checked={config.auto_best_practices?.enable_auto_best_practices !== false}
-                        onChange={(e) => updateConfig('auto_best_practices.enable_auto_best_practices', e.target.checked)}
-                        disabled={!editing}
-                        className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
-                      />
-                      <label htmlFor="enable-auto-best-practices" className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                        Enable automatic best practices detection
-                        <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                          AI will automatically identify and suggest adherence to common coding best practices.
-                        </span>
-                      </label>
-                    </div>
-
-                    <div className="flex items-center space-x-3">
-                      <input
-                        type="checkbox"
-                        id="utilize-auto-best-practices"
-                        checked={config.auto_best_practices?.utilize_auto_best_practices !== false}
-                        onChange={(e) => updateConfig('auto_best_practices.utilize_auto_best_practices', e.target.checked)}
-                        disabled={!editing}
-                        className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
-                      />
-                      <label htmlFor="utilize-auto-best-practices" className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                        Utilize auto-detected best practices in reviews
-                        <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                          Apply automatically detected patterns and practices when reviewing code.
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Max Patterns to Detect
-                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                        Maximum number of patterns to automatically detect and apply per analysis.
-                      </span>
-                    </label>
-                    <input
-                      type="number"
-                      value={config.auto_best_practices?.max_patterns || 5}
-                      onChange={(e) => updateConfig('auto_best_practices.max_patterns', parseInt(e.target.value))}
-                      min="1"
-                      max="20"
-                      disabled={!editing}
-                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Auto Best Practices Instructions
-                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                        Additional instructions for automated best practice detection and application.
-                      </span>
-                    </label>
-                    <textarea
-                      value={config.auto_best_practices?.extra_instructions || ''}
-                      onChange={(e) => updateConfig('auto_best_practices.extra_instructions', e.target.value)}
-                      disabled={!editing}
-                      placeholder="e.g., Focus on performance and security patterns. Prioritize SOLID principles. Look for common anti-patterns in our codebase..."
-                      rows={6}
-                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed resize-vertical"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Auto Best Practices Content
-                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                        Specific patterns and practices content for automated detection.
-                      </span>
-                    </label>
-                    <textarea
-                      value={config.auto_best_practices?.content || ''}
-                      onChange={(e) => updateConfig('auto_best_practices.content', e.target.value)}
-                      disabled={!editing}
-                      placeholder="e.g., Repository-specific patterns that should be automatically detected and enforced..."
-                      rows={6}
-                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed resize-vertical"
-                    />
-                  </div>
-                </div>
-              </div>
-            </SectionHeader>
-          </div>
-        )}
 
         {/* Dashboard Tab */}
         {activeTab === 'dashboard' && (

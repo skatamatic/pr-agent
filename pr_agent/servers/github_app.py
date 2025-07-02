@@ -134,6 +134,13 @@ async def handle_new_pr_opened(body: Dict[str, Any],
     if not (pull_request and api_url):
         get_logger().info(f"Invalid PR event: {action=} {api_url=}")
         return {}
+    
+    # Guard: Skip PRs created by PR Agent Dashboard
+    pr_description = pull_request.get("body", "") or ""
+    if "This PR was created automatically via PR Agent Dashboard" in pr_description:
+        get_logger().info(f"Skipping PR processing - PR was created by PR Agent Dashboard: {api_url=}")
+        return {}
+    
     if action in get_settings().github_app.handle_pr_actions:  # ['opened', 'reopened', 'ready_for_review']
         # logic to ignore PRs with specific titles (e.g. "[Auto] ...")
         apply_repo_settings(api_url)
@@ -151,6 +158,12 @@ async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
                         agent: PRAgent):
     pull_request, api_url = _check_pull_request_event(action, body, log_context)
     if not (pull_request and api_url):
+        return {}
+
+    # Guard: Skip PRs created by PR Agent Dashboard
+    pr_description = pull_request.get("body", "") or ""
+    if "This PR was created automatically via PR Agent Dashboard" in pr_description:
+        get_logger().info(f"Skipping push trigger processing - PR was created by PR Agent Dashboard: {api_url=}")
         return {}
 
     apply_repo_settings(api_url) # we need to apply the repo settings to get the correct settings for the PR. This is quite expensive - a call to the git provider is made for each PR event.

@@ -211,6 +211,13 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
             agent = PRAgent()
             if event == "pullrequest:created":
                 pr_url = data["data"]["pullrequest"]["links"]["html"]["href"]
+                
+                # Guard: Skip PRs created by PR Agent Dashboard
+                pr_description = data.get("data", {}).get("pullrequest", {}).get("description", "") or ""
+                if "This PR was created automatically via PR Agent Dashboard" in pr_description:
+                    get_logger().info(f"Skipping PR processing - PR was created by PR Agent Dashboard: {pr_url}")
+                    return "Skipped - PR created by PR Agent Dashboard"
+                
                 log_context["api_url"] = pr_url
                 log_context["event"] = "pull_request"
                 if pr_url:

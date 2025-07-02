@@ -1336,6 +1336,39 @@ class DashboardApplication:
                     repo.has_workflow_config = config_result.get("has_workflow_config", False)
                     repo.config_last_checked = datetime.utcnow()
                     repo.effective_config = config_result.get("effective_config")
+                    
+                    # Auto-fetch best practices content
+                    try:
+                        from pr_agent.algo.utils import get_best_practices_content
+                        from pr_agent.git_providers.github_provider import GithubProvider
+                        from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+                        
+                        git_provider = None
+                        if repo.provider == 'github' and repo.github_token:
+                            git_provider = GithubProvider()
+                            git_provider.github_token = repo.github_token
+                            # Set repository information
+                            git_provider.repo = repo.name
+                            try:
+                                git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
+                            except Exception as repo_error:
+                                logger.warning(f"Could not get repository object for {repo.name}: {repo_error}")
+                                # Continue without repo_obj, get_best_practices_content will try different approaches
+                        elif repo.provider == 'azure' and repo.azure_pat:
+                            git_provider = AzureDevopsProvider()
+                            git_provider.azure_personal_access_token = repo.azure_pat
+                            # Set repository information
+                            git_provider.repo = repo.name
+                        
+                        if git_provider:
+                            best_practices_content = get_best_practices_content(git_provider)
+                            repo.has_best_practices = bool(best_practices_content)
+                            repo.best_practices_content = best_practices_content
+                            repo.best_practices_last_fetched = datetime.utcnow()
+                            logger.info(f"Auto-fetched best practices for repository {repo.name}: {'found' if best_practices_content else 'not found'}")
+                    except Exception as e:
+                        logger.warning(f"Failed to auto-fetch best practices for repository {repo.name}: {e}")
+                    
                     db.commit()
                     
                     return APIResponse(data={
@@ -1470,6 +1503,693 @@ class DashboardApplication:
             except Exception as e:
                 logger.error(f"Error getting repository effective config: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/repositories/{repo_id}/best-practices")
+        async def get_repository_best_practices(repo_id: int, force_refresh: bool = False, db: Session = Depends(get_db)):
+            """Get best practices file content from repository"""
+            try:
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                best_practices_content = ""
+                
+                # If we have cached content and not forcing refresh, use it
+                if not force_refresh and repo.best_practices_content and repo.best_practices_last_fetched:
+                    # Check if cache is relatively fresh (less than 1 hour old)
+                    from datetime import timedelta
+                    cache_age = datetime.utcnow() - repo.best_practices_last_fetched
+                    if cache_age < timedelta(hours=1):
+                        best_practices_content = repo.best_practices_content
+                        logger.info(f"Using cached best practices for repository {repo.name}")
+                
+                # If no cached content or forcing refresh, fetch from git
+                if not best_practices_content or force_refresh:
+                    try:
+                        from pr_agent.algo.utils import get_best_practices_content
+                        from pr_agent.git_providers.github_provider import GithubProvider
+                        from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+                        
+                        git_provider = None
+                        if repo.provider == 'github' and repo.github_token:
+                            git_provider = GithubProvider()
+                            git_provider.github_token = repo.github_token
+                            # Set repository information
+                            git_provider.repo = repo.name
+                            try:
+                                git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
+                            except Exception as repo_error:
+                                logger.warning(f"Could not get repository object for {repo.name}: {repo_error}")
+                                # Continue without repo_obj, get_best_practices_content will try different approaches
+                        elif repo.provider == 'azure' and repo.azure_pat:
+                            git_provider = AzureDevopsProvider()
+                            git_provider.azure_personal_access_token = repo.azure_pat
+                            # Set repository information
+                            git_provider.repo = repo.name
+                        else:
+                            raise HTTPException(status_code=400, detail=f"Repository provider {repo.provider} not supported or tokens not configured")
+                        
+                        # Get best practices content
+                        best_practices_content = get_best_practices_content(git_provider)
+                        
+                        # Update cache
+                        repo.has_best_practices = bool(best_practices_content)
+                        repo.best_practices_content = best_practices_content
+                        repo.best_practices_last_fetched = datetime.utcnow()
+                        db.commit()
+                        
+                        logger.info(f"Refreshed best practices for repository {repo.name}: {'found' if best_practices_content else 'not found'}")
+                    except Exception as fetch_error:
+                        logger.error(f"Failed to fetch best practices: {fetch_error}")
+                        # Fall back to cached content if available
+                        if repo.best_practices_content:
+                            best_practices_content = repo.best_practices_content
+                            logger.info(f"Using cached best practices due to fetch error")
+                        else:
+                            raise HTTPException(status_code=500, detail=f"Error retrieving best practices: {str(fetch_error)}")
+                
+                if best_practices_content:
+                    # Convert markdown to HTML for nice rendering
+                    try:
+                        import markdown
+                        from markdown.extensions import codehilite, fenced_code, tables
+                        
+                        md = markdown.Markdown(extensions=[
+                            'codehilite',
+                            'fenced_code', 
+                            'tables',
+                            'nl2br',
+                            'toc'
+                        ])
+                        content_html = md.convert(best_practices_content)
+                    except ImportError:
+                        # Fallback to plain text if markdown is not available
+                        content_html = f"<pre>{best_practices_content}</pre>"
+                    
+                    result = {
+                        "exists": True,
+                        "content": best_practices_content,
+                        "content_html": content_html,
+                        "file_name": "best_practices.md",
+                        "repository": repo.name,
+                        "last_fetched": repo.best_practices_last_fetched.isoformat() if repo.best_practices_last_fetched else None,
+                        "has_pending_pr": bool(repo.best_practices_pr_status == "pending"),
+                        "pr_url": repo.best_practices_pr_url,
+                        "pr_number": repo.best_practices_pr_number,
+                        "pr_status": repo.best_practices_pr_status
+                    }
+                else:
+                    result = {
+                        "exists": False,
+                        "content": None,
+                        "content_html": None,
+                        "file_name": "best_practices.md",
+                        "repository": repo.name,
+                        "last_fetched": repo.best_practices_last_fetched.isoformat() if repo.best_practices_last_fetched else None,
+                        "has_pending_pr": bool(repo.best_practices_pr_status == "pending"),
+                        "pr_url": repo.best_practices_pr_url,
+                        "pr_number": repo.best_practices_pr_number,
+                        "pr_status": repo.best_practices_pr_status
+                    }
+                
+                return APIResponse(data=result, message="Best practices retrieved successfully")
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error retrieving best practices for repository {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Error retrieving best practices: {str(e)}")
+        
+        @self.app.put("/api/repositories/{repo_id}/best-practices")
+        async def update_repository_best_practices(repo_id: int, content_data: dict, db: Session = Depends(get_db)):
+            """Create or update best practices file via pull request"""
+            try:
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                content = content_data.get("content", "").strip()
+                if not content:
+                    raise HTTPException(status_code=400, detail="Content cannot be empty")
+                
+                # Set up git provider
+                from pr_agent.git_providers.github_provider import GithubProvider
+                from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+                from datetime import datetime
+                
+                git_provider = None
+                if repo.provider == 'github' and repo.github_token:
+                    git_provider = GithubProvider()
+                    git_provider.github_token = repo.github_token
+                    # Parse repository owner and name from URL
+                    repo_parts = repo.name.split('/')
+                    if len(repo_parts) != 2:
+                        raise HTTPException(status_code=400, detail="Invalid repository name format")
+                    owner, repo_name = repo_parts
+                    git_provider.repo = repo.name
+                    git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
+                elif repo.provider == 'azure' and repo.azure_pat:
+                    # TODO: Implement Azure DevOps PR creation
+                    raise HTTPException(status_code=501, detail="Azure DevOps PR creation not yet implemented")
+                else:
+                    raise HTTPException(status_code=400, detail=f"Repository provider {repo.provider} not supported or tokens not configured")
+                
+                # Generate branch name
+                timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+                branch_name = f"update-best-practices-{repo_name}-{timestamp}"
+                
+                try:
+                    # Check if we have a pending PR
+                    if repo.best_practices_pr_status == "pending" and repo.best_practices_pr_branch:
+                        # Update existing PR by adding commit to the same branch
+                        logger.info(f"Updating existing best practices PR for {repo.name} on branch {repo.best_practices_pr_branch}")
+                        
+                        # Use existing branch
+                        branch_name = repo.best_practices_pr_branch
+                        git_provider.create_or_update_pr_file(
+                            file_path="best_practices.md",
+                            branch=branch_name,
+                            contents=content,
+                            message=f"Update best practices file\n\nUpdated via PR Agent Dashboard"
+                        )
+                        
+                        # Return existing PR info
+                        result = {
+                            "pr_url": repo.best_practices_pr_url,
+                            "pr_number": repo.best_practices_pr_number,
+                            "branch_name": branch_name,
+                            "status": "updated",
+                            "action": "updated_existing_pr"
+                        }
+                        
+                    else:
+                        # Create new PR
+                        logger.info(f"Creating new best practices PR for {repo.name} on branch {branch_name}")
+                        
+                        # First, create the branch from the default branch
+                        default_branch = git_provider.repo_obj.default_branch
+                        default_branch_ref = git_provider.repo_obj.get_git_ref(f"heads/{default_branch}")
+                        try:
+                            git_provider.repo_obj.create_git_ref(
+                                ref=f"refs/heads/{branch_name}",
+                                sha=default_branch_ref.object.sha
+                            )
+                            logger.info(f"Created branch {branch_name} from {default_branch}")
+                        except Exception as branch_error:
+                            if "already exists" in str(branch_error):
+                                logger.info(f"Branch {branch_name} already exists, using existing branch")
+                            else:
+                                raise branch_error
+                        
+                        # Now create the file on the new branch
+                        git_provider.create_or_update_pr_file(
+                            file_path="best_practices.md",
+                            branch=branch_name,
+                            contents=content,
+                            message=f"{'Create' if not repo.has_best_practices else 'Update'} best practices file\n\nThis file defines coding standards and best practices for this repository.\nPR-Agent will automatically enforce these practices during code review.\n\nCreated via PR Agent Dashboard"
+                        )
+                        
+                        # Create pull request
+                        pr_title = f"{'Create' if not repo.has_best_practices else 'Update'} best practices documentation"
+                        pr_body = f"""## Best Practices {'Creation' if not repo.has_best_practices else 'Update'}
+
+This PR {'creates' if not repo.has_best_practices else 'updates'} the `best_practices.md` file for this repository.
+
+### What this enables:
+- 🎯 **Automated code review guidance**: PR-Agent will automatically reference these best practices during code reviews
+- 📋 **Consistent coding standards**: All team members will see these practices during development
+- 🚀 **Improved code quality**: Violations will be flagged with "best practice" suggestions
+
+### File location:
+- `best_practices.md` in repository root
+
+### Next steps:
+1. Review the content below
+2. Merge this PR to activate best practices enforcement
+3. PR-Agent will automatically start referencing these practices in future code reviews
+
+---
+
+*This PR was created automatically via PR Agent Dashboard*"""
+                        
+                        # Create the PR using GitHub API
+                        try:
+                            pr_response = git_provider.repo_obj.create_pull(
+                                title=pr_title,
+                                body=pr_body,
+                                head=branch_name,
+                                base=git_provider.repo_obj.default_branch
+                            )
+                            
+                            # Update repository with PR info
+                            repo.best_practices_pr_url = pr_response.html_url
+                            repo.best_practices_pr_number = pr_response.number
+                            repo.best_practices_pr_branch = branch_name
+                            repo.best_practices_pr_status = "pending"
+                            db.commit()
+                            
+                            result = {
+                                "pr_url": pr_response.html_url,
+                                "pr_number": pr_response.number,
+                                "branch_name": branch_name,
+                                "status": "pending",
+                                "action": "created_new_pr"
+                            }
+                            
+                            logger.info(f"Created best practices PR #{pr_response.number} for {repo.name}")
+                            
+                        except Exception as pr_error:
+                            logger.error(f"Failed to create PR: {pr_error}")
+                            raise HTTPException(status_code=500, detail=f"Failed to create pull request: {str(pr_error)}")
+                    
+                    return APIResponse(data=result, message="Best practices PR created/updated successfully")
+                    
+                except Exception as git_error:
+                    logger.error(f"Git operation failed: {git_error}")
+                    raise HTTPException(status_code=500, detail=f"Git operation failed: {str(git_error)}")
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error updating best practices for repository {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Error updating best practices: {str(e)}")
+        
+        @self.app.post("/api/repositories/{repo_id}/best-practices/check-pr-status") 
+        async def check_best_practices_pr_status(repo_id: int, db: Session = Depends(get_db)):
+            """Check if pending best practices PR has been merged and update status"""
+            try:
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                if not repo.best_practices_pr_status == "pending" or not repo.best_practices_pr_number:
+                    return APIResponse(data={"status": repo.best_practices_pr_status}, message="No pending PR to check")
+                
+                # Set up git provider to check PR status
+                from pr_agent.git_providers.github_provider import GithubProvider
+                
+                if repo.provider == 'github' and repo.github_token:
+                    git_provider = GithubProvider()
+                    git_provider.github_token = repo.github_token
+                    git_provider.repo = repo.name
+                    git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
+                    
+                    try:
+                        # Get PR status
+                        pr = git_provider.repo_obj.get_pull(repo.best_practices_pr_number)
+                        
+                        if pr.state == "closed" and pr.merged:
+                            # PR was merged - update status and refresh content
+                            repo.best_practices_pr_status = "merged"
+                            
+                            # Refresh best practices content from main branch
+                            from pr_agent.algo.utils import get_best_practices_content
+                            best_practices_content = get_best_practices_content(git_provider)
+                            repo.has_best_practices = bool(best_practices_content)
+                            repo.best_practices_content = best_practices_content
+                            repo.best_practices_last_fetched = datetime.utcnow()
+                            
+                            db.commit()
+                            
+                            logger.info(f"Best practices PR #{repo.best_practices_pr_number} for {repo.name} was merged")
+                            return APIResponse(data={"status": "merged", "content_updated": True}, message="PR was merged and content updated")
+                            
+                        elif pr.state == "closed" and not pr.merged:
+                            # PR was closed without merging
+                            repo.best_practices_pr_status = "closed"
+                            db.commit()
+                            
+                            logger.info(f"Best practices PR #{repo.best_practices_pr_number} for {repo.name} was closed without merging")
+                            return APIResponse(data={"status": "closed"}, message="PR was closed without merging")
+                        
+                        else:
+                            # PR is still open
+                            return APIResponse(data={"status": "pending"}, message="PR is still pending")
+                            
+                    except Exception as pr_error:
+                        logger.error(f"Failed to check PR status: {pr_error}")
+                        raise HTTPException(status_code=500, detail=f"Failed to check PR status: {str(pr_error)}")
+                
+                else:
+                    raise HTTPException(status_code=400, detail="GitHub provider and token required for PR status checking")
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error checking best practices PR status for repository {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Error checking PR status: {str(e)}")
+
+        @self.app.get("/api/repositories/{repo_id}/pr-agent-config")
+        async def get_repository_pr_agent_config(repo_id: int, force_refresh: bool = False, db: Session = Depends(get_db)):
+            """Get PR-Agent config file content from repository"""
+            try:
+                from datetime import datetime, timedelta
+                
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                pr_agent_config_content = ""
+                
+                # Check if we should use cached content
+                if not force_refresh and repo.pr_agent_config_content and repo.pr_agent_config_last_fetched:
+                    # Use cache if it's less than 1 hour old
+                    cache_age = datetime.utcnow() - repo.pr_agent_config_last_fetched
+                    if cache_age < timedelta(hours=1):
+                        pr_agent_config_content = repo.pr_agent_config_content
+                        logger.info(f"Using cached PR-Agent config for repository {repo.name}")
+                
+                # Fetch fresh content if no cache or force refresh
+                if not pr_agent_config_content or force_refresh:
+                    try:
+                        from pr_agent.algo.utils import get_pr_agent_config_content
+                        from pr_agent.git_providers.github_provider import GithubProvider
+                        from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+                        
+                        git_provider = None
+                        if repo.provider == 'github' and repo.github_token:
+                            git_provider = GithubProvider()
+                            git_provider.github_token = repo.github_token
+                            git_provider.repo = repo.name
+                            git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
+                        elif repo.provider == 'azure' and repo.azure_pat:
+                            # TODO: Add Azure DevOps support
+                            raise HTTPException(status_code=501, detail="Azure DevOps PR-Agent config fetching not yet implemented")
+                        else:
+                            # Continue without repo_obj, get_pr_agent_config_content will try different approaches
+                            logger.warning(f"No provider configured for repository {repo.name}, attempting direct fetch")
+                        
+                        # Get PR-Agent config content
+                        pr_agent_config_content = get_pr_agent_config_content(git_provider)
+                        
+                        # Update cache
+                        repo.has_pr_agent_config = bool(pr_agent_config_content)
+                        repo.pr_agent_config_content = pr_agent_config_content
+                        repo.pr_agent_config_last_fetched = datetime.utcnow()
+                        db.commit()
+                        
+                        logger.info(f"Refreshed PR-Agent config for repository {repo.name}: {'found' if pr_agent_config_content else 'not found'}")
+                    except Exception as fetch_error:
+                        logger.error(f"Failed to fetch PR-Agent config: {fetch_error}")
+                        # Fall back to cached content if available
+                        if repo.pr_agent_config_content:
+                            pr_agent_config_content = repo.pr_agent_config_content
+                            logger.info(f"Using cached PR-Agent config due to fetch error")
+                        else:
+                            raise HTTPException(status_code=500, detail=f"Error retrieving PR-Agent config: {str(fetch_error)}")
+                
+                if pr_agent_config_content:
+                    # Parse TOML content to validate it and potentially return as JSON
+                    try:
+                        import toml
+                        parsed_config = toml.loads(pr_agent_config_content)
+                        
+                        return APIResponse(data={
+                            "content": pr_agent_config_content,
+                            "parsed_config": parsed_config,
+                            "has_config": True,
+                            "last_fetched": repo.pr_agent_config_last_fetched.isoformat() if repo.pr_agent_config_last_fetched else None,
+                            "pr_status": repo.pr_agent_config_pr_status,
+                            "pr_url": repo.pr_agent_config_pr_url,
+                            "pr_number": repo.pr_agent_config_pr_number
+                        }, message="PR-Agent config found")
+                    except Exception as parse_error:
+                        logger.warning(f"Failed to parse PR-Agent config TOML: {parse_error}")
+                        return APIResponse(data={
+                            "content": pr_agent_config_content,
+                            "parsed_config": None,
+                            "has_config": True,
+                            "parse_error": str(parse_error),
+                            "last_fetched": repo.pr_agent_config_last_fetched.isoformat() if repo.pr_agent_config_last_fetched else None,
+                            "pr_status": repo.pr_agent_config_pr_status,
+                            "pr_url": repo.pr_agent_config_pr_url,
+                            "pr_number": repo.pr_agent_config_pr_number
+                        }, message="PR-Agent config found (parse error)")
+                else:
+                    return APIResponse(data={
+                        "content": "",
+                        "parsed_config": None,
+                        "has_config": False,
+                        "last_fetched": repo.pr_agent_config_last_fetched.isoformat() if repo.pr_agent_config_last_fetched else None,
+                        "pr_status": repo.pr_agent_config_pr_status,
+                        "pr_url": repo.pr_agent_config_pr_url,
+                        "pr_number": repo.pr_agent_config_pr_number
+                    }, message="No PR-Agent config found")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error retrieving PR-Agent config for repository {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Error retrieving PR-Agent config: {str(e)}")
+
+        @self.app.put("/api/repositories/{repo_id}/pr-agent-config")
+        async def update_repository_pr_agent_config(repo_id: int, content_data: dict, db: Session = Depends(get_db)):
+            """Create or update PR-Agent config file via pull request"""
+            try:
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                # Handle content extraction with proper error handling
+                if not isinstance(content_data, dict):
+                    logger.error(f"Expected dict but received {type(content_data)}: {content_data}")
+                    raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+                
+                content_raw = content_data.get("content", "")
+                
+                if isinstance(content_raw, dict):
+                    logger.error(f"Received dict instead of string for content: {content_raw}")
+                    raise HTTPException(status_code=400, detail="Content must be a string, not a dictionary")
+                
+                content = str(content_raw).strip() if content_raw else ""
+                if not content:
+                    raise HTTPException(status_code=400, detail="Content cannot be empty")
+                
+                # Validate TOML content
+                try:
+                    import toml
+                    parsed_config = toml.loads(content)
+                except Exception as toml_error:
+                    raise HTTPException(status_code=400, detail=f"Invalid TOML format: {str(toml_error)}")
+                
+                # Set up git provider
+                from pr_agent.git_providers.github_provider import GithubProvider
+                from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+                from datetime import datetime
+                
+                git_provider = None
+                if repo.provider == 'github' and repo.github_token:
+                    git_provider = GithubProvider()
+                    git_provider.github_token = repo.github_token
+                    # Parse repository owner and name from URL
+                    repo_parts = repo.name.split('/')
+                    if len(repo_parts) != 2:
+                        raise HTTPException(status_code=400, detail="Invalid repository name format")
+                    owner, repo_name = repo_parts
+                    git_provider.repo = repo.name
+                    git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
+                elif repo.provider == 'azure' and repo.azure_pat:
+                    # TODO: Implement Azure DevOps PR creation
+                    raise HTTPException(status_code=501, detail="Azure DevOps PR creation not yet implemented")
+                else:
+                    raise HTTPException(status_code=400, detail=f"Repository provider {repo.provider} not supported or tokens not configured")
+                
+                # Generate branch name
+                timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+                branch_name = f"update-pr-agent-config-{repo_name}-{timestamp}"
+                
+                try:
+                    # Check if we have a pending PR
+                    if repo.pr_agent_config_pr_status == "pending" and repo.pr_agent_config_pr_branch:
+                        # Update existing PR by adding commit to the same branch
+                        logger.info(f"Updating existing PR-Agent config PR for {repo.name} on branch {repo.pr_agent_config_pr_branch}")
+                        
+                        # Use existing branch
+                        branch_name = repo.pr_agent_config_pr_branch
+                        git_provider.create_or_update_pr_file(
+                            file_path=".pr_agent.toml",
+                            branch=branch_name,
+                            contents=content,
+                            message=f"Update PR-Agent configuration\n\nUpdated via PR Agent Dashboard"
+                        )
+                        
+                        # Return existing PR info
+                        result = {
+                            "pr_url": repo.pr_agent_config_pr_url,
+                            "pr_number": repo.pr_agent_config_pr_number,
+                            "branch_name": branch_name,
+                            "status": "updated",
+                            "action": "updated_existing_pr"
+                        }
+                        
+                    else:
+                        # Create new PR
+                        logger.info(f"Creating new PR-Agent config PR for {repo.name} on branch {branch_name}")
+                        
+                        # First, create the branch from the default branch
+                        default_branch = git_provider.repo_obj.default_branch
+                        default_branch_ref = git_provider.repo_obj.get_git_ref(f"heads/{default_branch}")
+                        try:
+                            git_provider.repo_obj.create_git_ref(
+                                ref=f"refs/heads/{branch_name}",
+                                sha=default_branch_ref.object.sha
+                            )
+                            logger.info(f"Created branch {branch_name} from {default_branch}")
+                        except Exception as branch_error:
+                            if "already exists" in str(branch_error):
+                                logger.info(f"Branch {branch_name} already exists, using existing branch")
+                            else:
+                                raise branch_error
+                        
+                        # Now create the file on the new branch
+                        git_provider.create_or_update_pr_file(
+                            file_path=".pr_agent.toml",
+                            branch=branch_name,
+                            contents=content,
+                            message=f"{'Create' if not repo.has_pr_agent_config else 'Update'} PR-Agent configuration\n\nThis file defines repository-specific configuration overrides for PR-Agent.\nThese settings will take precedence over global configuration.\n\nCreated via PR Agent Dashboard"
+                        )
+                        
+                        # Create pull request
+                        pr_title = f"{'Create' if not repo.has_pr_agent_config else 'Update'} PR-Agent configuration"
+                        pr_body = f"""## PR-Agent Configuration {'Creation' if not repo.has_pr_agent_config else 'Update'}
+
+This PR {'creates' if not repo.has_pr_agent_config else 'updates'} the `.pr_agent.toml` file for this repository.
+
+### What this enables:
+- 🎯 **Repository-specific settings**: Override global PR-Agent configuration for this repo
+- ⚙️ **Customized behavior**: Tailor PR-Agent's actions to match this repository's needs
+- 🔧 **Fine-tuned control**: Configure models, prompts, thresholds, and other settings
+
+### File location:
+- `.pr_agent.toml` in repository root
+
+### Configuration scope:
+This file can override any setting from the global PR-Agent configuration, including:
+- AI models and reasoning settings
+- Code review parameters
+- Suggestion thresholds
+- Custom instructions
+- Feature toggles
+
+### Next steps:
+1. Review the configuration below
+2. Merge this PR to activate repository-specific settings
+3. PR-Agent will automatically use these settings for this repository
+
+---
+
+*This PR was created automatically via PR Agent Dashboard*"""
+                        
+                        # Create the PR using GitHub API
+                        try:
+                            pr_response = git_provider.repo_obj.create_pull(
+                                title=pr_title,
+                                body=pr_body,
+                                head=branch_name,
+                                base=git_provider.repo_obj.default_branch
+                            )
+                            
+                            # Update repository with PR info
+                            repo.pr_agent_config_pr_url = pr_response.html_url
+                            repo.pr_agent_config_pr_number = pr_response.number
+                            repo.pr_agent_config_pr_branch = branch_name
+                            repo.pr_agent_config_pr_status = "pending"
+                            db.commit()
+                            
+                            result = {
+                                "pr_url": pr_response.html_url,
+                                "pr_number": pr_response.number,
+                                "branch_name": branch_name,
+                                "status": "pending",
+                                "action": "created_new_pr"
+                            }
+                            
+                            logger.info(f"Created PR-Agent config PR #{pr_response.number} for {repo.name}")
+                            
+                        except Exception as pr_error:
+                            logger.error(f"Failed to create PR: {pr_error}")
+                            raise HTTPException(status_code=500, detail=f"Failed to create pull request: {str(pr_error)}")
+                    
+                    return APIResponse(data=result, message="PR-Agent config PR created/updated successfully")
+                    
+                except Exception as git_error:
+                    logger.error(f"Git operation failed: {git_error}")
+                    raise HTTPException(status_code=500, detail=f"Git operation failed: {str(git_error)}")
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error updating PR-Agent config for repository {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Error updating PR-Agent config: {str(e)}")
+
+        @self.app.post("/api/repositories/{repo_id}/pr-agent-config/check-pr-status") 
+        async def check_pr_agent_config_pr_status(repo_id: int, db: Session = Depends(get_db)):
+            """Check if pending PR-Agent config PR has been merged and update status"""
+            try:
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                if not repo.pr_agent_config_pr_status == "pending" or not repo.pr_agent_config_pr_number:
+                    return APIResponse(data={"status": repo.pr_agent_config_pr_status}, message="No pending PR to check")
+                
+                # Set up git provider to check PR status
+                from pr_agent.git_providers.github_provider import GithubProvider
+                
+                if repo.provider == 'github' and repo.github_token:
+                    git_provider = GithubProvider()
+                    git_provider.github_token = repo.github_token
+                    git_provider.repo = repo.name
+                    git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
+                    
+                    try:
+                        # Get PR status
+                        pr = git_provider.repo_obj.get_pull(repo.pr_agent_config_pr_number)
+                        
+                        if pr.state == "closed" and pr.merged:
+                            # PR was merged - update status and refresh content
+                            repo.pr_agent_config_pr_status = "merged"
+                            
+                            # Refresh PR-Agent config content from main branch
+                            from pr_agent.algo.utils import get_pr_agent_config_content
+                            pr_agent_config_content = get_pr_agent_config_content(git_provider)
+                            repo.has_pr_agent_config = bool(pr_agent_config_content)
+                            repo.pr_agent_config_content = pr_agent_config_content
+                            repo.pr_agent_config_last_fetched = datetime.utcnow()
+                            
+                            db.commit()
+                            
+                            logger.info(f"PR-Agent config PR #{repo.pr_agent_config_pr_number} for {repo.name} was merged")
+                            return APIResponse(data={"status": "merged", "content_updated": True}, message="PR was merged and content updated")
+                            
+                        elif pr.state == "closed" and not pr.merged:
+                            # PR was closed without merging
+                            repo.pr_agent_config_pr_status = "closed"
+                            db.commit()
+                            
+                            logger.info(f"PR-Agent config PR #{repo.pr_agent_config_pr_number} for {repo.name} was closed")
+                            return APIResponse(data={"status": "closed"}, message="PR was closed without merging")
+                            
+                        else:
+                            # PR is still pending
+                            return APIResponse(data={"status": "pending"}, message="PR is still pending")
+                    
+                    except Exception as e:
+                        logger.error(f"Error checking PR-Agent config PR status for repository {repo_id}: {e}")
+                        raise HTTPException(status_code=500, detail=f"Error checking PR status: {str(e)}")
+                
+                else:
+                    raise HTTPException(status_code=400, detail=f"Repository provider {repo.provider} not supported or tokens not configured")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error checking PR-Agent config PR status for repository {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Error checking PR status: {str(e)}")
         
         # Notification endpoints
         @self.app.get("/api/notifications/configs")
@@ -1747,7 +2467,7 @@ class DashboardApplication:
         async def create_backup(compressed: bool = True):
             """Create database backup"""
             try:
-                result = self.retention_service.create_backup(include_compression=compressed)
+                result = self.retention_service.create_backup(compressed=compressed)
                 if result["success"]:
                     return APIResponse(data=result, message="Database backup created")
                 else:
@@ -1860,6 +2580,83 @@ class DashboardApplication:
                 logger.error(f"Failed to restore backup: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
 
+        @self.app.get("/api/admin/timezone/validate")
+        async def validate_timezone_storage(db: Session = Depends(get_db)):
+            """Validate that database timestamps are properly stored in UTC"""
+            try:
+                from models import JobDB, OperationDB, LogEntryDB
+                from datetime import timezone
+                
+                report = {
+                    'status': 'success',
+                    'issues_found': 0,
+                    'tables_checked': 0,
+                    'recommendations': [],
+                    'sample_data': {}
+                }
+                
+                # Check Jobs table
+                report['tables_checked'] += 1
+                jobs_count = db.query(JobDB).count()
+                if jobs_count > 0:
+                    recent_job = db.query(JobDB).order_by(JobDB.started_at.desc()).first()
+                    if recent_job and recent_job.started_at:
+                        tz_info = recent_job.started_at.tzinfo
+                        report['sample_data']['jobs'] = {
+                            'sample_timestamp': recent_job.started_at.isoformat(),
+                            'has_timezone_info': tz_info is not None,
+                            'is_utc': tz_info == timezone.utc if tz_info else False
+                        }
+                        if tz_info is None:
+                            report['issues_found'] += 1
+                            report['recommendations'].append("Jobs table contains naive timestamps (no timezone info)")
+                
+                # Check Operations table  
+                report['tables_checked'] += 1
+                ops_count = db.query(OperationDB).count()
+                if ops_count > 0:
+                    recent_op = db.query(OperationDB).order_by(OperationDB.started_at.desc()).first()
+                    if recent_op and recent_op.started_at:
+                        tz_info = recent_op.started_at.tzinfo
+                        report['sample_data']['operations'] = {
+                            'sample_timestamp': recent_op.started_at.isoformat(),
+                            'has_timezone_info': tz_info is not None,
+                            'is_utc': tz_info == timezone.utc if tz_info else False
+                        }
+                        if tz_info is None:
+                            report['issues_found'] += 1
+                            report['recommendations'].append("Operations table contains naive timestamps")
+                
+                # Check Logs table
+                report['tables_checked'] += 1 
+                logs_count = db.query(LogEntryDB).count()
+                if logs_count > 0:
+                    recent_log = db.query(LogEntryDB).order_by(LogEntryDB.timestamp.desc()).first()
+                    if recent_log and recent_log.timestamp:
+                        tz_info = recent_log.timestamp.tzinfo
+                        report['sample_data']['logs'] = {
+                            'sample_timestamp': recent_log.timestamp.isoformat(),
+                            'has_timezone_info': tz_info is not None,
+                            'is_utc': tz_info == timezone.utc if tz_info else False
+                        }
+                        if tz_info is None:
+                            report['issues_found'] += 1
+                            report['recommendations'].append("Logs table contains naive timestamps")
+                
+                if report['issues_found'] == 0:
+                    report['message'] = f"All {report['tables_checked']} tables have proper timezone-aware timestamps"
+                else:
+                    report['status'] = 'warning'
+                    report['message'] = f"Found {report['issues_found']} potential timezone issues"
+                    report['recommendations'].append("Consider that SQLite stores datetimes as strings, so timezone info may not be preserved")
+                    report['recommendations'].append("Ensure all new timestamps use datetime.utcnow() in the backend")
+                
+                return APIResponse(data=report, message="Timezone validation completed")
+                
+            except Exception as e:
+                logger.error(f"Timezone validation failed: {e}")
+                raise HTTPException(status_code=500, detail=f"Timezone validation failed: {str(e)}")
+
         @self.app.get("/api/repositories/{repo_id}/detailed-status")
         async def get_repository_detailed_status(repo_id: int, db: Session = Depends(get_db)):
             """Get detailed repository status including runner info and workflow analysis"""
@@ -1957,7 +2754,7 @@ class DashboardApplication:
                         try:
                             await websocket.send_json({
                                 "type": "ping", 
-                                "timestamp": datetime.now().isoformat()
+                                "timestamp": datetime.utcnow().isoformat()
                             })
                         except Exception as ping_error:
                             logger.debug(f"Failed to send ping, connection likely closed: {ping_error}")
@@ -2100,6 +2897,440 @@ class DashboardApplication:
             except Exception as e:
                 logger.error(f"Failed to generate AI metrics data: {e}")
                 return APIResponse(data={"status": "error", "error": str(e)}, message="AI metrics generation failed")
+
+        @self.app.get("/api/dev/stale-jobs")
+        async def check_stale_jobs():
+            """Check for jobs that would be considered stale by the timeout monitor"""
+            try:
+                from datetime import datetime, timedelta
+                cutoff_time = datetime.utcnow() - timedelta(hours=1)
+                
+                running_jobs = await self.cached_job_service.get_jobs(
+                    status="running", 
+                    limit=1000
+                )
+                
+                stale_jobs = []
+                active_jobs = []
+                
+                for job_data in running_jobs:
+                    job_id = job_data.get('job_id')
+                    if not job_id:
+                        continue
+                        
+                    last_activity = await self._get_job_last_activity(job_id, job_data)
+                    
+                    job_info = {
+                        'job_id': job_id,
+                        'repository': job_data.get('repository', 'Unknown'),
+                        'job_type': job_data.get('job_type', 'Unknown'),
+                        'last_activity': last_activity.isoformat() if last_activity else None,
+                        'minutes_since_activity': int((datetime.utcnow() - last_activity).total_seconds() / 60) if last_activity else None
+                    }
+                    
+                    if last_activity and last_activity < cutoff_time:
+                        stale_jobs.append(job_info)
+                    else:
+                        active_jobs.append(job_info)
+                
+                return APIResponse(data={
+                    "stale_jobs": stale_jobs,
+                    "active_jobs": active_jobs,
+                    "total_running": len(running_jobs),
+                    "stale_count": len(stale_jobs),
+                    "active_count": len(active_jobs),
+                    "timeout_threshold_hours": 1
+                }, message=f"Found {len(stale_jobs)} stale jobs and {len(active_jobs)} active jobs")
+                
+            except Exception as e:
+                logger.error(f"Failed to check stale jobs: {e}")
+                return APIResponse(data={"error": str(e)}, message="Failed to check stale jobs")
+
+        @self.app.post("/api/dev/force-timeout-check")
+        async def force_timeout_check():
+            """Manually trigger the job timeout check for testing"""
+            try:
+                from datetime import datetime, timedelta
+                cutoff_time = datetime.utcnow() - timedelta(hours=1)
+                
+                running_jobs = await self.cached_job_service.get_jobs(
+                    status="running", 
+                    limit=1000
+                )
+                
+                stale_jobs = []
+                
+                for job_data in running_jobs:
+                    job_id = job_data.get('job_id')
+                    if not job_id:
+                        continue
+                        
+                    last_activity = await self._get_job_last_activity(job_id, job_data)
+                    
+                    if last_activity and last_activity < cutoff_time:
+                        stale_jobs.append({
+                            'job_id': job_id,
+                            'last_activity': last_activity,
+                            'repository': job_data.get('repository', 'Unknown'),
+                            'job_type': job_data.get('job_type', 'Unknown'),
+                            'stale_duration_minutes': int((datetime.utcnow() - last_activity).total_seconds() / 60)
+                        })
+                
+                # Mark stale jobs as failed (same logic as the background task)
+                failed_jobs = []
+                errors = []
+                
+                for stale_job in stale_jobs:
+                    try:
+                        await self.cached_job_service.update_job_status(
+                            stale_job['job_id'], 
+                            "failed", 
+                            error_details="Job timed out - No activity received for over 1 hour (manual check)"
+                        )
+                        
+                        self._log_system_event('WARNING', 
+                            f"Job {stale_job['job_id']} manually marked as failed due to timeout",
+                            {
+                                'system_event': 'job_timeout_manual',
+                                'job_id': stale_job['job_id'],
+                                'repository': stale_job['repository'],
+                                'job_type': stale_job['job_type'],
+                                'last_activity': stale_job['last_activity'].isoformat(),
+                                'stale_duration_minutes': stale_job['stale_duration_minutes'],
+                                'timeout_threshold_hours': 1
+                            }
+                        )
+                        
+                        failed_jobs.append(stale_job['job_id'])
+                        
+                    except Exception as e:
+                        errors.append(f"Failed to mark job {stale_job['job_id']} as failed: {e}")
+                
+                return APIResponse(data={
+                    "stale_jobs_found": len(stale_jobs),
+                    "jobs_marked_failed": len(failed_jobs),
+                    "failed_job_ids": failed_jobs,
+                    "errors": errors
+                }, message=f"Manually marked {len(failed_jobs)} stale jobs as failed")
+                
+            except Exception as e:
+                logger.error(f"Failed to force timeout check: {e}")
+                return APIResponse(data={"error": str(e)}, message="Failed to force timeout check")
+
+        @self.app.get("/api/dev/scheduled-jobs/status")
+        async def get_scheduled_jobs_status():
+            """Get the status of all background scheduled jobs"""
+            try:
+                from datetime import datetime
+                
+                status = {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "services": {}
+                }
+                
+                logger.info("Starting scheduled jobs status check")
+                
+                # Health monitoring service status
+                try:
+                    logger.debug("Checking health monitoring service")
+                    health_stats = await self.health_service.get_system_health()
+                    db_stats = self.retention_service.get_database_stats()
+                    
+                    status["services"]["health_monitoring"] = {
+                        "name": "Health Monitoring Service",
+                        "enabled": True,
+                        "status": "running",
+                        "last_check": db_stats.get("last_health_check"),
+                        "next_check": "Every 5 minutes",
+                        "check_interval_minutes": 5,
+                        "details": {
+                            "overall_status": health_stats.get("status", "unknown"),
+                            "services_checked": len(health_stats.get("services", {})),
+                            "unhealthy_services": len([s for s in health_stats.get("services", {}).values() if s.get("status") not in ["healthy", "disabled", "configured"]])
+                        }
+                    }
+                    logger.debug("Health monitoring service check completed successfully")
+                except Exception as e:
+                    logger.error(f"Health monitoring service error: {e}")
+                    status["services"]["health_monitoring"] = {
+                        "name": "Health Monitoring Service",
+                        "enabled": True,
+                        "status": "error",
+                        "error": str(e)
+                    }
+                
+                # Backup service status
+                try:
+                    logger.debug("Checking backup service")
+                    retention_config = self.retention_service.get_retention_config()
+                    db_stats = self.retention_service.get_database_stats()
+                    
+                    status["services"]["backup_service"] = {
+                        "name": "Automatic Backup Service",
+                        "enabled": retention_config.get("auto_backup_enabled", False),
+                        "status": "running" if retention_config.get("auto_backup_enabled", False) else "disabled",
+                        "last_backup": db_stats.get("last_backup"),
+                        "next_backup": "Every 168 hours" if retention_config.get("auto_backup_enabled", False) else "Disabled",
+                        "backup_interval_hours": retention_config.get("backup_schedule_hours", 168),
+                        "details": {
+                            "compression_enabled": retention_config.get("backup_compression", True),
+                            "backup_count": db_stats.get("backup_count", 0),
+                            "database_size_mb": db_stats.get("database_size_mb", 0)
+                        }
+                    }
+                    logger.debug("Backup service check completed successfully")
+                except Exception as e:
+                    logger.error(f"Backup service error: {e}")
+                    status["services"]["backup_service"] = {
+                        "name": "Automatic Backup Service",
+                        "enabled": False,
+                        "status": "error",
+                        "error": str(e)
+                    }
+                
+                # Job timeout monitoring status
+                try:
+                    logger.debug("Checking job timeout monitoring service")
+                    running_jobs_data = await self.cached_job_service.get_jobs(status="running", limit=1000)
+                    from datetime import timedelta
+                    cutoff_time = datetime.utcnow() - timedelta(hours=1)
+                    
+                    stale_count = 0
+                    for job_data in running_jobs_data:
+                        job_id = job_data.get('job_id')
+                        if job_id:
+                            last_activity = await self._get_job_last_activity(job_id, job_data)
+                            if last_activity and last_activity < cutoff_time:
+                                stale_count += 1
+                    
+                    db_stats = self.retention_service.get_database_stats()
+                    
+                    status["services"]["job_timeout_monitoring"] = {
+                        "name": "Job Timeout Monitoring",
+                        "enabled": True,
+                        "status": "running",
+                        "last_check": db_stats.get("last_job_timeout_check"),
+                        "next_check": "Every 10 minutes",
+                        "check_interval_minutes": 10,
+                        "details": {
+                            "timeout_threshold_hours": 1,
+                            "running_jobs_count": len(running_jobs_data),
+                            "stale_jobs_count": stale_count
+                        }
+                    }
+                    logger.debug("Job timeout monitoring service check completed successfully")
+                except Exception as e:
+                    logger.error(f"Job timeout monitoring service error: {e}")
+                    status["services"]["job_timeout_monitoring"] = {
+                        "name": "Job Timeout Monitoring",
+                        "enabled": True,
+                        "status": "error", 
+                        "error": str(e)
+                    }
+                
+                # Cleanup service status
+                try:
+                    logger.debug("Checking cleanup service")
+                    retention_config = self.retention_service.get_retention_config()
+                    db_stats = self.retention_service.get_database_stats()
+                    
+                    status["services"]["cleanup_service"] = {
+                        "name": "Data Cleanup Service",
+                        "enabled": retention_config.get("auto_cleanup_enabled", True),
+                        "status": "running" if retention_config.get("auto_cleanup_enabled", True) else "disabled",
+                        "last_cleanup": db_stats.get("last_cleanup"),
+                        "next_cleanup": f"Every {retention_config.get('cleanup_schedule_hours', 24)} hours" if retention_config.get("auto_cleanup_enabled", True) else "Disabled",
+                        "cleanup_interval_hours": retention_config.get("cleanup_schedule_hours", 24),
+                        "details": {
+                            "logs_retention_days": retention_config.get("logs_retention_days", 30),
+                            "operations_retention_days": retention_config.get("operations_retention_days", 90),
+                            "total_logs": db_stats.get("total_logs", 0),
+                            "total_operations": db_stats.get("total_operations", 0)
+                        }
+                    }
+                    logger.debug("Cleanup service check completed successfully")
+                except Exception as e:
+                    logger.error(f"Cleanup service error: {e}")
+                    status["services"]["cleanup_service"] = {
+                        "name": "Data Cleanup Service",
+                        "enabled": False,
+                        "status": "error",
+                        "error": str(e)
+                    }
+                
+                logger.info(f"Scheduled jobs status check completed. Found {len(status['services'])} services")
+                return APIResponse(data=status, message="Retrieved scheduled jobs status")
+                
+            except Exception as e:
+                logger.error(f"Failed to get scheduled jobs status: {e}")
+                import traceback
+                traceback.print_exc()
+                return APIResponse(data={"error": str(e), "services": {}, "timestamp": datetime.utcnow().isoformat()}, message="Failed to get scheduled jobs status")
+
+        @self.app.get("/api/dev/scheduled-jobs/simple-status")
+        async def get_simple_scheduled_jobs_status():
+            """Get a simple status of scheduled jobs for debugging"""
+            try:
+                from datetime import datetime
+                
+                # Simple fallback that always works
+                status = {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "services": {
+                        "health_monitoring": {
+                            "name": "Health Monitoring Service",
+                            "enabled": True,
+                            "status": "running",
+                            "last_check": "Unknown",
+                            "next_check": "Every 5 minutes",
+                            "check_interval_minutes": 5,
+                            "details": {"note": "Basic service info"}
+                        },
+                        "backup_service": {
+                            "name": "Automatic Backup Service", 
+                            "enabled": False,
+                            "status": "disabled",
+                            "last_backup": "Unknown",
+                            "next_backup": "Disabled",
+                            "backup_interval_hours": 168,
+                            "details": {"note": "Basic service info"}
+                        },
+                        "job_timeout_monitoring": {
+                            "name": "Job Timeout Monitoring",
+                            "enabled": True,
+                            "status": "running",
+                            "last_check": "Every 10 minutes", 
+                            "next_check": "Every 10 minutes",
+                            "check_interval_minutes": 10,
+                            "details": {"note": "Basic service info"}
+                        },
+                        "cleanup_service": {
+                            "name": "Data Cleanup Service",
+                            "enabled": True,
+                            "status": "running",
+                            "last_cleanup": "Unknown",
+                            "next_cleanup": "Every 24 hours",
+                            "cleanup_interval_hours": 24,
+                            "details": {"note": "Basic service info"}
+                        }
+                    }
+                }
+                
+                return APIResponse(data=status, message="Retrieved simple scheduled jobs status")
+                
+            except Exception as e:
+                logger.error(f"Failed to get simple scheduled jobs status: {e}")
+                return APIResponse(data={"error": str(e)}, message="Failed to get simple scheduled jobs status")
+
+        @self.app.post("/api/dev/scheduled-jobs/trigger/{service_name}")
+        async def trigger_scheduled_job(service_name: str):
+            """Manually trigger a specific scheduled job"""
+            try:
+                result = {"service": service_name, "triggered": False, "message": ""}
+                
+                if service_name == "health_monitoring":
+                    # Force a health check
+                    health_status = await self.health_service.get_system_health()
+                    
+                    # Update last health check timestamp
+                    self.database_manager.set_system_setting("last_health_check_time", datetime.utcnow().isoformat())
+                    
+                    self._log_system_event('INFO', 
+                        "Health monitoring manually triggered - System check completed",
+                        {
+                            'system_event': 'health_check_manual',
+                            'overall_status': health_status.get('status'),
+                            'services_checked': len(health_status.get('services', {}))
+                        }
+                    )
+                    
+                    result.update({
+                        "triggered": True,
+                        "message": f"Health check completed - System status: {health_status.get('status')}",
+                        "details": health_status
+                    })
+                    
+                elif service_name == "backup_service":
+                    # Force an automatic backup (bypass schedule check for manual trigger)
+                    backup_result = self.retention_service.perform_automatic_backup(force=True)
+                    
+                    if backup_result.get("success"):
+                        result.update({
+                            "triggered": True,
+                            "message": backup_result.get("message", "Automatic backup completed (forced)"),
+                            "details": backup_result
+                        })
+                    else:
+                        # If automatic backup failed (e.g., disabled), fall back to manual backup
+                        backup_result = self.retention_service.create_backup(compressed=True)
+                        result.update({
+                            "triggered": True,
+                            "message": f"Manual backup created (automatic backup: {backup_result.get('reason', 'failed')})",
+                            "details": backup_result
+                        })
+                    
+                elif service_name == "job_timeout_monitoring":
+                    # Force job timeout check (reuse existing endpoint logic)
+                    cutoff_time = datetime.utcnow() - timedelta(hours=1)
+                    
+                    running_jobs = await self.cached_job_service.get_jobs(status="running", limit=1000)
+                    stale_jobs = []
+                    
+                    for job_data in running_jobs:
+                        job_id = job_data.get('job_id')
+                        if job_id:
+                            last_activity = await self._get_job_last_activity(job_id, job_data)
+                            if last_activity and last_activity < cutoff_time:
+                                stale_jobs.append(job_id)
+                    
+                    # Mark stale jobs as failed
+                    failed_count = 0
+                    for job_id in stale_jobs:
+                        try:
+                            await self.cached_job_service.update_job_status(
+                                job_id, "failed", 
+                                error_details="Job timed out - No activity received for over 1 hour (manual trigger)"
+                            )
+                            failed_count += 1
+                        except Exception:
+                            pass
+                    
+                    # Update last job timeout check timestamp
+                    self.database_manager.set_system_setting("last_job_timeout_check_time", datetime.utcnow().isoformat())
+                    
+                    result.update({
+                        "triggered": True,
+                        "message": f"Job timeout check completed - Marked {failed_count} stale jobs as failed",
+                        "details": {
+                            "stale_jobs_found": len(stale_jobs),
+                            "jobs_marked_failed": failed_count,
+                            "running_jobs_total": len(running_jobs)
+                        }
+                    })
+                    
+                elif service_name == "cleanup_service":
+                    # Force cleanup
+                    cleanup_result = self.retention_service.perform_cleanup(dry_run=False)
+                    
+                    # Note: cleanup service already updates last_cleanup_time in perform_cleanup()
+                    result.update({
+                        "triggered": True,
+                        "message": f"Cleanup completed - Deleted {cleanup_result.get('total_deleted', 0)} records",
+                        "details": cleanup_result
+                    })
+                    
+                else:
+                    result.update({
+                        "triggered": False,
+                        "message": f"Unknown service: {service_name}"
+                    })
+                
+                return APIResponse(data=result, message=result["message"])
+                
+            except Exception as e:
+                logger.error(f"Failed to trigger scheduled job {service_name}: {e}")
+                return APIResponse(data={"error": str(e), "service": service_name, "triggered": False}, 
+                                 message=f"Failed to trigger {service_name}")
     
     def _setup_background_tasks_lifespan(self):
         """Setup background monitoring tasks using modern lifespan events"""
@@ -2174,37 +3405,38 @@ class DashboardApplication:
             cleanup_task = None
             backup_task = None
             health_task = None
+            job_timeout_task = None
             startup_logging_task = None
             
             try:
                 cleanup_task = asyncio.create_task(self._cleanup_old_data())
-                logger.debug("Cleanup task started")
             except Exception as e:
                 logger.error(f"Failed to start cleanup task: {e}")
                 
             try:
                 backup_task = asyncio.create_task(self._backup_scheduler())
-                logger.debug("Backup scheduler task started")
             except Exception as e:
                 logger.error(f"Failed to start backup scheduler: {e}")
                 
             try:
                 health_task = asyncio.create_task(self._monitor_system_health())
-                logger.debug("System health monitoring task started")
             except Exception as e:
                 logger.error(f"Failed to start system health monitoring: {e}")
+                
+            try:
+                job_timeout_task = asyncio.create_task(self._monitor_job_timeouts())
+            except Exception as e:
+                logger.error(f"Failed to start job timeout monitoring: {e}")
             
             # Start health service background monitoring
             try:
                 await self.health_service.start_background_monitoring()
-                logger.debug("Health service background monitoring started")
             except Exception as e:
                 logger.error(f"Failed to start health monitoring: {e}")
             
             # Create a task to log system startup after server is fully ready
             try:
                 startup_logging_task = asyncio.create_task(self._log_system_startup_after_delay())
-                logger.debug("Startup logging task created")
             except Exception as e:
                 logger.error(f"Failed to create startup logging task: {e}")
             
@@ -2230,7 +3462,7 @@ class DashboardApplication:
                 logger.error(f"Failed to stop health monitoring: {e}")
             
             # Cancel background tasks gracefully
-            tasks_to_cancel = [task for task in [cleanup_task, backup_task, health_task, startup_logging_task] if task is not None]
+            tasks_to_cancel = [task for task in [cleanup_task, backup_task, health_task, job_timeout_task, startup_logging_task] if task is not None]
             for task in tasks_to_cancel:
                 if not task.done():
                     task.cancel()
@@ -2245,7 +3477,7 @@ class DashboardApplication:
                 except asyncio.TimeoutError:
                     logger.warning("Some background tasks did not cancel within timeout")
                 except Exception as e:
-                    logger.debug(f"Background task cancellation completed with exceptions: {e}")
+                    pass  # Tasks cancelled successfully
             
             # Shutdown robust cache service
             try:
@@ -2403,11 +3635,7 @@ class DashboardApplication:
             try:
                 await asyncio.sleep(3600)  # Check every hour
                 
-                # Log backup scheduler check
-                self._log_system_event('DEBUG', 
-                    "Backup scheduler checking for due automatic backups",
-                    {'system_event': 'backup_scheduler_check'}
-                )
+                # Check for due backups
                 
                 # Perform backup if due
                 result = self.retention_service.perform_automatic_backup()
@@ -2458,6 +3686,9 @@ class DashboardApplication:
                 # Get health status
                 health = await self.health_service.get_system_health()
                 
+                # Update last health check timestamp
+                self.database_manager.set_system_setting("last_health_check_time", datetime.utcnow().isoformat())
+                
                 # Log any issues
                 if health["status"] != "healthy":
                     logger.warning(f"System health degraded: {health['status']}")
@@ -2492,10 +3723,10 @@ class DashboardApplication:
             # Log background services startup
             try:
                 self._log_system_event('INFO', 
-                    "Background services started - Cleanup, backup, and health monitoring active",
+                    "Background services started - Cleanup, backup, health monitoring, and job timeout monitoring active",
                     {
                         'system_event': 'background_services_started',
-                        'services': ['cleanup_scheduler', 'backup_scheduler', 'health_monitor']
+                        'services': ['cleanup_scheduler', 'backup_scheduler', 'health_monitor', 'job_timeout_monitor']
                     }
                 )
                 logger.info("Logged background services startup")
@@ -2506,6 +3737,172 @@ class DashboardApplication:
             logger.info("System startup logging task cancelled")
         except Exception as e:
             logger.error(f"Error in system startup logging: {e}")
+
+    async def _monitor_job_timeouts(self):
+        """Monitor jobs for timeout and automatically mark stale jobs as failed"""
+        while True:
+            try:
+                await asyncio.sleep(600)  # Check every 10 minutes
+                
+                # Get current time and calculate 1 hour ago threshold
+                from datetime import datetime, timedelta
+                cutoff_time = datetime.utcnow() - timedelta(hours=1)
+                
+                # Check for stale running jobs using the cache service
+                try:
+                    running_jobs = await self.cached_job_service.get_jobs(
+                        status="running", 
+                        limit=1000  # Check all running jobs
+                    )
+                    
+                    stale_jobs = []
+                    
+                    for job_data in running_jobs:
+                        job_id = job_data.get('job_id')
+                        if not job_id:
+                            continue
+                            
+                        # Get the most recent activity timestamp for this job
+                        last_activity = await self._get_job_last_activity(job_id, job_data)
+                        
+                        if last_activity and last_activity < cutoff_time:
+                            stale_jobs.append({
+                                'job_id': job_id,
+                                'last_activity': last_activity,
+                                'repository': job_data.get('repository', 'Unknown'),
+                                'job_type': job_data.get('job_type', 'Unknown'),
+                                'stale_duration_minutes': int((datetime.utcnow() - last_activity).total_seconds() / 60)
+                            })
+                    
+                    # Mark stale jobs as failed
+                    if stale_jobs:
+                        logger.warning(f"Found {len(stale_jobs)} stale jobs to mark as failed")
+                        
+                        for stale_job in stale_jobs:
+                            try:
+                                # Mark job as failed
+                                await self.cached_job_service.update_job_status(
+                                    stale_job['job_id'], 
+                                    "failed", 
+                                    error_details="Job timed out - No activity received for over 1 hour"
+                                )
+                                
+                                # Log the timeout action
+                                self._log_system_event('WARNING', 
+                                    f"Job {stale_job['job_id']} automatically marked as failed due to timeout",
+                                    {
+                                        'system_event': 'job_timeout',
+                                        'job_id': stale_job['job_id'],
+                                        'repository': stale_job['repository'],
+                                        'job_type': stale_job['job_type'],
+                                        'last_activity': stale_job['last_activity'].isoformat(),
+                                        'stale_duration_minutes': stale_job['stale_duration_minutes'],
+                                        'timeout_threshold_hours': 1
+                                    }
+                                )
+                                
+                                logger.info(f"Marked stale job {stale_job['job_id']} as failed "
+                                          f"(idle for {stale_job['stale_duration_minutes']} minutes)")
+                                
+                            except Exception as e:
+                                logger.error(f"Failed to mark job {stale_job['job_id']} as failed: {e}")
+                                
+                        # Send notification about timeout actions if notification service is available
+                        if hasattr(self, 'notification_service') and self.notification_service:
+                            try:
+                                await self.notification_service.send_notification(
+                                    event_type="job_timeout",
+                                    message=f"Automatically marked {len(stale_jobs)} stale jobs as failed",
+                                    context={
+                                        'stale_jobs_count': len(stale_jobs),
+                                        'timeout_threshold_hours': 1,
+                                        'jobs': [job['job_id'] for job in stale_jobs[:5]]  # First 5 job IDs
+                                    }
+                                )
+                            except Exception as e:
+                                logger.debug(f"Failed to send timeout notification: {e}")
+                    else:
+                        logger.debug("Job timeout monitor: No stale jobs found")
+                    
+                    # Update last job timeout check timestamp (regardless of whether stale jobs were found)
+                    self.database_manager.set_system_setting("last_job_timeout_check_time", datetime.utcnow().isoformat())
+                        
+                except Exception as e:
+                    logger.error(f"Error during job timeout check: {e}")
+                    
+            except asyncio.CancelledError:
+                logger.info("Job timeout monitoring task cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Unexpected error in job timeout monitoring: {e}")
+                # Continue running even after errors
+                await asyncio.sleep(300)  # Wait 5 minutes before retrying
+
+    async def _get_job_last_activity(self, job_id: str, job_data: dict) -> datetime:
+        """Get the most recent activity timestamp for a job considering job updates, operations, and logs"""
+        try:
+            from datetime import datetime
+            
+            # Start with job's own last_updated timestamp
+            job_last_updated = job_data.get('last_updated')
+            last_activity = None
+            
+            if job_last_updated:
+                if isinstance(job_last_updated, str):
+                    last_activity = datetime.fromisoformat(job_last_updated.replace('Z', '+00:00'))
+                elif isinstance(job_last_updated, datetime):
+                    last_activity = job_last_updated
+            
+            # Check latest operation activity
+            try:
+                operations = await self.cached_job_service.get_operations(job_id=job_id, limit=10)
+                for operation in operations:
+                    op_last_updated = operation.get('last_updated')
+                    if op_last_updated:
+                        if isinstance(op_last_updated, str):
+                            op_timestamp = datetime.fromisoformat(op_last_updated.replace('Z', '+00:00'))
+                        elif isinstance(op_last_updated, datetime):
+                            op_timestamp = op_last_updated
+                        else:
+                            continue
+                            
+                        if last_activity is None or op_timestamp > last_activity:
+                            last_activity = op_timestamp
+            except Exception as e:
+                logger.debug(f"Error checking operation activity for job {job_id}: {e}")
+            
+            # Check latest log activity  
+            try:
+                logs = await self.cached_job_service.get_logs(job_id=job_id, limit=5)
+                for log in logs:
+                    log_timestamp = log.get('timestamp')
+                    if log_timestamp:
+                        if isinstance(log_timestamp, str):
+                            log_dt = datetime.fromisoformat(log_timestamp.replace('Z', '+00:00'))
+                        elif isinstance(log_timestamp, datetime):
+                            log_dt = log_timestamp
+                        else:
+                            continue
+                            
+                        if last_activity is None or log_dt > last_activity:
+                            last_activity = log_dt
+            except Exception as e:
+                logger.debug(f"Error checking log activity for job {job_id}: {e}")
+            
+            # If no activity found, use job's started_at as fallback
+            if last_activity is None:
+                job_started_at = job_data.get('started_at')
+                if job_started_at:
+                    if isinstance(job_started_at, str):
+                        last_activity = datetime.fromisoformat(job_started_at.replace('Z', '+00:00'))
+                    elif isinstance(job_started_at, datetime):
+                        last_activity = job_started_at
+            
+            return last_activity
+            
+        except Exception as e:
+            logger.error(f"Error determining last activity for job {job_id}: {e}")
+            return None
     
     def get_app(self):
         """Get the FastAPI application instance"""

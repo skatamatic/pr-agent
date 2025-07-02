@@ -246,7 +246,7 @@ function Dashboard() {
       }
       
       try {
-        logsRes = await apiService.getLogs({ limit: 1000 });
+        logsRes = await apiService.getLogs({ limit: 10000 });
       } catch (error) {
         console.error('Logs API Error:', error);
         handleSystemError(error, 'logs');

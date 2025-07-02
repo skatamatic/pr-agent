@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Activity, CheckCircle, Clock, AlertCircle, RefreshCw, ExternalLink, ChevronLeft, ChevronRight, Filter, TrendingUp, Zap, Brain, GitBranch, FileText, Lightbulb } from 'lucide-react';
+import { Activity, CheckCircle, Clock, AlertCircle, RefreshCw, ExternalLink, ChevronLeft, ChevronRight, Filter, TrendingUp, Zap, Brain, GitBranch, FileText, Lightbulb, Search, Timer, Play, AlertTriangle } from 'lucide-react';
 import api from '../services/api';
 import ViewHeader from './ViewHeader';
 import OperationInsights from './OperationInsights';
@@ -215,14 +215,14 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
     if (!step) return null;
     
     const stepInfo = {
-      'Context': { color: 'bg-yellow-100 text-yellow-800 border-yellow-300', icon: '🔍' },
-      'Generating': { color: 'bg-purple-100 text-purple-800 border-purple-300', icon: '⚡' },
-      'Reflecting': { color: 'bg-indigo-100 text-indigo-800 border-indigo-300', icon: '🤔' },
-      'DevTime': { color: 'bg-green-100 text-green-800 border-green-300', icon: '⏱️' },
-      'Publishing': { color: 'bg-blue-100 text-blue-800 border-blue-300', icon: '📝' }
+      'Context': { color: 'bg-yellow-100 text-yellow-800 border-yellow-300', icon: Search },
+      'Generating': { color: 'bg-purple-100 text-purple-800 border-purple-300', icon: Zap },
+      'Reflecting': { color: 'bg-indigo-100 text-indigo-800 border-indigo-300', icon: Lightbulb },
+      'DevTime': { color: 'bg-green-100 text-green-800 border-green-300', icon: Timer },
+      'Publishing': { color: 'bg-blue-100 text-blue-800 border-blue-300', icon: FileText }
     };
     
-    return stepInfo[step] || { color: 'bg-gray-100 text-gray-800 border-gray-300', icon: '▶️' };
+    return stepInfo[step] || { color: 'bg-gray-100 text-gray-800 border-gray-300', icon: Play };
   };
 
 
@@ -234,6 +234,15 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
   const handleShowInsights = (operationId) => {
     setSelectedOperationId(operationId);
     setShowInsights(true);
+  };
+
+  // Helper function to get icon component from string name
+  const getIconComponent = (iconName) => {
+    const iconMap = {
+      'TrendingUp': TrendingUp,
+      'AlertTriangle': AlertTriangle
+    };
+    return iconMap[iconName] || null;
   };
 
   return (
@@ -458,7 +467,7 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
                               <td className="px-6 py-4 whitespace-nowrap">
                                 {stepInfo && operation.status !== 'completed' && operation.status !== 'failed' && operation.status !== 'skipped' ? (
                                   <span className={`inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium border ${stepInfo.color}`}>
-                                    <span className="mr-1.5">{stepInfo.icon}</span>
+                                    {React.createElement(stepInfo.icon, { className: "h-3 w-3 mr-1.5" })}
                                     {operation.current_step}
                                   </span>
                                 ) : (
@@ -479,7 +488,7 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
                                 {operation.duration ? `${Math.round(operation.duration)}s` : formatDuration(operation.started_at || operation.timestamp, operation.completed_at)}
                               </td>
                               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                                {new Date(operation.started_at || operation.timestamp).toLocaleString()}
+                                {formatTimestamp(operation.started_at || operation.timestamp)}
                               </td>
                               <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                                 <div className="flex items-center space-x-3">
@@ -639,7 +648,10 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
                                     </div>
                                     {timeSaved && (
                                       <div className={`text-xs mt-1 flex items-center ${timeSaved.color}`}>
-                                        <span className="mr-1">{timeSaved.icon}</span>
+                                        {(() => {
+                                          const IconComponent = getIconComponent(timeSaved.icon);
+                                          return IconComponent ? <IconComponent className="h-3 w-3 mr-1" /> : null;
+                                        })()}
                                         {timeSaved.display}
                                       </div>
                                     )}

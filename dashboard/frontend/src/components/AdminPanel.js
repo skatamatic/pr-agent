@@ -1121,13 +1121,13 @@ const AdminPanel = () => {
                               </td>
                               <td className="px-6 py-4 whitespace-nowrap">
                                 <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                                  backup.type === 'auto'
+                                  backup.type === 'automatic'
                                     ? 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200'
                                     : backup.type === 'safety'
                                     ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
                                     : 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
                                 }`}>
-                                  {backup.type === 'auto' ? 'Automatic' : 
+                                  {backup.type === 'automatic' ? 'Automatic' : 
                                    backup.type === 'safety' ? 'Safety' : 'Manual'}
                                 </span>
                               </td>

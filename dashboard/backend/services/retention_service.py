@@ -334,17 +334,17 @@ class RetentionService:
             logger.error(f"Error checking backup schedule: {e}")
             return False
     
-    def perform_automatic_backup(self) -> Dict[str, Any]:
-        """Perform automatic backup if enabled and due"""
+    def perform_automatic_backup(self, force: bool = False) -> Dict[str, Any]:
+        """Perform automatic backup if enabled and due, or force if requested"""
         try:
             config = self.get_retention_config()
             
             if not config.get('auto_backup_enabled', False):
                 return {"success": False, "reason": "Auto backup disabled"}
             
-            # Check if backup is due
+            # Check if backup is due (skip check if forced)
             schedule_hours = config.get('backup_schedule_hours', 168)  # default weekly
-            if self.last_backup_time:
+            if not force and self.last_backup_time:
                 hours_since_last = (datetime.utcnow() - self.last_backup_time).total_seconds() / 3600
                 if hours_since_last < schedule_hours:
                     return {"success": False, "reason": f"Backup not due for {schedule_hours - hours_since_last:.1f} hours"}
@@ -363,10 +363,13 @@ class RetentionService:
             backup_path = self.backup_dir / backup_filename
             
             # Log automatic backup start
+            backup_trigger = "forced" if force else "scheduled"
             self._log_to_system('INFO', 
-                f"Starting automatic database backup - {backup_filename} (scheduled every {schedule_hours}h, compression: {compression_enabled})",
+                f"Starting automatic database backup - {backup_filename} ({backup_trigger}, every {schedule_hours}h, compression: {compression_enabled})",
                 {
                     'backup_type': 'automatic',
+                    'backup_trigger': backup_trigger,
+                    'forced': force,
                     'compressed': compression_enabled,
                     'filename': backup_filename,
                     'schedule_hours': schedule_hours,
@@ -376,8 +379,12 @@ class RetentionService:
             
             # Create backup
             if compression_enabled:
-                with gzip.open(backup_path, 'wb') as f:
-                    subprocess.run(['sqlite3', self.db_path, '.dump'], stdout=f, check=True)
+                with gzip.open(backup_path, 'wt', encoding='utf-8') as f:
+                    # Use Python's sqlite3 module instead of subprocess for cross-platform compatibility
+                    conn = sqlite3.connect(self.db_path)
+                    for line in conn.iterdump():
+                        f.write(f'{line}\n')
+                    conn.close()
             else:
                 shutil.copy2(self.db_path, backup_path)
             
@@ -390,10 +397,14 @@ class RetentionService:
             self.database_manager.set_system_setting("last_backup_time", self.last_backup_time.isoformat())
             
             # Log automatic backup completion
+            backup_trigger = "forced" if force else "scheduled"
+            next_backup_msg = f" - Next backup in {schedule_hours}h" if not force else " - Next scheduled backup in {schedule_hours}h"
             self._log_to_system('INFO', 
-                f"Automatic database backup completed - {backup_filename} ({file_size_mb} MB) - Next backup in {schedule_hours}h",
+                f"Automatic database backup completed - {backup_filename} ({file_size_mb} MB, {backup_trigger}){next_backup_msg}",
                 {
                     'backup_type': 'automatic',
+                    'backup_trigger': backup_trigger,
+                    'forced': force,
                     'compressed': compression_enabled,
                     'filename': backup_filename,
                     'file_size_mb': file_size_mb,
@@ -409,12 +420,14 @@ class RetentionService:
             
             return {
                 "success": True,
+                "message": f"Automatic backup completed ({backup_trigger})" if force else "Automatic backup completed",
                 "filename": backup_filename,
                 "path": str(backup_path),
                 "size": file_size,
                 "size_mb": file_size_mb,
                 "compressed": compression_enabled,
                 "type": "automatic",
+                "forced": force,
                 "created_at": datetime.utcnow().isoformat()
             }
             
@@ -534,6 +547,30 @@ class RetentionService:
                         last_cleanup_dt = datetime.fromisoformat(last_cleanup)
                         next_cleanup_dt = last_cleanup_dt + timedelta(hours=config["cleanup_schedule_hours"])
                         stats["next_cleanup"] = next_cleanup_dt.isoformat()
+            except:
+                pass
+            
+            # Get backup history
+            try:
+                last_backup = self.database_manager.get_system_setting("last_backup_time")
+                if last_backup:
+                    stats["last_backup"] = last_backup
+            except:
+                pass
+            
+            # Get health check history
+            try:
+                last_health_check = self.database_manager.get_system_setting("last_health_check_time")
+                if last_health_check:
+                    stats["last_health_check"] = last_health_check
+            except:
+                pass
+            
+            # Get job timeout check history
+            try:
+                last_job_timeout_check = self.database_manager.get_system_setting("last_job_timeout_check_time")
+                if last_job_timeout_check:
+                    stats["last_job_timeout_check"] = last_job_timeout_check
             except:
                 pass
             
@@ -749,7 +786,7 @@ class RetentionService:
             
             # Create backup
             if compressed:
-                with gzip.open(backup_path, 'wt') as f:
+                with gzip.open(backup_path, 'wt', encoding='utf-8') as f:
                     # Use Python's sqlite3 module instead of subprocess for cross-platform compatibility
                     conn = sqlite3.connect(self.db_path)
                     for line in conn.iterdump():
@@ -825,7 +862,7 @@ class RetentionService:
             
             # Create backup
             if compressed:
-                with gzip.open(backup_path, 'wt') as f:
+                with gzip.open(backup_path, 'wt', encoding='utf-8') as f:
                     # Use Python's sqlite3 module instead of subprocess for cross-platform compatibility
                     conn = sqlite3.connect(self.db_path)
                     for line in conn.iterdump():

@@ -261,6 +261,18 @@ class RobustCachedJobService:
             operation_data['total_input_tokens'] = total_input_tokens
             operation_data['total_output_tokens'] = total_output_tokens
             
+            # Also populate legacy fields for backwards compatibility
+            # Use the primary model (first model or highest token count model) for legacy compatibility
+            if models_data:
+                # Find the model with the highest total token usage
+                primary_model = max(models_data.items(), 
+                                   key=lambda x: x[1].get('input_tokens', 0) + x[1].get('output_tokens', 0))
+                operation_data['model_used'] = primary_model[0]
+                
+            # Use total tokens for legacy fields to maintain consistency with breakdown calculations
+            operation_data['input_tokens'] = total_input_tokens
+            operation_data['output_tokens'] = total_output_tokens
+            
             if estimated_dev_hours_saved is not None:
                 operation_data['estimated_dev_hours_saved'] = estimated_dev_hours_saved
             
@@ -418,7 +430,7 @@ class RobustCachedJobService:
         """Get a single operation with robust cache-through pattern"""
         return await self.cache.get_operation(operation_id)
         
-    async def get_logs(self, limit: int = 1000, level: str = None, job_id: str = None,
+    async def get_logs(self, limit: int = 10000, level: str = None, job_id: str = None,
                       operation_id: str = None, repository: str = None) -> List[Dict[str, Any]]:
         """Get logs with robust cache-through pattern"""
         filters = {}

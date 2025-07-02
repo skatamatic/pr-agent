@@ -113,6 +113,22 @@ const apiService = {
   checkRepositoryHealth: (id) => api.post(`/api/repositories/${id}/check-health`),
   checkRepositoryConfig: (id) => api.post(`/api/repositories/${id}/check-config`),
   
+  // Repository best practices
+  getRepositoryBestPractices: (repoId, forceRefresh = false) => 
+    api.get(`/api/repositories/${repoId}/best-practices?force_refresh=${forceRefresh}`),
+  updateRepositoryBestPractices: (repoId, content) => 
+    api.put(`/api/repositories/${repoId}/best-practices`, { content }),
+  checkBestPracticesPrStatus: (repoId) => 
+    api.post(`/api/repositories/${repoId}/best-practices/check-pr-status`),
+
+  // Repository PR-Agent config
+  getRepositoryPrAgentConfig: (repoId, forceRefresh = false) => 
+    api.get(`/api/repositories/${repoId}/pr-agent-config?force_refresh=${forceRefresh}`),
+  updateRepositoryPrAgentConfig: (repoId, content) => 
+    api.put(`/api/repositories/${repoId}/pr-agent-config`, { content }),
+  checkPrAgentConfigPrStatus: (repoId) => 
+    api.post(`/api/repositories/${repoId}/pr-agent-config/check-pr-status`),
+  
   // Developer mode
   getDeveloperMode: () => api.get('/api/developer-mode'),
   
@@ -124,6 +140,12 @@ const apiService = {
   triggerError: () => api.post('/api/dev/trigger-error'),
   clearData: () => api.post('/api/dev/clear-data'),
   refreshJobCounts: () => api.post('/api/dev/refresh-job-counts'),
+  
+  // Scheduled Jobs Management
+  getScheduledJobsStatus: () => api.get('/api/dev/scheduled-jobs/status'),
+  triggerScheduledJob: (serviceName) => api.post(`/api/dev/scheduled-jobs/trigger/${serviceName}`, {}, { timeout: 60000 }),
+  getStaleJobs: () => api.get('/api/dev/stale-jobs'),
+  forceTimeoutCheck: () => api.post('/api/dev/force-timeout-check'),
   
   // Notification management
   getNotificationConfigs: () => api.get('/api/notifications/configs'),

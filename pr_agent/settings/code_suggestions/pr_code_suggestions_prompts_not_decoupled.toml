@@ -77,6 +77,16 @@ Extra user-provided instructions (should be addressed with high priority):
 ======
 {%- endif %}
 
+{%- if best_practices %}
+
+Repository Best Practices (should be strictly followed):
+======
+{{ best_practices }}
+======
+
+When evaluating code, pay special attention to adherence to these best practices. Any violations should be flagged with the label "best practice" and the suggestion should guide the code to follow the established best practices.
+{%- endif %}
+
 
 The output must be a YAML object equivalent to type $PRCodeSuggestions, according to the following Pydantic definitions:
 =====

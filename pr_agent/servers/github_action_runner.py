@@ -108,6 +108,13 @@ async def run_action():
 
         if action in pr_actions:
             pr_url = event_payload.get("pull_request", {}).get("html_url")
+            
+            # Guard: Skip PRs created by PR Agent Dashboard
+            pr_description = event_payload.get("pull_request", {}).get("body", "") or ""
+            if "This PR was created automatically via PR Agent Dashboard" in pr_description:
+                get_logger().info(f"Skipping GitHub Action processing - PR was created by PR Agent Dashboard: {pr_url}")
+                return
+            
             if pr_url:
                 # legacy - supporting both GITHUB_ACTION and GITHUB_ACTION_CONFIG
                 auto_review = get_setting_or_env("GITHUB_ACTION.AUTO_REVIEW", None)

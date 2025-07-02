@@ -94,6 +94,10 @@ class PRCodeSuggestions:
             get_settings().set("config.enable_ai_metadata", False)
             get_logger().debug(f"AI metadata is disabled for this command")
 
+        # Load best practices from repository
+        from pr_agent.algo.utils import get_best_practices_content
+        best_practices_content = get_best_practices_content(self.git_provider)
+        
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -104,7 +108,8 @@ class PRCodeSuggestions:
             "num_code_suggestions": num_code_suggestions,
             "extra_instructions": get_settings().pr_code_suggestions.extra_instructions,
             "commit_messages_str": self.git_provider.get_commit_messages(),
-            "relevant_best_practices": "",
+            "relevant_best_practices": "",  # Legacy field - kept for compatibility
+            "best_practices": best_practices_content,  # New field for best practices content
             "is_ai_metadata": get_settings().get("config.enable_ai_metadata", False),
             "focus_only_on_problems": get_settings().get("pr_code_suggestions.focus_only_on_problems", False),
             "date": datetime.now().strftime('%Y-%m-%d'),
@@ -922,20 +927,24 @@ class PRCodeSuggestions:
                                   'token_usage': token_usage
                               })
             
-            # Get accurate token counts
+            # Get accurate token counts - prioritize AI handler token_usage over token_tracker
             input_tokens = token_usage.get('input_tokens', 0) if token_usage else 0
-            totals = token_tracker.get_totals()
-            input_tokens = totals.get('input_tokens', prompt_tokens)
-            output_tokens = totals.get('output_tokens', 0)
-                    
-            if not token_tracker.has_usage():
-                get_logger().warning("[Generating] - ⚠️ No accurate token usage from AI handler, using estimates")
-                try:
-                    output_tokens = self.token_handler.count_tokens(response)
-                except Exception as e:
-                    get_logger().warning(f"[Generating] - ⚠️ Could not estimate output tokens: {e}")
+            output_tokens = token_usage.get('output_tokens', 0) if token_usage else 0
             
-                get_logger().info(f"[Generating] - AI call completed successfully", 
+            # Only fall back to token_tracker if AI handler didn't provide token counts
+            if not input_tokens and not output_tokens:
+                totals = token_tracker.get_totals()
+                input_tokens = totals.get('input_tokens', prompt_tokens)
+                output_tokens = totals.get('output_tokens', 0)
+                
+                if not token_tracker.has_usage():
+                    get_logger().warning("[Generating] - ⚠️ No token usage from AI handler or tracker, using estimates")
+                    try:
+                        output_tokens = self.token_handler.count_tokens(response)
+                    except Exception as e:
+                        get_logger().warning(f"[Generating] - ⚠️ Could not estimate output tokens: {e}")
+            
+            get_logger().info(f"[Generating] - AI call completed successfully", 
                              artifacts={
                                  'input_tokens': input_tokens,
                                  'output_tokens': output_tokens,
@@ -943,28 +952,14 @@ class PRCodeSuggestions:
                                  'finish_reason': finish_reason,
                                  'response_length': len(response)
                              })
-            
-            # Store failed call metrics for later use - DON'T send them yet to avoid double-counting
-            if DASHBOARD_INTEGRATION_AVAILABLE:
-                try:
-                    # Store failed AI metrics for later use
-                    if not hasattr(self, 'stored_suggestion_metrics'):
-                        self.stored_suggestion_metrics = []
-                    
-                    self.stored_suggestion_metrics.append({
-                        'input_tokens': prompt_tokens,
-                        'output_tokens': 0,
-                        'model': model,
-                        'diff': patches_diff,
-                        'response': "",
-                        'totals': {'call_count': 1, 'failed_calls': 1},
-                        'failed': True
-                    })
-                    
-                    get_logger().debug(f"Failed AI call metrics stored for later use")
-                except Exception as metric_error:
-                    get_logger().debug(f"Failed to store AI metrics for failed call: {metric_error}")
         except Exception as e:
+            # Track failed AI call metrics
+            failed_token_usage = {
+                'input_tokens': prompt_tokens,
+                'output_tokens': 0
+            }
+            self._track_ai_metrics(model, failed_token_usage)
+            
             get_logger().error(f"❌ AI call failed", 
                               artifacts={
                                   'error': str(e),
@@ -1051,32 +1046,7 @@ class PRCodeSuggestions:
                 suggestion["score"] = 7  # Default score for multi-stage processing
                 suggestion["score_why"] = "Default score - reflection pending"
 
-        # Store tokens for later use (dashboard metrics) - DON'T send them yet to avoid double-counting
-        if DASHBOARD_INTEGRATION_AVAILABLE:
-            try:
-                # Store AI metrics for later use, but don't send them yet
-                if not hasattr(self, 'stored_suggestion_metrics'):
-                    self.stored_suggestion_metrics = []
-                
-                self.stored_suggestion_metrics.append({
-                    'input_tokens': input_tokens,
-                    'output_tokens': output_tokens,
-                    'model': model,
-                    'diff': patches_diff,
-                    'response': response,
-                    'totals': totals
-                })
-                
-                get_logger().info("[Generating] - AI metrics stored for later aggregation", 
-                                 artifacts={
-                                     'model': model,
-                                     'input_tokens': input_tokens,
-                                     'output_tokens': output_tokens,
-                                     'stored_count': len(self.stored_suggestion_metrics)
-                                 })
-                
-            except Exception as e:
-                get_logger().warning(f"[Generating] - Failed to store AI metrics: {e}")
+        # AI metrics are tracked via _track_ai_metrics() and sent via _send_aggregated_ai_metrics()
 
         final_suggestions_count = len(data.get("code_suggestions", []))
         get_logger().info(f"[Generating] - Code suggestions generation completed - {final_suggestions_count} suggestions ready")
@@ -1218,19 +1188,14 @@ class PRCodeSuggestions:
                                          'total_tokens': actual_input_tokens + actual_output_tokens
                                      })
                     
-                    # Store AI metrics for the time estimation (will be sent with complete metrics later)
-                    if not hasattr(self, 'all_ai_metrics'):
-                        self.all_ai_metrics = []
-                    
-                    self.all_ai_metrics.append({
+                    # Track these metrics via the callback which will aggregate them properly
+                    self._track_ai_metrics(model, {
                         'input_tokens': actual_input_tokens,
-                        'output_tokens': actual_output_tokens,
-                        'model': model,
-                        'stage': 'dev_time_estimation'
+                        'output_tokens': actual_output_tokens
                     })
                     
                 except Exception as metric_error:
-                    get_logger().warning(f"Failed to store AI metrics for dev time estimation: {metric_error}")
+                    get_logger().warning(f"Failed to track AI metrics for dev time estimation: {metric_error}")
             
         except Exception as e:
             get_logger().error("❌ AI time estimation call failed", 
@@ -1435,8 +1400,30 @@ class PRCodeSuggestions:
                 original_score = feedback.get("suggestion_score", 7)
                 score_reasoning = feedback.get("why", "No reasoning provided")
                 
+                # Handle new commit eligibility scoring system (0-10) vs old boolean system
+                commit_eligibility_score = feedback.get("commit_eligibility_score")
+                commit_eligibility_reason = feedback.get("commit_eligibility_reason", "No eligibility reasoning provided")
+                
+                if commit_eligibility_score is not None:
+                    # New scoring system (0-10)
+                    # Ensure score is an integer between 0-10
+                    commit_eligibility_score = max(0, min(10, int(commit_eligibility_score)))
+                    
+                    # Compare against threshold to determine if committable
+                    eligibility_threshold = get_settings().pr_code_suggestions.commit_eligibility_threshold
+                    commit_eligible = commit_eligibility_score >= eligibility_threshold
+                    
+                    suggestion["commit_eligibility_score"] = commit_eligibility_score
+                    suggestion["commit_eligibility_reason"] = commit_eligibility_reason
+                else:
+                    # Fallback to old boolean system for backward compatibility
+                    commit_eligible = feedback.get("commit_eligible", True)
+                    suggestion["commit_eligibility_score"] = 7 if commit_eligible else 3  # Default mapping
+                    suggestion["commit_eligibility_reason"] = "Legacy boolean system - no detailed reasoning available"
+                
                 suggestion["score"] = original_score
                 suggestion["score_why"] = score_reasoning
+                suggestion["commit_eligible"] = commit_eligible
 
                 # Handle missing line number information
                 if 'relevant_lines_start' not in suggestion:
@@ -1498,6 +1485,9 @@ class PRCodeSuggestions:
                 # Apply default fallback scoring
                 suggestion["score"] = 7
                 suggestion["score_why"] = f"Processing error: {str(e)}"
+                suggestion["commit_eligible"] = True  # Default to True when processing fails
+                suggestion["commit_eligibility_score"] = 7  # Default score
+                suggestion["commit_eligibility_reason"] = "Default eligibility due to processing error"
                 scoring_stats['score_distribution']['7'] = scoring_stats['score_distribution'].get('7', 0) + 1
 
         # Log overall scoring statistics
@@ -1522,6 +1512,10 @@ class PRCodeSuggestions:
                              'score_distribution': scoring_stats['score_distribution']
                          })
         
+        # Calculate commit eligibility statistics
+        commit_eligible_count = sum(1 for suggestion in data.get("code_suggestions", []) if suggestion.get("commit_eligible", True))
+        commit_ineligible_count = scoring_stats['processed'] - commit_eligible_count
+        
         # Capture self-reflection insights for dashboard
         self._self_reflection_insights = {
             'analysis_statistics': scoring_stats,
@@ -1529,6 +1523,11 @@ class PRCodeSuggestions:
                 'high_quality_suggestions': high_scores,
                 'medium_quality_suggestions': medium_scores,  
                 'low_quality_suggestions': low_scores,
+                'total_suggestions': scoring_stats['processed']
+            },
+            'commit_eligibility_breakdown': {
+                'commit_eligible_suggestions': commit_eligible_count,
+                'commit_ineligible_suggestions': commit_ineligible_count,
                 'total_suggestions': scoring_stats['processed']
             },
             'score_distribution': scoring_stats['score_distribution'],
@@ -1543,6 +1542,9 @@ class PRCodeSuggestions:
                     'suggestion_summary': suggestion.get('one_sentence_summary', ''),
                     'file': suggestion.get('relevant_file', ''),
                     'score': suggestion.get('score', 0),
+                    'commit_eligible': suggestion.get('commit_eligible', True),
+                    'commit_eligibility_score': suggestion.get('commit_eligibility_score', 7),
+                    'commit_eligibility_reason': suggestion.get('commit_eligibility_reason', ''),
                     'reasoning': suggestion.get('score_why', '')
                 }
                 for suggestion in data.get("code_suggestions", [])
@@ -1556,6 +1558,9 @@ class PRCodeSuggestions:
         for i, suggestion in enumerate(suggestions):
             suggestion["score"] = 7
             suggestion["score_why"] = "Default score - reflection analysis failed"
+            suggestion["commit_eligible"] = True  # Default to True when reflection fails
+            suggestion["commit_eligibility_score"] = 7  # Default score
+            suggestion["commit_eligibility_reason"] = "Default eligibility due to reflection analysis failure"
             
         get_logger().info(f"[Reflecting] - Applied default scores to {len(suggestions)} suggestions")
 
@@ -1768,11 +1773,15 @@ class PRCodeSuggestions:
                         # Indentation adjustment completed (verbose logging removed)
 
                 # Format suggestion body for GitHub
+                # Check if suggestion is eligible for commit (has commit button)
+                commit_eligible = suggestion.get('commit_eligible', True)  # Default to True for backward compatibility
+                code_block_type = "suggestion" if commit_eligible else "diff"
+                
                 if score:
-                    body = f"**Suggestion:** {content} [{label}, importance: {score}]\n```suggestion\n{new_code_snippet}\n```"
+                    body = f"**Suggestion:** {content} [{label}, importance: {score}]\n```{code_block_type}\n{new_code_snippet}\n```"
                     formatting_stats['scored_suggestions'] += 1
                 else:
-                    body = f"**Suggestion:** {content} [{label}]\n```suggestion\n{new_code_snippet}\n```"
+                    body = f"**Suggestion:** {content} [{label}]\n```{code_block_type}\n{new_code_snippet}\n```"
                     formatting_stats['unscored_suggestions'] += 1
 
                 # Create formatted suggestion for publishing
@@ -2556,6 +2565,10 @@ class PRCodeSuggestions:
 
         # Build prompt variables
         try:
+            # Load best practices for reflection
+            from pr_agent.algo.utils import get_best_practices_content
+            best_practices_content = get_best_practices_content(self.git_provider)
+            
             variables = {
                 'suggestion_list': suggestion_list,
                 'suggestion_str': suggestion_str,
@@ -2565,7 +2578,8 @@ class PRCodeSuggestions:
                 "is_ai_metadata": get_settings().get("config.enable_ai_metadata", False),
                 'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
                 "include_context": get_settings().get("csharp_code_context_service.enabled", False),
-                "context": self.context_data
+                "context": self.context_data,
+                "best_practices": best_practices_content
             }
             
             environment = Environment(undefined=StrictUndefined)

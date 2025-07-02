@@ -122,6 +122,7 @@ max_history_len = 8
 publish_output_no_suggestions = true
 apply_suggestions_checkbox = true
 suggestions_score_threshold = 0
+commit_eligibility_threshold = 7  # Minimum score (0-10) for a suggestion to be considered directly committable
 new_score_mechanism = true
 new_score_mechanism_th_high = 9
 new_score_mechanism_th_medium = 7

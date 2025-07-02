@@ -32,7 +32,37 @@ Additional scoring considerations:
 - If the suggestion only asks the user to verify or ensure a change done in the PR, it should not receive a score above 7 (and may be lower).
 - Error handling or type checking suggestions should not receive a score above 8 (and may be lower).
 - If the 'existing_code' snippet is equal to the 'improved_code' snippet, it should not receive a score above 7 (and may be lower).
-- Assume each suggestion is independent and is not influenced by the other suggestions.  
+- Assume each suggestion is independent and is not influenced by the other suggestions.
+
+Commit Eligibility Assessment:
+In addition to scoring, assess whether each suggestion is eligible for direct commit (can be applied automatically without manual review):
+- **Commit-eligible suggestions** are specific, localized code changes that can be safely applied automatically:
+  * Simple bug fixes (null checks, typo corrections, obvious logic errors)
+  * Code style improvements (formatting, naming conventions, simple refactoring)
+  * Performance optimizations that don't change behavior
+  * Adding missing error handling or validation
+  * Straightforward fixes
+- **NOT commit-eligible suggestions** require manual review or broader understanding:
+  * Architectural or design changes that affect multiple components
+  * Suggestions requiring changes beyond the specific lines shown
+  * Complex refactoring that could impact other parts of the codebase
+  * API changes or interface modifications
+  * Obviously AI generated explanatory comments
+  * Suggestions that ask the developer to "verify" or "ensure" something
+  * Changes that could have unintended side effects
+  * Performance suggestions that significantly alter algorithms or data structures
+  * Suggestions that require domain knowledge or business logic understanding
+  * Changes that are obviously not directly commitable
+
+{%- if best_practices %}
+
+Repository Best Practices (keep in mind when evaluating suggestions):
+======
+{{ best_practices }}
+======
+
+When evaluating suggestions, consider adherence to these repository best practices. Suggestions that address violations of these practices should receive higher scores.
+{%- endif %}
 
 The PR code diff will be presented in the following structured format:
 ======
@@ -81,12 +111,13 @@ class CodeSuggestionFeedback(BaseModel):
     relevant_lines_start: int = Field(description="The relevant line number, from a '__new hunk__' section, where the suggestion starts (inclusive). Should be derived from the added '__new hunk__' line numbers, and correspond to the first line of the relevant 'existing code' snippet.")
     relevant_lines_end: int = Field(description="The relevant line number, from a '__new hunk__' section, where the suggestion ends (inclusive). Should be derived from the added '__new hunk__' line numbers, and correspond to the end of the relevant 'existing code' snippet")
     suggestion_score: int = Field(description="Evaluate the suggestion and assign a score from 0 to 10. Give 0 if the suggestion is wrong. For valid suggestions, score from 1 (lowest impact/importance) to 10 (highest impact/importance).")
-    why: str = Field(description="Briefly explain the score given in 1-2 short sentences, focusing on the suggestion's impact, relevance, and accuracy. When mentioning code elements (variables, names, or files) in your response, surround them with markdown backticks (`).")
+    commit_eligibility_score: int = Field(description="Score from 0-10 indicating how suitable this suggestion is for automatic commit without manual review. Use the commit eligibility guidelines above: 0 = absolutely requires manual review, 10 = perfectly safe for automatic application. Consider complexity, risk, and scope of changes.")
+    commit_eligibility_reason: str = Field(description="Briefly explain the commit eligibility score in 1-2 short sentences, focusing on why this suggestion does or doesn't qualify for automatic commit. Consider factors like complexity, risk, scope, and potential side effects.")
+    why: str = Field(description="Briefly explain the suggestion score given in 1-2 short sentences, focusing on the suggestion's impact, relevance, and accuracy. When mentioning code elements (variables, names, or files) in your response, surround them with markdown backticks (`).")
 
 class PRCodeSuggestionsFeedback(BaseModel):
     code_suggestions: List[CodeSuggestionFeedback]
 =====
-
 
 Example output:
 ```yaml
@@ -97,16 +128,17 @@ code_suggestions:
   relevant_lines_start: 13
   relevant_lines_end: 14
   suggestion_score: 6
+  commit_eligibility_score: 8
+  commit_eligibility_reason: |
+    Simple variable rename with no side effects - safe for automatic application.
   why: |
-    The variable name 't' is not descriptive enough
+    The variable name 't' is not descriptive enough. This is a simple, localized change safe for automatic application.
 - ...
 ```
-
 
 Each YAML output MUST be after a newline, indented, with block scalar indicator ('|').
 
 You are the final layer before this hits app code.  It is ESSENTIAL that it is properly formatted and free of errors that cause parsing errors.
-BE ABSOLUTELY SURE THE RELEVANT_LINES_END IS NOT BEFORE THE RELEVANT_LINES_START!!!!  If this happens, FIX IT!
 """
 
 user="""You are given a Pull Request (PR) code diff:
@@ -141,6 +173,9 @@ code_suggestions:
   relevant_lines_start: ...
   relevant_lines_end: ...
   suggestion_score: ...
+  commit_eligibility_score: ...
+  commit_eligibility_reason: |
+    ...
   why: |
     ...
 - ...
