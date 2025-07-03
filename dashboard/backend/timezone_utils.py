@@ -23,10 +23,9 @@ def ensure_utc_timestamp(dt_input: Any) -> Optional[datetime]:
     try:
         # If it's already a datetime object
         if isinstance(dt_input, datetime):
-            # If it's naive (no timezone info), assume it's local and convert to UTC
+            # If it's naive (no timezone info), assume it's already UTC
             if dt_input.tzinfo is None:
-                logger.warning(f"Naive datetime detected, treating as local time: {dt_input}")
-                # For safety, assume it was meant to be UTC if it's naive
+                # Database stores UTC time as naive, just add UTC timezone marker
                 return dt_input.replace(tzinfo=timezone.utc)
             # If it has timezone info, convert to UTC
             return dt_input.astimezone(timezone.utc)
@@ -41,8 +40,8 @@ def ensure_utc_timestamp(dt_input: Any) -> Optional[datetime]:
                 # Has timezone info
                 return datetime.fromisoformat(dt_input).astimezone(timezone.utc)
             else:
-                # Naive string - assume UTC for safety
-                logger.warning(f"Naive timestamp string detected, treating as UTC: {dt_input}")
+                # Naive string - assume it's already UTC time
+                logger.debug(f"Naive timestamp string detected, treating as UTC: {dt_input}")
                 return datetime.fromisoformat(dt_input).replace(tzinfo=timezone.utc)
                 
     except Exception as e:

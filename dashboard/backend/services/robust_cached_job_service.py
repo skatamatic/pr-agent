@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Any
 from enum import Enum
 
 from .robust_cache_service import get_robust_cache_service
+from timezone_utils import to_utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +46,8 @@ class RobustCachedJobService:
             'installation_id': installation_id,
             'request_id': request_id,
             'webhook_payload': webhook_payload,
-            'started_at': now.isoformat(),
-            'last_updated': now.isoformat(),
+            'started_at': to_utc_iso(now),
+            'last_updated': to_utc_iso(now),
             'operations_count': 0,
             'completed_operations': 0,
             'failed_operations': 0,
@@ -71,7 +72,7 @@ class RobustCachedJobService:
             job_data['job_id'] = str(uuid.uuid4())
             
         if 'last_updated' not in job_data:
-            job_data['last_updated'] = datetime.utcnow().isoformat()
+            job_data['last_updated'] = to_utc_iso(datetime.utcnow())
             
         # Create job in cache
         await self.cache.create_job(job_data)
@@ -87,7 +88,7 @@ class RobustCachedJobService:
             operation_data['operation_id'] = str(uuid.uuid4())
             
         if 'last_updated' not in operation_data:
-            operation_data['last_updated'] = datetime.utcnow().isoformat()
+            operation_data['last_updated'] = to_utc_iso(datetime.utcnow())
             
         # Create operation in cache
         await self.cache.create_operation(operation_data)
@@ -104,11 +105,11 @@ class RobustCachedJobService:
         
         updates = {
             'status': status.value,
-            'last_updated': datetime.utcnow().isoformat()
+            'last_updated': to_utc_iso(datetime.utcnow())
         }
         
         if status in [JobStatus.COMPLETED, JobStatus.FAILED]:
-            updates['completed_at'] = datetime.utcnow().isoformat()
+            updates['completed_at'] = to_utc_iso(datetime.utcnow())
             
         if error_details:
             updates['error_details'] = error_details
@@ -151,8 +152,8 @@ class RobustCachedJobService:
             'installation_id': installation_id,
             'sender': sender,
             'request_id': request_id,
-            'started_at': now.isoformat(),
-            'last_updated': now.isoformat()
+            'started_at': to_utc_iso(now),
+            'last_updated': to_utc_iso(now)
         }
         
         await self.cache.create_operation(operation_data)
@@ -168,11 +169,11 @@ class RobustCachedJobService:
         """Update operation status with robust caching"""
         updates = {
             'status': status.value,
-            'last_updated': datetime.utcnow().isoformat()
+            'last_updated': to_utc_iso(datetime.utcnow())
         }
         
         if status in [OperationStatus.COMPLETED, OperationStatus.FAILED]:
-            updates['completed_at'] = datetime.utcnow().isoformat()
+            updates['completed_at'] = to_utc_iso(datetime.utcnow())
             # Clear current step when operation completes or fails
             updates['current_step'] = None
             
@@ -187,7 +188,7 @@ class RobustCachedJobService:
                     logger.warning(f"Could not calculate duration for operation {operation_id}: {e}")
                     
         if status == OperationStatus.PROCESSING:
-            updates['started_at'] = datetime.utcnow().isoformat()
+            updates['started_at'] = to_utc_iso(datetime.utcnow())
             
         if error_details:
             updates['error_details'] = error_details
@@ -226,7 +227,7 @@ class RobustCachedJobService:
             updates['estimated_dev_hours_saved'] = estimated_dev_hours_saved
             
         if updates:
-            updates['last_updated'] = datetime.utcnow().isoformat()
+            updates['last_updated'] = to_utc_iso(datetime.utcnow())
             
             # Update cache first (this will NEVER fail with race conditions!)
             success = await self.cache.update_operation(operation_id, updates)
@@ -276,7 +277,7 @@ class RobustCachedJobService:
             if estimated_dev_hours_saved is not None:
                 operation_data['estimated_dev_hours_saved'] = estimated_dev_hours_saved
             
-            operation_data['last_updated'] = datetime.utcnow().isoformat()
+            operation_data['last_updated'] = to_utc_iso(datetime.utcnow())
             
             # Update cache
             await self.cache.update_operation(operation_id, operation_data)
@@ -296,7 +297,7 @@ class RobustCachedJobService:
                 logger.warning(f"Operation {operation_id} not found in cache for step update")
                 return False
             operation_data['current_step'] = current_step
-            operation_data['last_updated'] = datetime.utcnow().isoformat()
+            operation_data['last_updated'] = to_utc_iso(datetime.utcnow())
             
             # Update cache
             await self.cache.update_operation(operation_id, operation_data)
@@ -327,7 +328,7 @@ class RobustCachedJobService:
             
             # Update the operation in cache
             operation_data['insights'] = insights
-            operation_data['last_updated'] = datetime.utcnow().isoformat()
+            operation_data['last_updated'] = to_utc_iso(datetime.utcnow())
             
             # Update cache
             await self.cache.update_operation(operation_id, operation_data)
@@ -350,7 +351,7 @@ class RobustCachedJobService:
                               severity: str = None, artifacts: dict = None) -> int:
         """Create log entry with robust caching"""
         log_data = {
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': to_utc_iso(datetime.utcnow()),
             'level': level,
             'message': message,
             'source': source,

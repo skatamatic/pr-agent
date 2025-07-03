@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Search, Download, Filter, AlertCircle, Info, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, RefreshCw, Clock, ExternalLink, X, Eye, CheckCircle, XCircle, Calendar, FileText, Star } from 'lucide-react';
 import api from '../services/api';
 import ViewHeader from './ViewHeader';
+import { formatTimestamp as formatTimestampUtil } from '../utils/timeUtils';
 
 const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, onNavigateToJob, onNavigateToOperation, onClearFilter }) => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -306,7 +307,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
 
   // Helper to convert UTC timestamp to local time string
   const formatTimestampForExport = (timestamp) => {
-    return new Date(timestamp).toLocaleString();
+    return formatTimestampUtil(timestamp);
   };
 
   // Check if any filters are active
@@ -387,7 +388,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
   };
 
   const formatTimestamp = (timestamp) => {
-    return new Date(timestamp).toLocaleString();
+    return formatTimestampUtil(timestamp);
   };
 
   const toggleExpanded = (logId) => {

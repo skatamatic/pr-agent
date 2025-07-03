@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from collections import OrderedDict, defaultdict
 import uuid
 import sys
+from timezone_utils import to_utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -585,9 +586,9 @@ class RobustCacheService:
             'installation_id': job.installation_id,
             'request_id': job.request_id,
             'webhook_payload': job.webhook_payload,
-            'started_at': job.started_at.isoformat() if job.started_at else None,
-            'completed_at': job.completed_at.isoformat() if job.completed_at else None,
-            'last_updated': job.last_updated.isoformat() if job.last_updated else None,
+            'started_at': to_utc_iso(job.started_at),
+            'completed_at': to_utc_iso(job.completed_at),
+            'last_updated': to_utc_iso(job.last_updated),
             'duration': job.duration,
             'operations_count': job.operations_count,
             'completed_operations': job.completed_operations,
@@ -612,9 +613,9 @@ class RobustCacheService:
             'installation_id': operation.installation_id,
             'sender': operation.sender,
             'request_id': operation.request_id,
-            'started_at': operation.started_at.isoformat() if operation.started_at else None,
-            'completed_at': operation.completed_at.isoformat() if operation.completed_at else None,
-            'last_updated': operation.last_updated.isoformat() if operation.last_updated else None,
+            'started_at': to_utc_iso(operation.started_at),
+            'completed_at': to_utc_iso(operation.completed_at),
+            'last_updated': to_utc_iso(operation.last_updated),
             'duration': operation.duration,
             'error_details': operation.error_details,
             'result_data': operation.result_data,
@@ -633,7 +634,7 @@ class RobustCacheService:
         """Convert LogEntryDB to dictionary"""
         return {
             'id': log.id,
-            'timestamp': log.timestamp.isoformat() if log.timestamp else None,
+            'timestamp': to_utc_iso(log.timestamp),
             'level': log.level,
             'message': log.message,
             'source': log.module or log.app_name or 'unknown',  # Use module or app_name as source
@@ -711,7 +712,7 @@ class RobustCacheService:
         old_repository = updated_job.get('repository')
         
         updated_job.update(updates)
-        updated_job['last_updated'] = datetime.utcnow().isoformat()
+        updated_job['last_updated'] = to_utc_iso(datetime.utcnow())
         
         # Update cache
         entry = CacheEntry(data=updated_job, dirty=True)
@@ -903,7 +904,7 @@ class RobustCacheService:
         old_job_id = updated_operation.get('job_id')
         
         updated_operation.update(updates)
-        updated_operation['last_updated'] = datetime.utcnow().isoformat()
+        updated_operation['last_updated'] = to_utc_iso(datetime.utcnow())
         
         # Update cache
         entry = CacheEntry(data=updated_operation, dirty=True)

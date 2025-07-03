@@ -1205,29 +1205,113 @@ class RetentionService:
                 # Create temporary file for restoration
                 temp_restore_path = f"{self.db_path}.restore_temp"
                 
+                # Force close all database connections and clear caches
+                import gc
+                import time
+                
+                # Multiple rounds of garbage collection to close connections
+                for _ in range(3):
+                    gc.collect()
+                    time.sleep(0.1)
+                
+                # Clean up any existing temp file from previous failed attempts with retry
+                if os.path.exists(temp_restore_path):
+                    max_retries = 5
+                    for attempt in range(max_retries):
+                        try:
+                            os.remove(temp_restore_path)
+                            break
+                        except OSError as e:
+                            if attempt == max_retries - 1:
+                                return {"success": False, "error": f"Cannot remove existing temp file after {max_retries} attempts: {e}. Please stop the application and restart."}
+                            time.sleep(0.5)  # Wait before retry
+                
                 if is_compressed:
-                    # Decompress the backup
+                    # Check if it's a SQL dump or SQLite database file
                     import gzip
-                    with gzip.open(backup_path, 'rb') as f_in:
-                        with open(temp_restore_path, 'wb') as f_out:
-                            shutil.copyfileobj(f_in, f_out)
+                    with gzip.open(backup_path, 'rt', encoding='utf-8') as f:
+                        first_line = f.readline().strip()
+                    
+                    if first_line.startswith('BEGIN TRANSACTION'):
+                        # It's a SQL dump - need to import it
+                        self._log_to_system("INFO", f"Importing SQL dump backup: {filename}")
+                        
+                        # Create new empty database
+                        if os.path.exists(temp_restore_path):
+                            os.remove(temp_restore_path)
+                        
+                        # Import SQL dump
+                        with sqlite3.connect(temp_restore_path) as conn:
+                            with gzip.open(backup_path, 'rt', encoding='utf-8') as f:
+                                sql_content = f.read()
+                                conn.executescript(sql_content)
+                    else:
+                        # It's a compressed SQLite database file
+                        with gzip.open(backup_path, 'rb') as f_in:
+                            with open(temp_restore_path, 'wb') as f_out:
+                                shutil.copyfileobj(f_in, f_out)
                 else:
-                    # Copy uncompressed backup
+                    # Copy uncompressed backup (should be SQLite database file)
                     shutil.copy2(backup_path, temp_restore_path)
                 
                 # Verify the restored database is valid SQLite
                 try:
-                    test_conn = sqlite3.connect(temp_restore_path)
-                    test_conn.execute("SELECT COUNT(*) FROM sqlite_master")
-                    test_conn.close()
+                    # Use context manager to ensure proper connection cleanup
+                    with sqlite3.connect(temp_restore_path) as test_conn:
+                        test_conn.execute("SELECT COUNT(*) FROM sqlite_master")
+                    # Force garbage collection to help release file locks
+                    import gc
+                    gc.collect()
+                    # Small delay to allow Windows to release file locks
+                    import time
+                    time.sleep(0.1)
                 except sqlite3.Error as e:
-                    os.remove(temp_restore_path)
+                    try:
+                        os.remove(temp_restore_path)
+                    except OSError:
+                        pass  # File might already be locked, ignore cleanup error
                     return {"success": False, "error": f"Restored backup is not a valid SQLite database: {e}"}
                 
-                # Replace current database with restored one
-                if os.path.exists(self.db_path):
-                    os.remove(self.db_path)
-                os.rename(temp_restore_path, self.db_path)
+                # Replace current database using hot-swap approach to avoid file locks
+                current_db_backup = f"{self.db_path}.current_backup"
+                max_retries = 5
+                
+                for attempt in range(max_retries):
+                    try:
+                        # Step 1: Move current database to backup name (avoids deletion)
+                        if os.path.exists(current_db_backup):
+                            os.remove(current_db_backup)  # Remove old backup if exists
+                        
+                        if os.path.exists(self.db_path):
+                            os.rename(self.db_path, current_db_backup)
+                        
+                        # Step 2: Move restored database to current name
+                        os.rename(temp_restore_path, self.db_path)
+                        
+                        # Step 3: Clean up the old database backup
+                        if os.path.exists(current_db_backup):
+                            try:
+                                os.remove(current_db_backup)
+                            except OSError:
+                                # If we can't delete it, that's ok - the important part worked
+                                logger.warning(f"Could not clean up old database backup: {current_db_backup}")
+                        
+                        break  # Success!
+                        
+                    except OSError as e:
+                        # If we failed, try to restore the original database
+                        if os.path.exists(current_db_backup) and not os.path.exists(self.db_path):
+                            try:
+                                os.rename(current_db_backup, self.db_path)
+                            except OSError:
+                                pass  # Best effort recovery
+                        
+                        if attempt == max_retries - 1:
+                            raise Exception(f"Failed to replace database after {max_retries} attempts: {e}. Original database should be restored.")
+                        
+                        # Force garbage collection and wait before retry
+                        gc.collect()
+                        time.sleep(1.0)  # Longer wait for Windows to release locks
                 
                 # Get backup info for logging
                 backup_size = backup_path.stat().st_size
@@ -1248,7 +1332,10 @@ class RetentionService:
                 # Clean up temporary file if it exists
                 temp_restore_path = f"{self.db_path}.restore_temp"
                 if os.path.exists(temp_restore_path):
-                    os.remove(temp_restore_path)
+                    try:
+                        os.remove(temp_restore_path)
+                    except OSError as cleanup_error:
+                        logger.warning(f"Failed to clean up temp file {temp_restore_path}: {cleanup_error}")
                 
                 self._log_to_system("ERROR", f"Database restore failed: {str(restore_error)}")
                 return {

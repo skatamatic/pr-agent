@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import api from '../services/api';
 import ViewHeader from './ViewHeader';
+import { formatTimestamp } from '../utils/timeUtils';
 
 const Notifications = () => {
   const [configs, setConfigs] = useState([]);
@@ -1265,7 +1266,7 @@ const Notifications = () => {
                           {event.repositories?.join(', ') || 'All'}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                          {new Date(event.timestamp).toLocaleString()}
+                          {formatTimestamp(event.timestamp)}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           {getStatusBadge(event.processed ? 'success' : 'pending')}

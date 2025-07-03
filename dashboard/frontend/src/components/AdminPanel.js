@@ -21,6 +21,7 @@ import {
 import apiService from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
+import { formatTimestamp } from '../utils/timeUtils';
 
 const AdminPanel = () => {
   const [activeSection, setActiveSection] = useState('retention');
@@ -209,7 +210,7 @@ const AdminPanel = () => {
   };
 
   const formatDate = (dateString) => {
-    return new Date(dateString).toLocaleString();
+    return formatTimestamp(dateString);
   };
 
   const deleteBackup = async (filename) => {

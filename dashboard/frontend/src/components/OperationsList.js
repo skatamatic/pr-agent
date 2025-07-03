@@ -3,7 +3,7 @@ import { Activity, CheckCircle, Clock, AlertCircle, RefreshCw, ExternalLink, Che
 import api from '../services/api';
 import ViewHeader from './ViewHeader';
 import OperationInsights from './OperationInsights';
-import { formatTimeSaved } from '../utils/timeUtils';
+import { formatTimeSaved, formatTimestamp } from '../utils/timeUtils';
 
 const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
   const [activeTab, setActiveTab] = useState('live');
@@ -702,7 +702,7 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
                                 {operation.duration ? `${Math.round(operation.duration)}s` : formatDuration(operation.started_at || operation.timestamp, operation.completed_at)}
                               </td>
                               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                                {operation.completed_at ? new Date(operation.completed_at).toLocaleString() : 'N/A'}
+                                {operation.completed_at ? formatTimestamp(operation.completed_at) : 'N/A'}
                               </td>
                               <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                                 <div className="flex items-center space-x-3">

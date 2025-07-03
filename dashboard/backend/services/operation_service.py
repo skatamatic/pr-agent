@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 from models import OperationDB, LogEntryDB, APIResponse
+from timezone_utils import to_utc_iso
 
 
 class OperationService:
@@ -44,9 +45,9 @@ class OperationService:
                 "repo": op.repo,
                 "pr_url": op.pr_url,
                 "status": op.status,
-                "started_at": op.started_at.isoformat() if op.started_at else None,
-                "last_updated": op.last_updated.isoformat() if op.last_updated else None,
-                "completed_at": op.completed_at.isoformat() if op.completed_at else None,
+                "started_at": to_utc_iso(op.started_at),
+                "last_updated": to_utc_iso(op.last_updated),
+                "completed_at": to_utc_iso(op.completed_at),
                 "operation_type": op.command,  # For compatibility
                 "duration": op.duration,
                 "error_details": op.error_details,
@@ -164,7 +165,7 @@ class LogService:
         for log in logs:
             log_list.append({
                 "id": log.id,
-                "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+                "timestamp": to_utc_iso(log.timestamp),
                 "level": log.level,
                 "message": log.message,
                 "module": log.module,
@@ -193,7 +194,7 @@ class LogService:
         for log in logs:
             log_list.append({
                 "id": log.id,
-                "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+                "timestamp": to_utc_iso(log.timestamp),
                 "level": log.level,
                 "message": log.message,
                 "module": log.module,
@@ -230,7 +231,7 @@ class LogService:
         for log in logs:
             log_list.append({
                 "id": log.id,
-                "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+                "timestamp": to_utc_iso(log.timestamp),
                 "level": log.level,
                 "message": log.message,
                 "module": log.module,

@@ -10,6 +10,7 @@ from sqlalchemy import desc, and_, or_, func
 
 from database import get_db
 from models import JobDB, OperationDB, LogEntryDB, Job, Operation, JobType, JobStatus, OperationType, OperationStatus
+from timezone_utils import to_utc_iso
 
 
 class JobService:
@@ -193,9 +194,9 @@ class JobService:
                     'installation_id': job_db.installation_id,
                     'request_id': job_db.request_id,
                     'webhook_payload': job_db.webhook_payload,
-                    'started_at': job_db.started_at.isoformat() if job_db.started_at else None,
-                    'completed_at': job_db.completed_at.isoformat() if job_db.completed_at else None,
-                    'last_updated': job_db.last_updated.isoformat() if job_db.last_updated else None,
+                    'started_at': to_utc_iso(job_db.started_at),
+                    'completed_at': to_utc_iso(job_db.completed_at),
+                    'last_updated': to_utc_iso(job_db.last_updated),
                     'duration': job_db.duration,
                     'operations_count': job_db.operations_count or 0,
                     'completed_operations': job_db.completed_operations or 0,
@@ -222,9 +223,9 @@ class JobService:
                             'installation_id': op_db.installation_id,
                             'sender': op_db.sender,
                             'request_id': op_db.request_id,
-                            'started_at': op_db.started_at.isoformat() if op_db.started_at else None,
-                            'last_updated': op_db.last_updated.isoformat() if op_db.last_updated else None,
-                            'completed_at': op_db.completed_at.isoformat() if op_db.completed_at else None,
+                            'started_at': to_utc_iso(op_db.started_at),
+                            'last_updated': to_utc_iso(op_db.last_updated),
+                            'completed_at': to_utc_iso(op_db.completed_at),
                             'duration': op_db.duration,
                             'error_details': op_db.error_details,
                             'response_time': op_db.response_time,
@@ -271,9 +272,9 @@ class JobService:
                 'installation_id': job_db.installation_id,
                 'request_id': job_db.request_id,
                 'webhook_payload': job_db.webhook_payload,
-                'started_at': job_db.started_at.isoformat() if job_db.started_at else None,
-                'completed_at': job_db.completed_at.isoformat() if job_db.completed_at else None,
-                'last_updated': job_db.last_updated.isoformat() if job_db.last_updated else None,
+                'started_at': to_utc_iso(job_db.started_at),
+                'completed_at': to_utc_iso(job_db.completed_at),
+                'last_updated': to_utc_iso(job_db.last_updated),
                 'duration': job_db.duration,
                 'operations_count': job_db.operations_count or 0,
                 'completed_operations': job_db.completed_operations or 0,
@@ -300,9 +301,9 @@ class JobService:
                         'installation_id': op_db.installation_id,
                         'sender': op_db.sender,
                         'request_id': op_db.request_id,
-                        'started_at': op_db.started_at.isoformat() if op_db.started_at else None,
-                        'last_updated': op_db.last_updated.isoformat() if op_db.last_updated else None,
-                        'completed_at': op_db.completed_at.isoformat() if op_db.completed_at else None,
+                        'started_at': to_utc_iso(op_db.started_at),
+                        'last_updated': to_utc_iso(op_db.last_updated),
+                        'completed_at': to_utc_iso(op_db.completed_at),
                         'duration': op_db.duration,
                         'error_details': op_db.error_details,
                         'response_time': op_db.response_time,
@@ -343,9 +344,9 @@ class JobService:
                     installation_id=op_db.installation_id,
                     sender=op_db.sender,
                     request_id=op_db.request_id,
-                    started_at=op_db.started_at.isoformat() if op_db.started_at else None,
-                    last_updated=op_db.last_updated.isoformat() if op_db.last_updated else None,
-                    completed_at=op_db.completed_at.isoformat() if op_db.completed_at else None,
+                    started_at=to_utc_iso(op_db.started_at),
+                    last_updated=to_utc_iso(op_db.last_updated),
+                    completed_at=to_utc_iso(op_db.completed_at),
                     duration=op_db.duration,
                     error_details=op_db.error_details,
                     response_time=op_db.response_time,
@@ -489,8 +490,8 @@ class JobService:
                     'pr_url': job.pr_url,
                     'status': new_status.value,
                     'trigger_user': job.trigger_user,
-                    'started_at': job.started_at.isoformat() if job.started_at else None,
-                    'completed_at': job.completed_at.isoformat() if job.completed_at else None,
+                    'started_at': to_utc_iso(job.started_at),
+                    'completed_at': to_utc_iso(job.completed_at),
                     'duration': job.duration,
                     'error_details': job.error_details
                 }

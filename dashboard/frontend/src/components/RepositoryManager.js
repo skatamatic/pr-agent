@@ -31,6 +31,7 @@ import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
 import PrAgentConfigEditor from './PrAgentConfigEditor';
+import { formatTimestamp } from '../utils/timeUtils';
 
 const RepositoryManager = () => {
   const [repositories, setRepositories] = useState([]);
@@ -457,7 +458,7 @@ const RepositoryManager = () => {
   const formatLastChecked = (timestamp) => {
     if (!timestamp) return 'Never';
     try {
-      return new Date(timestamp).toLocaleString();
+      return formatTimestamp(timestamp);
     } catch (e) {
       return 'Invalid date';
     }
@@ -1639,7 +1640,7 @@ const RepositoryManager = () => {
                                   )}
                                   {repo.runner_last_seen && (
                                     <div className="text-gray-600 dark:text-gray-400">
-                                      <span className="font-medium">Last seen:</span> {new Date(repo.runner_last_seen).toLocaleString()}
+                                      <span className="font-medium">Last seen:</span> {formatTimestamp(repo.runner_last_seen)}
                                     </div>
                                   )}
                                   <div className="text-gray-600 dark:text-gray-400">
@@ -2227,7 +2228,7 @@ const RepositoryManager = () => {
                                       </h5>
                                       {bestPracticesData[repo.id].last_fetched && (
                                         <span className="text-xs text-purple-700 dark:text-purple-300">
-                                          Updated: {new Date(bestPracticesData[repo.id].last_fetched).toLocaleString()}
+                                          Updated: {formatTimestamp(bestPracticesData[repo.id].last_fetched)}
                                         </span>
                                       )}
                                     </div>
@@ -2366,7 +2367,7 @@ const RepositoryManager = () => {
                                     </h5>
                                     {prAgentConfigData[repo.id].last_fetched && (
                                       <span className="text-xs text-indigo-700 dark:text-indigo-300">
-                                        Updated: {new Date(prAgentConfigData[repo.id].last_fetched).toLocaleString()}
+                                        Updated: {formatTimestamp(prAgentConfigData[repo.id].last_fetched)}
                                       </span>
                                     )}
                                   </div>

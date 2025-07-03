@@ -3548,10 +3548,11 @@ This file can override any setting from the global PR-Agent configuration, inclu
         try:
             import requests
             from datetime import datetime
+            from timezone_utils import to_utc_iso
             
             # Create a system log entry
             log_data = {
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': to_utc_iso(datetime.utcnow()),
                 'level': level,
                 'message': f"[SYSTEM] {message}",
                 'source': 'dashboard_backend',

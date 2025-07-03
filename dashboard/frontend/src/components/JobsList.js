@@ -29,7 +29,7 @@ import { ToastContext } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
 import RunningIndicator from './RunningIndicator';
 import OperationInsights from './OperationInsights';
-import { formatDevTime } from '../utils/timeUtils';
+import { formatDevTime, formatTimestamp as formatTimestampUtil } from '../utils/timeUtils';
 
 const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOperationId }) => {
   const [jobs, setJobs] = useState([]);
@@ -388,7 +388,7 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
 
   const formatTimestamp = (timestamp) => {
     if (!timestamp) return 'N/A';
-    return new Date(timestamp).toLocaleString();
+    return formatTimestampUtil(timestamp);
   };
 
   const formatCurrency = (amount) => {
