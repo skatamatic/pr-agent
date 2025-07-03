@@ -22,6 +22,8 @@ import apiService from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
 import { formatTimestamp } from '../utils/timeUtils';
+import webSocketService from '../services/websocket';
+import RestoreProgressModal from './RestoreProgressModal';
 
 const AdminPanel = () => {
   const [activeSection, setActiveSection] = useState('retention');
@@ -61,6 +63,10 @@ const AdminPanel = () => {
   
   // Restoration state
   const [restoringBackup, setRestoringBackup] = useState('');
+  
+  // Progress modal state
+  const [showRestoreModal, setShowRestoreModal] = useState(false);
+  const [restoreFilename, setRestoreFilename] = useState('');
 
   const { showSuccess, showError } = useToast();
 
@@ -269,23 +275,48 @@ const AdminPanel = () => {
       return;
     }
     
-    setRestoringBackup(filename);
+    // Set up the progress modal
+    setRestoreFilename(filename);
+    setShowRestoreModal(true);
+    
     try {
+      // Start the restore process - this will now wait for completion
       const response = await apiService.restoreBackup(filename);
+      
+      // If we get here, the restore completed successfully
+      // The websocket should have already updated the modal, but let's ensure it closes
       if (response.data?.data) {
         const result = response.data.data;
-        showSuccess('Database Restored', 
-          `Database restored from ${filename}. Safety backup created: ${result.safety_backup?.split('/').pop()}`
-        );
-        await loadBackupList();
-        await loadDatabaseStats(); // Refresh stats after restore
+        
+        // The modal should close via websocket, but ensure it's closed
+        setTimeout(() => {
+          setShowRestoreModal(false);
+          showSuccess('Database Restored', result.message);
+          loadBackupList();
+          loadDatabaseStats(); // Refresh stats after restore
+        }, 500); // Small delay to let websocket message process first
       }
     } catch (error) {
       console.error('Failed to restore backup:', error);
-      const errorMessage = error.response?.data?.detail || 'Failed to restore backup';
-      showError('Restore Failed', errorMessage);
+      
+      // Close modal and show error
+      setShowRestoreModal(false);
+      
+      if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+        showError('Restore Timeout', 'The restore operation timed out. It may still be running in the background. Please check the database status.');
+      } else {
+        const errorMessage = error.response?.data?.detail || 'Failed to restore backup';
+        showError('Restore Failed', errorMessage);
+      }
     }
-    setRestoringBackup('');
+  };
+  
+  const handleRestoreModalClose = () => {
+    setShowRestoreModal(false);
+    setRestoreFilename('');
+    // Refresh data after restore completion
+    loadBackupList();
+    loadDatabaseStats();
   };
 
   // Pagination helpers
@@ -1233,6 +1264,14 @@ const AdminPanel = () => {
           </div>
         </div>
       )}
+      
+      {/* Restore Progress Modal */}
+      <RestoreProgressModal
+        isOpen={showRestoreModal}
+        onClose={handleRestoreModalClose}
+        filename={restoreFilename}
+        websocketService={webSocketService}
+      />
     </div>
   );
 };

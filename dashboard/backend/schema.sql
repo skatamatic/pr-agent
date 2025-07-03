@@ -103,6 +103,10 @@ CREATE TABLE repositories (
 	pr_agent_config_pr_number INTEGER, 
 	pr_agent_config_pr_branch VARCHAR, 
 	pr_agent_config_pr_status VARCHAR, 
+	github_action_config_pr_url VARCHAR, 
+	github_action_config_pr_number INTEGER, 
+	github_action_config_pr_branch VARCHAR, 
+	github_action_config_pr_status VARCHAR, 
 	PRIMARY KEY (id)
 );
 

@@ -153,6 +153,12 @@ class WebSocketService {
       case 'notification_event':
         this.emit('notification_event', data);
         break;
+      case 'backup_restore_progress':
+        this.emit('backup_restore_progress', message);
+        break;
+      case 'backup_restore_complete':
+        this.emit('backup_restore_complete', message);
+        break;
       default:
         console.log('Unknown WebSocket message type:', type, data);
     }

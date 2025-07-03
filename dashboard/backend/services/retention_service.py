@@ -1171,7 +1171,7 @@ class RetentionService:
                 "error": str(e)
             }
     
-    def restore_backup(self, filename: str) -> Dict[str, Any]:
+    def restore_backup(self, filename: str, progress_callback=None) -> Dict[str, Any]:
         """Restore database from a backup file with safety backup creation"""
         try:
             backup_path = self.backup_dir / filename
@@ -1187,6 +1187,14 @@ class RetentionService:
             if not os.path.exists(self.db_path):
                 return {"success": False, "error": "Current database not found"}
             
+            # Set maintenance mode flag
+            self.database_manager.set_system_setting("maintenance_mode", "true")
+            self.database_manager.set_system_setting("maintenance_reason", f"Restoring backup: {filename}")
+            self._log_to_system("INFO", f"Maintenance mode enabled for backup restore: {filename}")
+            
+            if progress_callback:
+                progress_callback(10, "Creating safety backup...")
+                
             # Step 1: Create a safety backup of current database
             self._log_to_system("INFO", f"Creating safety backup before restore from {filename}")
             safety_backup_result = self.create_safety_backup()
@@ -1199,6 +1207,9 @@ class RetentionService:
             
             # Step 2: Restore from the selected backup
             try:
+                if progress_callback:
+                    progress_callback(20, "Validating backup file...")
+                    
                 # Check if the backup is compressed
                 is_compressed = backup_path.suffix == ".gz"
                 
@@ -1236,82 +1247,163 @@ class RetentionService:
                         # It's a SQL dump - need to import it
                         self._log_to_system("INFO", f"Importing SQL dump backup: {filename}")
                         
+                        if progress_callback:
+                            progress_callback(30, "Importing SQL dump backup...")
+                        
                         # Create new empty database
                         if os.path.exists(temp_restore_path):
                             os.remove(temp_restore_path)
                         
-                        # Import SQL dump
-                        with sqlite3.connect(temp_restore_path) as conn:
+                        # Import SQL dump with explicit connection management
+                        import_conn = None
+                        try:
+                            import_conn = sqlite3.connect(temp_restore_path)
                             with gzip.open(backup_path, 'rt', encoding='utf-8') as f:
                                 sql_content = f.read()
-                                conn.executescript(sql_content)
+                                import_conn.executescript(sql_content)
+                            import_conn.commit()
+                        finally:
+                            if import_conn:
+                                import_conn.close()
+                            # Force garbage collection to release any references
+                            gc.collect()
+                            time.sleep(0.5)
                     else:
                         # It's a compressed SQLite database file
+                        if progress_callback:
+                            progress_callback(30, "Extracting compressed backup...")
                         with gzip.open(backup_path, 'rb') as f_in:
                             with open(temp_restore_path, 'wb') as f_out:
                                 shutil.copyfileobj(f_in, f_out)
                 else:
                     # Copy uncompressed backup (should be SQLite database file)
+                    if progress_callback:
+                        progress_callback(30, "Copying backup file...")
                     shutil.copy2(backup_path, temp_restore_path)
                 
+                if progress_callback:
+                    progress_callback(50, "Verifying restored database...")
+                    
                 # Verify the restored database is valid SQLite
+                verify_conn = None
                 try:
-                    # Use context manager to ensure proper connection cleanup
-                    with sqlite3.connect(temp_restore_path) as test_conn:
-                        test_conn.execute("SELECT COUNT(*) FROM sqlite_master")
-                    # Force garbage collection to help release file locks
-                    import gc
-                    gc.collect()
-                    # Small delay to allow Windows to release file locks
-                    import time
-                    time.sleep(0.1)
+                    # Use explicit connection management for verification
+                    verify_conn = sqlite3.connect(temp_restore_path)
+                    verify_conn.execute("SELECT COUNT(*) FROM sqlite_master")
+                    table_count = verify_conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
+                    self._log_to_system("INFO", f"Restored database verified: {table_count} tables found")
                 except sqlite3.Error as e:
                     try:
                         os.remove(temp_restore_path)
                     except OSError:
                         pass  # File might already be locked, ignore cleanup error
                     return {"success": False, "error": f"Restored backup is not a valid SQLite database: {e}"}
+                finally:
+                    if verify_conn:
+                        verify_conn.close()
+                    # Force garbage collection to help release file locks
+                    gc.collect()
+                    time.sleep(0.2)
                 
-                # Replace current database using hot-swap approach to avoid file locks
-                current_db_backup = f"{self.db_path}.current_backup"
-                max_retries = 5
+                # Use SQLite backup API to avoid file replacement issues
+                from database import engine
+                from sqlalchemy import text
                 
-                for attempt in range(max_retries):
+                try:
+                    if progress_callback:
+                        progress_callback(60, "Preparing database replacement...")
+                        
+                    self._log_to_system("INFO", "Using SQLite backup API for database replacement")
+                    
+                    # Step 1: Close all SQLAlchemy connections
+                    engine.dispose()
+                    gc.collect()
+                    time.sleep(2.0)
+                    self._log_to_system("INFO", "SQLAlchemy connections closed")
+                    
+                    # Step 2: Use SQLite backup API to copy data
+                    source_conn = None
+                    dest_conn = None
                     try:
-                        # Step 1: Move current database to backup name (avoids deletion)
-                        if os.path.exists(current_db_backup):
-                            os.remove(current_db_backup)  # Remove old backup if exists
+                        # Check that temp file exists and is accessible
+                        if not os.path.exists(temp_restore_path):
+                            raise Exception(f"Temp restore file not found: {temp_restore_path}")
                         
-                        if os.path.exists(self.db_path):
-                            os.rename(self.db_path, current_db_backup)
+                        temp_size = os.path.getsize(temp_restore_path)
+                        self._log_to_system("INFO", f"Temp restore file size: {temp_size} bytes")
                         
-                        # Step 2: Move restored database to current name
-                        os.rename(temp_restore_path, self.db_path)
+                        # Connect to the restored database (source)
+                        self._log_to_system("INFO", f"Connecting to source database: {temp_restore_path}")
+                        source_conn = sqlite3.connect(temp_restore_path)
                         
-                        # Step 3: Clean up the old database backup
-                        if os.path.exists(current_db_backup):
-                            try:
-                                os.remove(current_db_backup)
-                            except OSError:
-                                # If we can't delete it, that's ok - the important part worked
-                                logger.warning(f"Could not clean up old database backup: {current_db_backup}")
+                        # Verify source database has tables
+                        source_tables = source_conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
+                        self._log_to_system("INFO", f"Source database has {source_tables} tables")
                         
-                        break  # Success!
+                        # Connect to the current database (destination)
+                        self._log_to_system("INFO", f"Connecting to destination database: {self.db_path}")
+                        dest_conn = sqlite3.connect(self.db_path)
                         
-                    except OSError as e:
-                        # If we failed, try to restore the original database
-                        if os.path.exists(current_db_backup) and not os.path.exists(self.db_path):
-                            try:
-                                os.rename(current_db_backup, self.db_path)
-                            except OSError:
-                                pass  # Best effort recovery
+                        # Check destination database before backup
+                        dest_tables_before = dest_conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
+                        self._log_to_system("INFO", f"Destination database has {dest_tables_before} tables before backup")
                         
-                        if attempt == max_retries - 1:
-                            raise Exception(f"Failed to replace database after {max_retries} attempts: {e}. Original database should be restored.")
+                        # Start backup process - this copies all data from source to destination
+                        self._log_to_system("INFO", "Starting SQLite backup API operation")
                         
-                        # Force garbage collection and wait before retry
+                        if progress_callback:
+                            progress_callback(70, "Replacing database contents...")
+                        
+                        # Use SQLite's backup API to replace all data
+                        # Note: source.backup(target) copies FROM source TO target
+                        try:
+                            source_conn.backup(dest_conn)
+                            self._log_to_system("INFO", "SQLite backup API operation completed")
+                        except Exception as backup_api_error:
+                            self._log_to_system("ERROR", f"SQLite backup API failed: {backup_api_error}")
+                            raise backup_api_error
+                        
+                        # Verify backup worked
+                        dest_tables_after = dest_conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
+                        self._log_to_system("INFO", f"Destination database now has {dest_tables_after} tables after backup")
+                        
+                        self._log_to_system("INFO", "Database backup copy completed successfully")
+                        
+                    finally:
+                        # Ensure connections are closed
+                        if source_conn:
+                            source_conn.close()
+                        if dest_conn:
+                            dest_conn.close()
+                        
+                        # Clean up temp file
+                        try:
+                            if os.path.exists(temp_restore_path):
+                                os.remove(temp_restore_path)
+                                self._log_to_system("INFO", "Temporary restore file cleaned up")
+                        except OSError as cleanup_error:
+                            logger.warning(f"Could not clean up temp file: {cleanup_error}")
+                        
+                        # Force garbage collection
                         gc.collect()
-                        time.sleep(1.0)  # Longer wait for Windows to release locks
+                        time.sleep(1.0)
+                    
+                    # Step 3: Recreate SQLAlchemy engine
+                    engine.dispose()
+                    
+                    if progress_callback:
+                        progress_callback(90, "Testing database connection...")
+                    
+                    # Test the database connection
+                    test_conn = engine.connect()
+                    test_conn.execute(text("SELECT 1"))
+                    test_conn.close()
+                    
+                    self._log_to_system("INFO", "Database replacement completed successfully using backup API")
+                    
+                except Exception as backup_error:
+                    self._log_to_system("ERROR", f"SQLite backup API failed: {backup_error}")
+                    raise Exception(f"Database replacement failed: {backup_error}")
                 
                 # Get backup info for logging
                 backup_size = backup_path.stat().st_size
@@ -1320,10 +1412,25 @@ class RetentionService:
                 # Log successful restoration
                 self._log_to_system("INFO", f"Database restored from {filename} ({backup_size_mb} MB)")
                 
+                if progress_callback:
+                    progress_callback(95, "Finalizing restore...")
+                    
+                # Clear maintenance mode
+                self.database_manager.set_system_setting("maintenance_mode", "false")
+                self.database_manager.set_system_setting("maintenance_reason", "")
+                self._log_to_system("INFO", "Maintenance mode disabled - backup restore completed successfully")
+                
+                if progress_callback:
+                    progress_callback(100, "Restore completed successfully!")
+                    
+                # Get safety backup filename for message
+                safety_backup_filename = safety_backup_result.get("filename", "safety backup")
+                
                 return {
                     "success": True,
-                    "message": f"Database successfully restored from {filename}",
-                    "safety_backup": safety_backup_result["backup_path"],
+                    "message": "Database restored successfully. Safety backup created.",
+                    "safety_backup": safety_backup_result.get("backup_path", ""),
+                    "safety_backup_filename": safety_backup_filename,
                     "restored_from": filename,
                     "restored_size_mb": backup_size_mb
                 }
@@ -1337,6 +1444,14 @@ class RetentionService:
                     except OSError as cleanup_error:
                         logger.warning(f"Failed to clean up temp file {temp_restore_path}: {cleanup_error}")
                 
+                # Clear maintenance mode on error
+                try:
+                    self.database_manager.set_system_setting("maintenance_mode", "false")
+                    self.database_manager.set_system_setting("maintenance_reason", "")
+                    self._log_to_system("INFO", "Maintenance mode disabled - backup restore failed")
+                except Exception as maintenance_error:
+                    logger.warning(f"Failed to clear maintenance mode: {maintenance_error}")
+                
                 self._log_to_system("ERROR", f"Database restore failed: {str(restore_error)}")
                 return {
                     "success": False,
@@ -1347,6 +1462,15 @@ class RetentionService:
         except Exception as e:
             logger.error(f"Failed to restore backup {filename}: {e}")
             self._log_to_system("ERROR", f"Failed to restore backup {filename}: {str(e)}")
+            
+            # Clear maintenance mode on any error
+            try:
+                self.database_manager.set_system_setting("maintenance_mode", "false")
+                self.database_manager.set_system_setting("maintenance_reason", "")
+                self._log_to_system("INFO", "Maintenance mode disabled - backup restore error")
+            except Exception as maintenance_error:
+                logger.warning(f"Failed to clear maintenance mode: {maintenance_error}")
+            
             return {
                 "success": False,
                 "error": str(e)

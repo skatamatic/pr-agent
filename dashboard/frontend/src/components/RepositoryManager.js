@@ -32,6 +32,7 @@ import { ToastContext } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
 import PrAgentConfigEditor from './PrAgentConfigEditor';
 import { formatTimestamp } from '../utils/timeUtils';
+import GitHubActionConfigEditor from './GitHubActionConfigEditor';
 
 const RepositoryManager = () => {
   const [repositories, setRepositories] = useState([]);
@@ -82,6 +83,12 @@ const RepositoryManager = () => {
   const [showPrAgentConfigEditor, setShowPrAgentConfigEditor] = useState(null);
   const [loadingPrAgentConfig, setLoadingPrAgentConfig] = useState(new Set());
   const [checkingPrStatus, setCheckingPrStatus] = useState(new Set());
+  
+  // GitHub Action config states
+  const [githubActionConfigData, setGithubActionConfigData] = useState({});
+  const [showGithubActionConfigEditor, setShowGithubActionConfigEditor] = useState(null);
+  const [loadingGithubActionConfig, setLoadingGithubActionConfig] = useState(new Set());
+  const [checkingGithubActionPrStatus, setCheckingGithubActionPrStatus] = useState(new Set());
 
   const fetchRepositories = useCallback(async () => {
     try {
@@ -930,6 +937,120 @@ const RepositoryManager = () => {
     }
   };
 
+  // GitHub Action config functions
+  const loadGithubActionConfig = async (repoId, forceRefresh = false) => {
+    if (loadingGithubActionConfig.has(repoId) && !forceRefresh) return;
+    
+    try {
+      setLoadingGithubActionConfig(prev => new Set([...prev, repoId]));
+      const response = await api.get(`/api/repositories/${repoId}/github-action-config?force_refresh=${forceRefresh}`);
+      
+      const data = response.data.data;
+      setGithubActionConfigData(prev => ({
+        ...prev,
+        [repoId]: data
+      }));
+
+      // If there's a pending PR, check its status automatically
+      if (data.has_pending_pr && data.pr_number) {
+        // Check PR status after a short delay to avoid overwhelming the API
+        setTimeout(() => {
+          checkGithubActionConfigPRStatus(repoId);
+        }, 1000);
+      }
+    } catch (error) {
+      console.error('Error loading GitHub Action config:', error);
+      showError('Error', 'Failed to load GitHub Action configuration');
+    } finally {
+      setLoadingGithubActionConfig(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(repoId);
+        return newSet;
+      });
+    }
+  };
+
+  const openGithubActionConfigEditor = (repoId) => {
+    setShowGithubActionConfigEditor(repoId);
+  };
+
+  const closeGithubActionConfigEditor = () => {
+    setShowGithubActionConfigEditor(null);
+  };
+
+  const handleGithubActionConfigSave = async (result) => {
+    if (result.pr_created) {
+      // Update the GitHub Action config data with PR info
+      setGithubActionConfigData(prev => ({
+        ...prev,
+        [showGithubActionConfigEditor]: {
+          ...prev[showGithubActionConfigEditor],
+          has_pending_pr: true,
+          pr_number: result.pr_number,
+          pr_url: result.pr_url,
+          branch_name: result.branch_name
+        }
+      }));
+    }
+    closeGithubActionConfigEditor();
+  };
+
+  const checkGithubActionConfigPRStatus = async (repoId) => {
+    if (checkingGithubActionPrStatus.has(repoId)) return;
+    
+    const configData = githubActionConfigData[repoId];
+    if (!configData?.pr_number) {
+      console.warn('No PR number found for GitHub Action config');
+      return;
+    }
+    
+    try {
+      setCheckingGithubActionPrStatus(prev => new Set([...prev, repoId]));
+      
+      const response = await api.post(`/api/repositories/${repoId}/github-action-config/check-pr-status`, {
+        pr_number: configData.pr_number
+      });
+      
+      const statusData = response.data.data;
+      
+      if (statusData.status === 'merged') {
+        showSuccess('PR Merged!', 'GitHub Action config PR was merged. Configuration is now active.');
+        // Update local state
+        setGithubActionConfigData(prev => ({
+          ...prev,
+          [repoId]: {
+            ...prev[repoId],
+            has_pending_pr: false,
+            pr_status: 'merged'
+          }
+        }));
+        // Refresh the config data
+        await loadGithubActionConfig(repoId, true);
+      } else if (statusData.status === 'closed') {
+        showSuccess('PR Closed', 'GitHub Action config PR was closed without merging.');
+        // Update local state
+        setGithubActionConfigData(prev => ({
+          ...prev,
+          [repoId]: {
+            ...prev[repoId],
+            has_pending_pr: false,
+            pr_status: 'closed'
+          }
+        }));
+      }
+      // If still pending, no action needed
+    } catch (error) {
+      console.error('Error checking GitHub Action PR status:', error);
+      showError('Error', 'Failed to check GitHub Action PR status');
+    } finally {
+      setCheckingGithubActionPrStatus(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(repoId);
+        return newSet;
+      });
+    }
+  };
+
   // Get overall repository status for the main badge
   const getRepositoryStatus = (repo) => {
     // If repository is not active, show as disabled
@@ -1546,20 +1667,28 @@ const RepositoryManager = () => {
                             <span>General</span>
                           </button>
                           
-                          {/* Features Tab - Disabled if no auth token */}
+                          {/* GitHub Action Config Tab - Disabled if no auth token or not GitHub */}
                           <button
-                            onClick={() => getTokenStatus(repo) === 'configured' && setRepoActiveTab(repo.id, 'features')}
-                            disabled={getTokenStatus(repo) !== 'configured'}
+                            onClick={() => {
+                              if (getTokenStatus(repo) === 'configured' && repo.provider === 'github') {
+                                setRepoActiveTab(repo.id, 'github-action-config');
+                                // Auto-fetch GitHub Action config if not already loaded
+                                if (!githubActionConfigData[repo.id] && !loadingGithubActionConfig.has(repo.id)) {
+                                  loadGithubActionConfig(repo.id);
+                                }
+                              }
+                            }}
+                            disabled={getTokenStatus(repo) !== 'configured' || repo.provider !== 'github'}
                             className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                              getTokenStatus(repo) !== 'configured'
+                              getTokenStatus(repo) !== 'configured' || repo.provider !== 'github'
                                 ? 'text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-50'
-                                : getRepoActiveTab(repo.id) === 'features'
+                                : getRepoActiveTab(repo.id) === 'github-action-config'
                                 ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
                                 : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
                             }`}
                           >
-                            <Settings className="h-4 w-4 mr-2" />
-                            <span>Features</span>
+                            <Server className="h-4 w-4 mr-2" />
+                            <span>GitHub Action</span>
                           </button>
                           
                           {/* Best Practices Tab - Disabled if no auth token */}
@@ -2021,66 +2150,165 @@ const RepositoryManager = () => {
                           </div>
                         )}
 
-                        {/* Features Tab (renamed from Configuration) */}
-                        {getRepoActiveTab(repo.id) === 'features' && (
+                        {/* GitHub Action Config Tab */}
+                        {getRepoActiveTab(repo.id) === 'github-action-config' && (
                           <div className="space-y-6 tab-enter">
-                            <div className="bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-lg p-6 border border-green-200 dark:border-green-700">
-                              <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4 flex items-center">
-                                <Settings className="h-5 w-5 mr-2 text-green-600 dark:text-green-400" />
-                                Feature Configuration
-                              </h4>
-                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                                {[
-                                  { key: 'monitor_prs', label: 'Monitor PRs', description: 'Watch pull requests' },
-                                  { key: 'monitor_issues', label: 'Monitor Issues', description: 'Watch issues' },
-                                  { key: 'auto_review', label: 'Auto Review', description: 'Automatically review PRs' },
-                                  { key: 'auto_describe', label: 'Auto Describe', description: 'Generate PR descriptions' },
-                                  { key: 'auto_improve', label: 'Auto Improve', description: 'Suggest improvements' }
-                                ].map(({ key, label, description }) => {
-                                  const isEnabled = formData[key];
-                                  const isEditing = editingRepo === repo.id;
+                            <div className="space-y-6">
+                              <div className="flex items-center justify-between">
+                                <h4 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
+                                  <Server className="h-5 w-5 mr-2 text-blue-600 dark:text-blue-400" />
+                                  GitHub Action Configuration
+                                </h4>
+                                <div className="flex items-center space-x-2">
+                                  {/* PR Status Display */}
+                                  {githubActionConfigData[repo.id]?.has_pending_pr && (
+                                    <div className="flex items-center bg-yellow-50 dark:bg-yellow-900/20 text-yellow-800 dark:text-yellow-200 px-3 py-1 rounded-lg border border-yellow-200 dark:border-yellow-700 mr-2">
+                                      <GitBranch className="h-4 w-4 mr-1" />
+                                      <span className="text-sm font-medium">
+                                        {checkingGithubActionPrStatus.has(repo.id) ? (
+                                          <>
+                                            <RefreshCw className="h-3 w-3 animate-spin inline mr-1" />
+                                            Checking PR #{githubActionConfigData[repo.id].pr_number}...
+                                          </>
+                                        ) : (
+                                          <>
+                                            PR #{githubActionConfigData[repo.id].pr_number} Pending
+                                          </>
+                                        )}
+                                      </span>
+                                      <a 
+                                        href={githubActionConfigData[repo.id].pr_url} 
+                                        target="_blank" 
+                                        rel="noopener noreferrer"
+                                        className="ml-1 hover:text-yellow-900 dark:hover:text-yellow-100"
+                                      >
+                                        <ExternalLink className="h-3 w-3" />
+                                      </a>
+                                      <button
+                                        onClick={() => checkGithubActionConfigPRStatus(repo.id)}
+                                        disabled={checkingGithubActionPrStatus.has(repo.id)}
+                                        className="ml-2 hover:text-yellow-900 dark:hover:text-yellow-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        title={checkingGithubActionPrStatus.has(repo.id) ? "Checking..." : "Check PR status"}
+                                      >
+                                        <RefreshCw className={`h-3 w-3 ${checkingGithubActionPrStatus.has(repo.id) ? 'animate-spin' : ''}`} />
+                                      </button>
+                                    </div>
+                                  )}
                                   
-                                  return (
-                                    <div
-                                      key={key}
-                                      onClick={() => isEditing && setFormData({ ...formData, [key]: !formData[key] })}
-                                      className={`relative p-4 rounded-lg border-2 transition-all duration-300 ${
-                                        isEnabled
-                                          ? `border-green-300 dark:border-green-600 bg-gradient-to-br from-green-50 to-green-100 dark:from-green-900/30 dark:to-green-800/30 ${
-                                              isEditing ? 'shadow-lg shadow-green-200/40 dark:shadow-green-400/20' : ''
-                                            }`
-                                          : `border-gray-200 dark:border-gray-700 bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-800/50 dark:to-gray-700/50 ${
-                                              isEditing ? 'shadow-lg shadow-gray-200/40 dark:shadow-gray-400/20' : ''
-                                            }`
-                                      } ${
-                                        isEditing 
-                                          ? 'cursor-pointer hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-2xl hover:-translate-y-1 transform shadow-lg' 
-                                          : 'cursor-default shadow-sm'
-                                      }`}
-                                    >
-
-
-                                      {/* Feature Info */}
-                                      <div>
-                                        <h4 className={`text-base font-medium transition-colors ${
-                                          isEnabled
-                                            ? 'text-green-800 dark:text-green-200'
-                                            : 'text-gray-700 dark:text-gray-300'
-                                        }`}>
-                                          {label}
-                                        </h4>
-                                        <p className={`text-sm mt-1 transition-colors ${
-                                          isEnabled
-                                            ? 'text-green-600 dark:text-green-300'
-                                            : 'text-gray-500 dark:text-gray-400'
-                                        }`}>
-                                          {description}
-                                        </p>
+                                  <button
+                                    onClick={() => loadGithubActionConfig(repo.id, true)}
+                                    disabled={loadingGithubActionConfig.has(repo.id)}
+                                    className="flex items-center px-3 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    <RefreshCw className={`h-4 w-4 mr-2 ${loadingGithubActionConfig.has(repo.id) ? 'animate-spin' : ''}`} />
+                                    {loadingGithubActionConfig.has(repo.id) ? 'Loading...' : 'Refresh'}
+                                  </button>
+                                  <button
+                                    onClick={() => openGithubActionConfigEditor(repo.id)}
+                                    className="flex items-center px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                  >
+                                    <Edit className="h-4 w-4 mr-2" />
+                                    {githubActionConfigData[repo.id]?.exists ? 'Edit' : 'Create'}
+                                  </button>
+                                </div>
+                              </div>
+                              
+                              {/* Loading State */}
+                              {loadingGithubActionConfig.has(repo.id) ? (
+                                <div className="flex items-center justify-center py-8">
+                                  <RefreshCw className="h-6 w-6 text-blue-600 dark:text-blue-400 animate-spin mr-3" />
+                                  <span className="text-gray-600 dark:text-gray-400">Loading GitHub Action configuration...</span>
+                                </div>
+                              ) : githubActionConfigData[repo.id]?.error ? (
+                                <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+                                  <div className="flex items-center">
+                                    <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 mr-3" />
+                                    <div>
+                                      <h5 className="font-medium text-red-800 dark:text-red-200">Error Loading Configuration</h5>
+                                      <p className="text-red-700 dark:text-red-300 text-sm mt-1">{githubActionConfigData[repo.id].error}</p>
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : githubActionConfigData[repo.id]?.exists ? (
+                                /* Configuration Exists */
+                                <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-6">
+                                  <div className="flex items-center mb-4">
+                                    <Check className="h-6 w-6 text-green-600 dark:text-green-400 mr-3" />
+                                    <div>
+                                      <h5 className="font-medium text-green-800 dark:text-green-200">Configuration Found</h5>
+                                      <p className="text-green-700 dark:text-green-300 text-sm">
+                                        GitHub Action configuration exists at <code className="bg-green-100 dark:bg-green-800 px-1 rounded">.github/pr_agent.yml</code>
+                                      </p>
+                                    </div>
+                                  </div>
+                                  
+                                  {githubActionConfigData[repo.id]?.env_vars && (
+                                    <div className="mt-4">
+                                      <h6 className="text-sm font-medium text-green-800 dark:text-green-200 mb-2">
+                                        Environment Variables ({Object.keys(githubActionConfigData[repo.id].env_vars).length})
+                                      </h6>
+                                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 text-xs max-h-64 overflow-y-auto">
+                                        {Object.entries(githubActionConfigData[repo.id].env_vars).map(([key, value]) => (
+                                          <div key={key} className="bg-green-100 dark:bg-green-800/50 px-2 py-1 rounded flex items-center justify-between">
+                                            <span className="font-mono text-green-900 dark:text-green-100 truncate flex-1">{key}</span>
+                                            {value && value !== key && (
+                                              <span className="ml-2 text-green-700 dark:text-green-300 text-xs truncate max-w-20" title={value}>
+                                                {value.length > 15 ? `${value.substring(0, 15)}...` : value}
+                                              </span>
+                                            )}
+                                          </div>
+                                        ))}
                                       </div>
                                     </div>
-                                  );
-                                })}
-                              </div>
+                                  )}
+                                </div>
+                              ) : githubActionConfigData[repo.id] !== undefined ? (
+                                /* No Configuration */
+                                <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-lg p-6 border border-blue-200 dark:border-blue-700">
+                                  <div className="flex items-center mb-4">
+                                    <Server className="h-6 w-6 text-blue-600 dark:text-blue-400 mr-3" />
+                                    <div>
+                                      <h5 className="font-medium text-blue-800 dark:text-blue-200">No Configuration Found</h5>
+                                      <p className="text-blue-700 dark:text-blue-300 text-sm">
+                                        Create a GitHub Action workflow to automate PR-Agent tasks
+                                      </p>
+                                    </div>
+                                  </div>
+                                  
+                                  <div className="bg-blue-100 dark:bg-blue-800/30 rounded-lg p-4 mt-4">
+                                    <div className="text-sm text-blue-800 dark:text-blue-200 space-y-2">
+                                      <p className="font-medium">What this will create:</p>
+                                      <ul className="space-y-1 ml-4">
+                                        <li className="flex items-center">
+                                          <Check className="h-3 w-3 mr-2 text-blue-600 dark:text-blue-400" />
+                                          GitHub Actions workflow file at <code className="bg-blue-200 dark:bg-blue-700 px-1 rounded">.github/pr_agent.yml</code>
+                                        </li>
+                                        <li className="flex items-center">
+                                          <Check className="h-3 w-3 mr-2 text-blue-600 dark:text-blue-400" />
+                                          Configurable environment variables for PR-Agent
+                                        </li>
+                                        <li className="flex items-center">
+                                          <Check className="h-3 w-3 mr-2 text-blue-600 dark:text-blue-400" />
+                                          Support for GitHub secrets and context variables
+                                        </li>
+                                        <li className="flex items-center">
+                                          <Check className="h-3 w-3 mr-2 text-blue-600 dark:text-blue-400" />
+                                          Automated PR reviews, descriptions, and improvements
+                                        </li>
+                                      </ul>
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                /* Default - Not Loaded Yet */
+                                <div className="text-center py-8">
+                                  <Server className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500 mb-4" />
+                                  <h5 className="text-lg font-medium text-gray-900 dark:text-white mb-2">GitHub Action Configuration</h5>
+                                  <p className="text-gray-500 dark:text-gray-400 mb-4">
+                                    Click "Refresh" to check for GitHub Action configuration in your repository.
+                                  </p>
+                                </div>
+                              )}
                             </div>
                           </div>
                         )}
@@ -2466,6 +2694,16 @@ const RepositoryManager = () => {
           isOpen={true}
           onClose={closePrAgentConfigEditor}
           onSave={handlePrAgentConfigSave}
+        />
+      )}
+
+      {/* GitHub Action Config Editor Modal */}
+      {showGithubActionConfigEditor && (
+        <GitHubActionConfigEditor
+          repoId={showGithubActionConfigEditor}
+          repoData={repositories.find(r => r.id === showGithubActionConfigEditor)}
+          onClose={closeGithubActionConfigEditor}
+          onSave={handleGithubActionConfigSave}
         />
       )}
 

@@ -146,6 +146,12 @@ class RepositoryDB(Base):
     pr_agent_config_pr_branch = Column(String, nullable=True)  # Branch name for pending PR
     pr_agent_config_pr_status = Column(String, nullable=True)  # "pending", "merged", "closed"
     
+    # GitHub Action config tracking
+    github_action_config_pr_url = Column(String, nullable=True)  # Pending PR URL
+    github_action_config_pr_number = Column(Integer, nullable=True)  # Pending PR number
+    github_action_config_pr_branch = Column(String, nullable=True)  # Branch name for pending PR
+    github_action_config_pr_status = Column(String, nullable=True)  # "pending", "merged", "closed"
+    
     # Monitoring settings
     monitor_prs = Column(Boolean, default=True)
     monitor_issues = Column(Boolean, default=False)
@@ -589,6 +595,12 @@ class Repository(BaseModel):
     pr_agent_config_pr_number: Optional[int] = Field(default=None, description="Pending PR-Agent config PR number")
     pr_agent_config_pr_branch: Optional[str] = Field(default=None, description="Pending PR-Agent config PR branch")
     pr_agent_config_pr_status: Optional[str] = Field(default=None, description="Pending PR status: pending, merged, closed")
+    
+    # GitHub Action config tracking
+    github_action_config_pr_url: Optional[str] = Field(default=None, description="Pending GitHub Action config PR URL")
+    github_action_config_pr_number: Optional[int] = Field(default=None, description="Pending GitHub Action config PR number")
+    github_action_config_pr_branch: Optional[str] = Field(default=None, description="Pending GitHub Action config PR branch")
+    github_action_config_pr_status: Optional[str] = Field(default=None, description="Pending GitHub Action config PR status: pending, merged, closed")
     
     # Monitoring settings
     monitor_prs: bool = Field(default=True, description="Monitor pull requests")

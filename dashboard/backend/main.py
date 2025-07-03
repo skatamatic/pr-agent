@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, status
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
@@ -22,6 +22,7 @@ from services.config_service import ConfigService
 from services.repository_service import RepositoryService
 from services.robust_cached_job_service import get_robust_cached_job_service
 from services.auth_service import AuthService
+from services.github_action_config_service import GitHubActionConfigService
 from database import DatabaseManager, SessionLocal
 from services.notification_service import NotificationService
 from services.retention_service import RetentionService
@@ -74,6 +75,7 @@ class DashboardApplication:
             self.cached_job_service = get_robust_cached_job_service(self.notification_service)
             self.retention_service = RetentionService(self.database_manager)
             self.auth_service = AuthService()
+            self.github_action_config_service = GitHubActionConfigService()
             self.security = HTTPBearer(auto_error=False)
             
             # Setup application
@@ -142,12 +144,43 @@ class DashboardApplication:
             return current_user
         return require_auth
     
+    def check_maintenance_mode_dependency(self):
+        """Create a dependency that checks for maintenance mode"""
+        
+        async def check_maintenance_mode(request: Request = None):
+            # Always allow health check endpoints even during maintenance
+            if request:
+                path = request.url.path
+                if path.startswith("/api/health") or path in ["/api/status"]:
+                    return
+            
+            try:
+                maintenance_mode = self.database_manager.get_system_setting("maintenance_mode")
+                if maintenance_mode and maintenance_mode.lower() == "true":
+                    maintenance_reason = self.database_manager.get_system_setting("maintenance_reason") or "System maintenance in progress"
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"Service temporarily unavailable: {maintenance_reason}"
+                    )
+            except HTTPException:
+                raise  # Re-raise HTTP exceptions
+            except Exception as e:
+                # If we can't check maintenance mode (e.g., during database replacement), assume maintenance
+                logger.warning(f"Failed to check maintenance mode: {e}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Service temporarily unavailable: Database maintenance in progress"
+                )
+        
+        return check_maintenance_mode
+    
     def _setup_routes(self):
         """Setup all API routes using service methods"""
         
         # Create dependency functions
         get_current_user = self.get_current_user_dependency()
         require_auth = self.require_auth_dependency()
+        check_maintenance_mode = self.check_maintenance_mode_dependency()
         
         # Authentication endpoints (no auth required)
         @self.app.post("/api/auth/login")
@@ -277,7 +310,9 @@ class DashboardApplication:
             status: Optional[str] = None,
             repo: Optional[str] = None,
             db: Session = Depends(get_db),
-            current_user: UserDB = Depends(require_auth)
+            current_user: UserDB = Depends(require_auth),
+            request: Request = None,
+            _: None = Depends(check_maintenance_mode)
         ):
             operations = await self.cached_job_service.get_operations(
                 limit=limit,
@@ -301,7 +336,9 @@ class DashboardApplication:
             status: Optional[str] = None,
             job_type: Optional[str] = None,
             repository: Optional[str] = None,
-            ensure_counts: bool = True
+            ensure_counts: bool = True,
+            request: Request = None,
+            _: None = Depends(check_maintenance_mode)
         ):
             jobs = await self.cached_job_service.get_jobs(
                 limit=limit, 
@@ -795,7 +832,9 @@ class DashboardApplication:
             repo: Optional[str] = None,
             job_id: Optional[str] = None,
             operation_id: Optional[str] = None,
-            db: Session = Depends(get_db)
+            db: Session = Depends(get_db),
+            request: Request = None,
+            _: None = Depends(check_maintenance_mode)
         ):
             logs = await self.cached_job_service.get_logs(
                 limit=limit,
@@ -2191,6 +2230,220 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 logger.error(f"Error checking PR-Agent config PR status for repository {repo_id}: {e}")
                 raise HTTPException(status_code=500, detail=f"Error checking PR status: {str(e)}")
         
+        # GitHub Action Config endpoints
+        @self.app.get("/api/repositories/{repo_id}/github-action-config")
+        async def get_repository_github_action_config(repo_id: int, force_refresh: bool = False, db: Session = Depends(get_db)):
+            """Get GitHub Action configuration for a repository"""
+            try:
+                # Get repository (using same approach as PR-Agent config endpoint)
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                # Convert to dict for service
+                repo_data = {
+                    'id': repo.id,
+                    'name': repo.name,
+                    'provider': repo.provider,
+                    'url': repo.url,
+                    'github_token': repo.github_token
+                }
+                
+                # Check GitHub Action config
+                result = await self.github_action_config_service.check_github_action_config(repo_data)
+                
+                if result['exists']:
+                    # Parse the YAML content
+                    parse_result = self.github_action_config_service.parse_yaml_config(result['decoded_content'])
+                    
+                    if parse_result['success']:
+                        return APIResponse(
+                            data={
+                                'exists': True,
+                                'content': result['decoded_content'],
+                                'env_vars': parse_result['env_vars'],
+                                'config': parse_result['config'],
+                                'last_modified': result['last_modified'],
+                                'path': result['path'],
+                                'sha': result['sha'],
+                                'has_pending_pr': repo.github_action_config_pr_status == 'pending',
+                                'pr_number': repo.github_action_config_pr_number,
+                                'pr_url': repo.github_action_config_pr_url,
+                                'pr_status': repo.github_action_config_pr_status
+                            },
+                            message="GitHub Action configuration retrieved"
+                        )
+                    else:
+                        return APIResponse(
+                            data={
+                                'exists': True,
+                                'content': result['decoded_content'],
+                                'error': parse_result['error'],
+                                'last_modified': result['last_modified'],
+                                'path': result['path'],
+                                'has_pending_pr': repo.github_action_config_pr_status == 'pending',
+                                'pr_number': repo.github_action_config_pr_number,
+                                'pr_url': repo.github_action_config_pr_url,
+                                'pr_status': repo.github_action_config_pr_status
+                            },
+                            message="GitHub Action configuration found but could not be parsed"
+                        )
+                else:
+                    # Return template for creation
+                    template = self.github_action_config_service.get_default_config_template()
+                    env_vars = self.github_action_config_service.get_github_action_env_vars()
+                    
+                    return APIResponse(
+                        data={
+                            'exists': False,
+                            'template': template,
+                            'env_vars': env_vars,
+                            'error': result.get('error', 'Configuration not found'),
+                            'has_pending_pr': repo.github_action_config_pr_status == 'pending',
+                            'pr_number': repo.github_action_config_pr_number,
+                            'pr_url': repo.github_action_config_pr_url,
+                            'pr_status': repo.github_action_config_pr_status
+                        },
+                        message="GitHub Action configuration not found"
+                    )
+                    
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error getting GitHub Action config for repository {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Error retrieving configuration: {str(e)}")
+
+        @self.app.put("/api/repositories/{repo_id}/github-action-config")
+        async def update_repository_github_action_config(repo_id: int, content_data: dict, db: Session = Depends(get_db)):
+            """Update GitHub Action configuration for a repository"""
+            try:
+                # Get repository (using same approach as PR-Agent config endpoint)
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                # Validate required fields
+                if 'env_vars' not in content_data:
+                    raise HTTPException(status_code=400, detail="Environment variables are required")
+                
+                # Convert to dict for service
+                repo_data = {
+                    'id': repo.id,
+                    'name': repo.name,
+                    'provider': repo.provider,
+                    'url': repo.url,
+                    'github_token': repo.github_token
+                }
+                
+                # Generate YAML config from environment variables
+                config_content = self.github_action_config_service.generate_yaml_config(content_data['env_vars'])
+                
+                # Create PR with the configuration
+                result = await self.github_action_config_service.create_github_action_config_pr(repo_data, config_content, db)
+                
+                if result['success']:
+                    return APIResponse(
+                        data={
+                            'pr_created': True,
+                            'pr_number': result['pr_number'],
+                            'pr_url': result['pr_url'],
+                            'branch_name': result['branch_name']
+                        },
+                        message="GitHub Action configuration PR created successfully"
+                    )
+                else:
+                    raise HTTPException(status_code=500, detail=f"Failed to create PR: {result['error']}")
+                    
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error updating GitHub Action config for repository {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Error updating configuration: {str(e)}")
+
+        @self.app.post("/api/repositories/{repo_id}/github-action-config/check-pr-status")
+        async def check_github_action_config_pr_status(repo_id: int, request_data: dict, db: Session = Depends(get_db)):
+            """Check the status of a GitHub Action config pull request"""
+            try:
+                # Get repository (using same approach as PR-Agent config endpoint)
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                # Get PR number from request data
+                pr_number = request_data.get('pr_number')
+                if not pr_number:
+                    raise HTTPException(status_code=400, detail="PR number is required")
+                
+                # Set up git provider to check PR status
+                from pr_agent.git_providers.github_provider import GithubProvider
+                
+                if repo.provider == 'github' and repo.github_token:
+                    git_provider = GithubProvider()
+                    git_provider.github_token = repo.github_token
+                    git_provider.repo = repo.name
+                    git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
+                    
+                    try:
+                        # Get PR status
+                        pr = git_provider.repo_obj.get_pull(pr_number)
+                        
+                        if pr.state == "closed" and pr.merged:
+                            # PR was merged - update database
+                            repo.github_action_config_pr_status = 'merged'
+                            db.commit()
+                            logger.info(f"GitHub Action config PR #{pr_number} for {repo.name} was merged")
+                            return APIResponse(data={"status": "merged"}, message="PR was merged")
+                            
+                        elif pr.state == "closed" and not pr.merged:
+                            # PR was closed without merging - update database
+                            repo.github_action_config_pr_status = 'closed'
+                            db.commit()
+                            logger.info(f"GitHub Action config PR #{pr_number} for {repo.name} was closed")
+                            return APIResponse(data={"status": "closed"}, message="PR was closed without merging")
+                            
+                        else:
+                            # PR is still pending
+                            return APIResponse(data={"status": "pending"}, message="PR is still pending")
+                    
+                    except Exception as e:
+                        logger.error(f"Error checking GitHub Action config PR status for repository {repo_id}: {e}")
+                        raise HTTPException(status_code=500, detail=f"Error checking PR status: {str(e)}")
+                
+                else:
+                    raise HTTPException(status_code=400, detail=f"Repository provider {repo.provider} not supported or tokens not configured")
+                    
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error checking GitHub Action config PR status for repository {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Error checking PR status: {str(e)}")
+
+        @self.app.get("/api/repositories/{repo_id}/github-action-config/env-vars")
+        async def get_github_action_env_vars(repo_id: int):
+            """Get available GitHub Action environment variables"""
+            try:
+                env_vars = self.github_action_config_service.get_github_action_env_vars()
+                return APIResponse(
+                    data={'env_vars': env_vars},
+                    message="GitHub Action environment variables retrieved"
+                )
+            except Exception as e:
+                logger.error(f"Error getting GitHub Action env vars: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/repositories/{repo_id}/github-action-config/template")
+        async def get_github_action_config_template(repo_id: int):
+            """Get default GitHub Action configuration template"""
+            try:
+                template = self.github_action_config_service.get_default_config_template()
+                return APIResponse(
+                    data={'template': template},
+                    message="GitHub Action configuration template retrieved"
+                )
+            except Exception as e:
+                logger.error(f"Error getting GitHub Action template: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
         # Notification endpoints
         @self.app.get("/api/notifications/configs")
         async def get_notification_configs():
@@ -2569,15 +2822,60 @@ This file can override any setting from the global PR-Agent configuration, inclu
 
         @self.app.post("/api/admin/database/backups/{filename}/restore")
         async def restore_backup(filename: str):
-            """Restore database from a backup file"""
+            """Restore database from a backup file with progress updates"""
+            import asyncio
+            import concurrent.futures
+            
             try:
-                result = self.retention_service.restore_backup(filename)
+                # Send initial progress update
+                await self.websocket_manager.broadcast({
+                    "type": "backup_restore_progress",
+                    "progress": 0,
+                    "message": "Starting backup restore...",
+                    "filename": filename
+                })
+                
+                # Send initial status
+                await self.websocket_manager.broadcast({
+                    "type": "backup_restore_progress",
+                    "message": "Restoring database... This may take a few minutes.",
+                    "filename": filename
+                })
+                
+                # Run restore operation in thread pool
+                loop = asyncio.get_event_loop()
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    result = await loop.run_in_executor(
+                        executor, 
+                        self.retention_service.restore_backup, 
+                        filename, 
+                        None  # No progress callback
+                    )
+                
+                # Send completion update
+                await self.websocket_manager.broadcast({
+                    "type": "backup_restore_complete",
+                    "success": result["success"],
+                    "message": result.get("message", result.get("error", "Unknown result")),
+                    "filename": filename
+                })
+                
                 if result["success"]:
                     return APIResponse(data=result, message=result["message"])
                 else:
                     raise HTTPException(status_code=400, detail=result["error"])
+                    
             except Exception as e:
                 logger.error(f"Failed to restore backup: {e}")
+                
+                # Send error update
+                await self.websocket_manager.broadcast({
+                    "type": "backup_restore_complete",
+                    "success": False,
+                    "message": str(e),
+                    "filename": filename
+                })
+                
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.get("/api/admin/timezone/validate")

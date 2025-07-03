@@ -159,14 +159,20 @@ const apiService = {
   getRetentionConfig: () => api.get('/api/admin/retention/config'),
   updateRetentionConfig: (data) => api.post('/api/admin/retention/config', data),
   getDatabaseStats: () => api.get('/api/admin/database/stats'),
-  performCleanup: (dryRun = true) => api.post(`/api/admin/database/cleanup?dry_run=${dryRun}`),
-  createBackup: (compressed = true) => api.post(`/api/admin/database/backup?compressed=${compressed}`),
+  performCleanup: (dryRun = true) => api.post(`/api/admin/database/cleanup?dry_run=${dryRun}`, {}, { 
+    timeout: 180000 // 3 minutes timeout for cleanup operations
+  }),
+  createBackup: (compressed = true) => api.post(`/api/admin/database/backup?compressed=${compressed}`, {}, { 
+    timeout: 120000 // 2 minutes timeout for backup creation
+  }),
   getBackupList: () => api.get('/api/admin/database/backups'),
   getBackupDirectory: () => api.get('/api/admin/backup/directory'),
   setBackupDirectory: (directory) => api.post('/api/admin/backup/directory', { backup_directory: directory }),
   deleteBackup: (filename) => api.delete(`/api/admin/database/backups/${encodeURIComponent(filename)}`),
   deleteAllBackups: () => api.delete('/api/admin/database/backups'),
-  restoreBackup: (filename) => api.post(`/api/admin/database/backups/${encodeURIComponent(filename)}/restore`),
+  restoreBackup: (filename) => api.post(`/api/admin/database/backups/${encodeURIComponent(filename)}/restore`, {}, { 
+    timeout: 300000 // 5 minutes timeout for restore operations
+  }),
   exportData: (format = 'json', tables = null) => {
     return api.post('/api/admin/database/export', { 
       format: format,
