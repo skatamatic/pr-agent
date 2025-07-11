@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Dict, Any, Optional
 from config import settings
+from .system_settings_service import SystemSettingsService
 
 
 class ConfigService:
@@ -16,36 +17,39 @@ class ConfigService:
         # Store database manager (optional for now)
         self.database_manager = database_manager
         
-        # Initialize all configuration file paths
-        self.config_path = getattr(settings, 'pr_agent_config_path', None)
-        self.backup_path = getattr(settings, 'pr_agent_backup_path', None)
-        self.secrets_path = getattr(settings, 'pr_agent_secrets_path', None)
-        self.ignore_path = getattr(settings, 'pr_agent_ignore_path', None)
-        self.csharp_context_config_path = getattr(settings, 'csharp_context_config_path', None)
-        self.csharp_context_secrets_path = getattr(settings, 'csharp_context_secrets_path', None)
+        # Initialize system settings service
+        self.system_settings = SystemSettingsService(database_manager)
         
-        # Ensure all paths are Path objects with fallbacks
-        self._ensure_path_objects()
+        # Initialize all configuration file paths using effective PR-agent path
+        self._initialize_paths()
     
-    def _ensure_path_objects(self):
-        """Ensure all configuration paths are Path objects with fallbacks"""
-        base_path = Path("../pr_agent/settings")
+    def _initialize_paths(self):
+        """Initialize all configuration file paths using the effective PR-agent install path"""
+        # Get the effective PR-agent path (custom or default)
+        pr_agent_path = self.system_settings.get_effective_pr_agent_path()
+        base_path = Path(pr_agent_path) / "pr_agent" / "settings"
         
-        # Main configuration
-        if not self.config_path or not isinstance(self.config_path, Path):
-            self.config_path = Path(self.config_path) if self.config_path else base_path / "configuration.toml"
-        if not self.backup_path or not isinstance(self.backup_path, Path):
-            self.backup_path = Path(self.backup_path) if self.backup_path else base_path / "configuration.toml.backup"
-            
-        # Additional configuration files
-        if not self.secrets_path or not isinstance(self.secrets_path, Path):
-            self.secrets_path = Path(self.secrets_path) if self.secrets_path else base_path / "secrets.toml"
-        if not self.ignore_path or not isinstance(self.ignore_path, Path):
-            self.ignore_path = Path(self.ignore_path) if self.ignore_path else base_path / "ignore.toml"
-        if not self.csharp_context_config_path or not isinstance(self.csharp_context_config_path, Path):
-            self.csharp_context_config_path = Path(self.csharp_context_config_path) if self.csharp_context_config_path else base_path / "csharp_code_context.config.toml"
-        if not self.csharp_context_secrets_path or not isinstance(self.csharp_context_secrets_path, Path):
-            self.csharp_context_secrets_path = Path(self.csharp_context_secrets_path) if self.csharp_context_secrets_path else base_path / "csharp_code_context_secrets.toml"
+        # Initialize all configuration file paths
+        self.config_path = base_path / "configuration.toml"
+        self.backup_path = base_path / "configuration.toml.backup"
+        self.secrets_path = base_path / "secrets.toml"
+        self.ignore_path = base_path / "ignore.toml"
+        self.csharp_context_config_path = base_path / "csharp_code_context.config.toml"
+        self.csharp_context_secrets_path = base_path / "csharp_code_context_secrets.toml"
+    
+    def refresh_paths(self):
+        """Refresh all configuration paths (useful when PR-agent path changes)"""
+        self._initialize_paths()
+    
+    def validate_current_path(self) -> Dict[str, Any]:
+        """Validate the current PR-agent install path"""
+        current_path = self.system_settings.get_effective_pr_agent_path()
+        return self.system_settings.validate_pr_agent_path(current_path)
+    
+    def is_path_valid(self) -> bool:
+        """Check if the current PR-agent path is valid"""
+        validation = self.validate_current_path()
+        return validation.get('valid', False)
     
     def _load_toml_file(self, file_path: Optional[Path]) -> Dict[str, Any]:
         """Load a TOML file safely, returning empty dict if file doesn't exist or has errors"""

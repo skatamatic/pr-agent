@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Activity, CheckCircle, Clock, AlertCircle, Zap, GitPullRequest, TrendingUp, Server, Wifi, Database, ChevronDown, ChevronUp, Settings, GitBranch, Key, Shield, ExternalLink } from 'lucide-react';
+import { Activity, CheckCircle, Clock, AlertCircle, Zap, GitPullRequest, TrendingUp, Server, Wifi, Database, ChevronDown, ChevronUp, Settings, GitBranch, Key, Shield, ExternalLink, Monitor } from 'lucide-react';
 import apiService from '../services/api';
 import ViewHeader from './ViewHeader';
 
@@ -17,13 +17,14 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
   const [repositoryDetails, setRepositoryDetails] = useState([]);
   
   useEffect(() => {
-    fetchSystemStatus();
+    // Force fresh data on initial load
+    fetchSystemStatus(true);
     fetchRecentJobs();
     fetchIndividualHealthChecks();
     fetchRepositoryDetails();
     
     const interval = setInterval(() => {
-      fetchSystemStatus();
+      fetchSystemStatus(true); // Always force refresh for more reliable updates
       fetchRecentJobs();
       fetchRepositoryDetails();
     }, 10000); // Update every 10 seconds
@@ -77,20 +78,24 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
     }
   };
   
-  const fetchSystemStatus = async () => {
+  const fetchSystemStatus = async (forceRefresh = false) => {
     try {
+      const cacheBuster = forceRefresh ? `?_t=${Date.now()}` : '';
       const [healthRes, statusRes] = await Promise.all([
-        apiService.getSystemHealth().catch(() => ({ data: { status: 'unknown', services: {} } })),
+        apiService.get(`/api/health${cacheBuster}`).catch(() => ({ data: { status: 'unknown', services: {} } })),
         apiService.getRealtimeStatus().catch(() => ({ data: { operations: {}, services: {} } }))
       ]);
+      
+      console.log('System health fetched:', healthRes.data); // Debug logging
       
       setSystemHealth(healthRes.data);
       setRealtimeStatus(statusRes.data);
       
       // Auto-expand if there are critical issues (errors, not just warnings)
-      const hasErrors = Object.values(healthRes.data.services || {}).some(service => 
-        service.status && ['unhealthy', 'unreachable', 'misconfigured', 'error'].includes(service.status)
-      );
+      const hasErrors = Object.values(healthRes.data || {}).some((service, key) => {
+        if (key === 'overall') return false; // Skip overall in services check
+        return service.status && ['unhealthy', 'unreachable', 'misconfigured', 'error'].includes(service.status);
+      });
       if (hasErrors) {
         setHealthExpanded(true);
       }
@@ -242,11 +247,21 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
     const tokenIssues = analyzeTokenIssues();
     const hasTokenIssues = tokenIssues.missingTokens.length > 0 || tokenIssues.invalidTokens.length > 0;
     
+    // Use systemHealth directly since it contains the service statuses, not systemHealth.services
+    const backendServices = systemHealth ? {
+      database: systemHealth.database,
+      pr_agent_config: systemHealth.pr_agent_config,
+      context_service: systemHealth.context_service,
+      repositories: systemHealth.repositories
+    } : {};
+    
     // Combine backend health data with individual service health checks
     const allServices = {
-      ...(systemHealth?.services || {}),
+      ...backendServices,
       ...individualServiceHealth
     };
+    
+    console.log('System health status calculation:', { systemHealth, allServices }); // Debug logging
     
     // If we have token issues, ensure repositories service is marked as error
     if (hasTokenIssues && (!allServices.repositories || allServices.repositories.status !== 'error')) {
@@ -447,14 +462,28 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
     const unhealthy = data.unhealthy_repos || 0;
     const errorRepos = data.error_repos || [];
 
-    // Enhanced analysis using token issues
+    // Enhanced analysis using token issues and runner service status
     // hasTokenIssues already declared above
     
-    // Determine status with token awareness
+    // Count runner service issues from the error repos
+    const runnerServiceIssues = errorRepos.filter(repo => repo.service_name);
+    const hasRunnerServiceIssues = runnerServiceIssues.length > 0;
+    
+    // Determine status with comprehensive awareness
     let status, message, errorDetails, showTokenButton = false;
-    if (total === 0) {
+    if (total === 0 && data.message) {
+      // Handle case where no repositories have runner services configured
+      status = 'warning';
+      message = data.message; // e.g., "No repositories have runner services configured"
+      errorDetails = 'Configure runner services in Repository Management to monitor service health';
+    } else if (total === 0) {
       status = 'warning';
       message = 'No repositories configured';
+    } else if (hasTokenIssues && hasRunnerServiceIssues) {
+      status = 'error';
+      showTokenButton = true;
+      message = `Multiple issues affecting ${tokenIssues.missingTokens.length + tokenIssues.invalidTokens.length + runnerServiceIssues.length} repositories`;
+      errorDetails = `${tokenIssues.missingTokens.length + tokenIssues.invalidTokens.length} token issues, ${runnerServiceIssues.length} runner service issues`;
     } else if (hasTokenIssues) {
       status = 'error';
       showTokenButton = true;
@@ -468,9 +497,15 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
         message = `${tokenIssues.invalidTokens.length}/${total} repos have invalid tokens`;
         errorDetails = 'Check token permissions and expiration';
       }
+    } else if (hasRunnerServiceIssues) {
+      status = 'error';
+      message = `${healthy}/${total} runner services healthy`;
+      const serviceErrorNames = runnerServiceIssues.slice(0, 3).map(r => r.name).join(', ');
+      const serviceStatuses = runnerServiceIssues.slice(0, 3).map(r => r.status).join(', ');
+      errorDetails = `Service issues: ${serviceErrorNames} (${serviceStatuses})${runnerServiceIssues.length > 3 ? ` and ${runnerServiceIssues.length - 3} more` : ''}`;
     } else if (unhealthy === 0) {
       status = 'connected';
-      message = `All ${healthy}/${total} repositories healthy`;
+      message = total === 1 ? `Runner service healthy` : `All ${healthy}/${total} runner services healthy`;
     } else {
       status = 'error';
       message = `${healthy}/${total} repositories healthy`;
@@ -782,7 +817,7 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
                 {renderServiceStatus('database', 'Database', Database, 'SQLite storage')}
                 {renderServiceStatus('pr_agent_config', 'PR-Agent Config', Server, 'Configuration file')}
                 {renderServiceStatus('context_service', 'Context Service', Wifi, 'Code context API')}
-                {renderServiceStatus('repositories', 'Repository Runners', GitBranch, 'GitHub/Azure DevOps agents')}
+                {renderServiceStatus('repositories', 'Runner Services', Monitor, 'GitHub Actions & DevOps runners')}
               </div>
             </div>
           </div>

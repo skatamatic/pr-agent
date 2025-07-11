@@ -257,16 +257,48 @@ class RunnerHealthService:
     async def check_repository_runner_health(self, db: Session, repo: RepositoryDB) -> Dict[str, Any]:
         """Check runner health for a specific repository"""
         try:
+            # Check cloud runner status (GitHub Actions runner API or Azure DevOps)
+            cloud_runner_result = None
             if repo.provider == "github":
-                return await self._check_github_runner(repo)
+                cloud_runner_result = await self._check_github_runner(repo)
             elif repo.provider == "azure_devops":
-                return await self._check_azure_agent(repo)
+                cloud_runner_result = await self._check_azure_agent(repo)
             else:
-                return {
+                cloud_runner_result = {
                     "status": "unknown",
                     "error": f"Unsupported provider: {repo.provider}",
                     "last_seen": None
                 }
+            
+            # Check local service status if service name is configured
+            service_runner_result = None
+            if repo.runner_service_name:
+                service_runner_result = await self._check_local_runner_service(repo)
+            
+            # Combine results - prioritize service status for overall health
+            overall_status = cloud_runner_result.get("status", "unknown")
+            overall_error = cloud_runner_result.get("error")
+            overall_last_seen = cloud_runner_result.get("last_seen")
+            
+            # If we have service monitoring and it's more critical, use that
+            if service_runner_result:
+                service_status = service_runner_result.get("status", "unknown")
+                if service_status in ["stopped", "not_found", "error"]:
+                    # Service issues take precedence over cloud runner status
+                    overall_status = service_status
+                    overall_error = service_runner_result.get("error")
+                elif service_status == "running" and overall_status in ["stopped", "error"]:
+                    # Service is running but cloud runner shows issues
+                    overall_status = "warning"
+                    overall_error = f"Service running but {overall_error}"
+            
+            return {
+                "status": overall_status,
+                "error": overall_error,
+                "last_seen": overall_last_seen,
+                "cloud_runner": cloud_runner_result,
+                "service_runner": service_runner_result
+            }
         except Exception as e:
             logger.error(f"Error checking runner health for {repo.name}: {e}")
             return {
@@ -542,10 +574,68 @@ class RunnerHealthService:
                 "last_seen": None
             }
     
-    async def check_all_repositories(self, db: Session) -> Dict[str, Any]:
-        """Check runner health for all active repositories"""
+    async def _check_local_runner_service(self, repo: RepositoryDB) -> Dict[str, Any]:
+        """Check local Windows service runner status"""
         try:
-            repositories = db.query(RepositoryDB).filter(RepositoryDB.is_active == True).all()
+            from services.runner_service_monitor import RunnerServiceMonitor
+            monitor = RunnerServiceMonitor()
+            
+            # Check service status
+            service_status = monitor.check_service_status(repo.runner_service_name)
+            
+            # Map service status to repository health impact
+            status = service_status.get('status', 'unknown')
+            health_impact = monitor.get_service_health_impact(service_status)
+            
+            # Update repository with latest service information
+            repo.runner_service_status = status
+            repo.runner_service_last_checked = datetime.utcnow()
+            repo.runner_service_details = service_status
+            
+            # Update overall runner status based on service health impact
+            if health_impact == 'healthy':
+                repo.runner_status = 'running'
+                repo.runner_error = None
+            elif health_impact == 'warning':
+                repo.runner_status = 'warning'
+                repo.runner_error = f"Service {status}: {service_status.get('status_display', status)}"
+            else:  # error
+                repo.runner_status = 'error'
+                repo.runner_error = service_status.get('error') or f"Service {status}: {service_status.get('status_display', status)}"
+            
+            return {
+                "status": status,
+                "error": service_status.get('error'),
+                "last_seen": datetime.utcnow() if status == 'running' else None,
+                "service_name": repo.runner_service_name,
+                "details": service_status,
+                "health_impact": health_impact
+            }
+        except Exception as e:
+            logger.error(f"Error checking local runner service for {repo.name}: {e}")
+            # Update repository with error status
+            repo.runner_status = 'error'
+            repo.runner_error = f"Failed to check service: {str(e)}"
+            repo.runner_service_status = 'error'
+            repo.runner_service_last_checked = datetime.utcnow()
+            
+            return {
+                "status": "error",
+                "error": f"Failed to check service: {str(e)}",
+                "last_seen": None,
+                "service_name": repo.runner_service_name,
+                "health_impact": "error"
+            }
+    
+    async def check_all_repositories(self, db: Session) -> Dict[str, Any]:
+        """Check runner health for all active repositories with runner services configured"""
+        try:
+            # Only check repositories that have runner services configured
+            repositories = db.query(RepositoryDB).filter(
+                RepositoryDB.is_active == True,
+                RepositoryDB.runner_service_name.isnot(None),
+                RepositoryDB.runner_service_name != ""
+            ).all()
             
             results = {
                 "total_repos": len(repositories),
@@ -596,21 +686,39 @@ class RunnerHealthService:
     async def get_repository_health_summary(self, db: Session) -> Dict[str, Any]:
         """Get a summary of repository health status"""
         try:
-            repositories = db.query(RepositoryDB).filter(RepositoryDB.is_active == True).all()
+            # Only consider active repositories that have runner services configured
+            repositories = db.query(RepositoryDB).filter(
+                RepositoryDB.is_active == True,
+                RepositoryDB.runner_service_name.isnot(None),
+                RepositoryDB.runner_service_name != ""
+            ).all()
             
             total = len(repositories)
             healthy = len([r for r in repositories if r.runner_status == "running"])
             unhealthy = total - healthy
             
-            # Get error details
+            # Get error details - only for repos with configured runner services
             error_repos = []
             for repo in repositories:
                 if repo.runner_status != "running":
                     error_repos.append({
                         "name": repo.name,
                         "status": repo.runner_status or "unknown",
-                        "error": repo.runner_error
+                        "error": repo.runner_error,
+                        "service_name": repo.runner_service_name
                     })
+            
+            # If no repositories have runner services configured, that's not an error
+            if total == 0:
+                return {
+                    "total_repos": 0,
+                    "healthy_repos": 0,
+                    "unhealthy_repos": 0,
+                    "error_repos": [],
+                    "overall_status": "running",  # No runner services = no problems
+                    "message": "No repositories have runner services configured",
+                    "last_updated": datetime.utcnow().isoformat()
+                }
             
             return {
                 "total_repos": total,
@@ -802,7 +910,7 @@ class RunnerHealthService:
                         analysis["secrets_used"].append(secret_name)
                         
                     # Identify PR-Agent configuration overrides
-                    if key.startswith(("OPENAI_", "ANTHROPIC_", "GITHUB_", "PR_AGENT_", "CSHARP_CODE_CONTEXT_")):
+                    if key.startswith(("OPENAI_", "ANTHROPIC_", "GITHUB_", "PR_AGENT_", "CSHARP_CODE_CONTEXT_", "GITHUB_ACTION_CONFIG.")):
                         analysis["configuration_overrides"][key] = {
                             "value": "*** SECRET ***" if "${{ secrets." in str(value) else value,
                             "is_secret": "${{ secrets." in str(value),
@@ -822,7 +930,7 @@ class RunnerHealthService:
                             secret_name = value.split("secrets.")[1].split(" ")[0].rstrip("})")
                             analysis["secrets_used"].append(secret_name)
                             
-                        if key.startswith(("OPENAI_", "ANTHROPIC_", "GITHUB_", "PR_AGENT_", "CSHARP_CODE_CONTEXT_")):
+                        if key.startswith(("OPENAI_", "ANTHROPIC_", "GITHUB_", "PR_AGENT_", "CSHARP_CODE_CONTEXT_", "GITHUB_ACTION_CONFIG.")):
                             analysis["configuration_overrides"][key] = {
                                 "value": "*** SECRET ***" if "${{ secrets." in str(value) else value,
                                 "is_secret": "${{ secrets." in str(value),
@@ -834,6 +942,33 @@ class RunnerHealthService:
                 if runs_on:
                     analysis["runner_config"]["runs_on"] = runs_on
                     analysis["runner_config"]["is_self_hosted"] = isinstance(runs_on, list) and "self-hosted" in runs_on
+                
+                # Check steps for dotted variables in PowerShell commands
+                steps = job_config.get("steps", [])
+                for step in steps:
+                    if (step.get("name") == "Export environment variables with dots" and 
+                        step.get("shell") == "powershell" and 
+                        "run" in step):
+                        
+                        # Parse the PowerShell commands to extract dotted variables
+                        run_script = step["run"]
+                        import re
+                        for line in run_script.split('\n'):
+                            match = re.match(r'^\s*Add-Content\s+\$env:GITHUB_ENV\s+"([^=]+)=([^"]*)"', line)
+                            if match:
+                                key = match.group(1)
+                                value = match.group(2)
+                                
+                                # Add to env_variables
+                                analysis["env_variables"][key] = value
+                                
+                                # Add to configuration_overrides if it's a PR-Agent config
+                                if key.startswith(("OPENAI_", "ANTHROPIC_", "GITHUB_", "PR_AGENT_", "CSHARP_CODE_CONTEXT_", "GITHUB_ACTION_CONFIG.")):
+                                    analysis["configuration_overrides"][key] = {
+                                        "value": "*** SECRET ***" if "${{ secrets." in str(value) else value,
+                                        "is_secret": "${{ secrets." in str(value),
+                                        "secret_name": value.split("secrets.")[1].split(" ")[0].rstrip("})") if "${{ secrets." in str(value) else None
+                                    }
         
         except Exception as e:
             logger.error(f"Error analyzing workflow YAML structure: {e}")

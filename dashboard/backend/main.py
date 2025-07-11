@@ -23,6 +23,7 @@ from services.repository_service import RepositoryService
 from services.robust_cached_job_service import get_robust_cached_job_service
 from services.auth_service import AuthService
 from services.github_action_config_service import GitHubActionConfigService
+from services.system_settings_service import SystemSettingsService
 from database import DatabaseManager, SessionLocal
 from services.notification_service import NotificationService
 from services.retention_service import RetentionService
@@ -1122,7 +1123,94 @@ class DashboardApplication:
         async def update_config(config_update: ConfigUpdate):
             result = await self.config_service.update_config(config_update.config)
             return result
-
+        
+        # PR-Agent Path Management Endpoints
+        @self.app.get("/api/config/pr-agent-path")
+        async def get_pr_agent_path():
+            """Get the current PR-agent install path configuration"""
+            try:
+                custom_path = self.config_service.system_settings.get_pr_agent_install_path()
+                effective_path = self.config_service.system_settings.get_effective_pr_agent_path()
+                default_path = self.config_service.system_settings.get_default_pr_agent_path()
+                validation = self.config_service.validate_current_path()
+                
+                return APIResponse(data={
+                    "custom_path": custom_path,
+                    "effective_path": effective_path,
+                    "default_path": default_path,
+                    "using_custom": custom_path is not None,
+                    "validation": validation
+                })
+            except Exception as e:
+                logger.error(f"Error getting PR-agent path: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to get PR-agent path: {str(e)}")
+        
+        @self.app.post("/api/config/pr-agent-path/validate")
+        async def validate_pr_agent_path(path_data: dict):
+            """Validate a PR-agent install path"""
+            try:
+                path = path_data.get("path", "").strip()
+                if not path:
+                    raise HTTPException(status_code=400, detail="Path is required")
+                
+                validation = self.config_service.system_settings.validate_pr_agent_path(path)
+                return APIResponse(data=validation)
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error validating PR-agent path: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to validate path: {str(e)}")
+        
+        @self.app.post("/api/config/pr-agent-path")
+        async def set_pr_agent_path(path_data: dict):
+            """Set the PR-agent install path"""
+            try:
+                path = path_data.get("path", "").strip()
+                
+                # If empty path, clear the custom setting (use default)
+                if not path:
+                    success = self.config_service.system_settings.delete_setting("pr_agent_install_path")
+                    if success:
+                        # Refresh paths in config service
+                        self.config_service.refresh_paths()
+                        validation = self.config_service.validate_current_path()
+                        return APIResponse(data={
+                            "success": True,
+                            "message": "PR-agent path reset to default",
+                            "effective_path": self.config_service.system_settings.get_effective_pr_agent_path(),
+                            "validation": validation
+                        })
+                    else:
+                        raise HTTPException(status_code=500, detail="Failed to reset PR-agent path")
+                
+                # Validate the path first
+                validation = self.config_service.system_settings.validate_pr_agent_path(path)
+                if not validation.get("valid", False):
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Invalid PR-agent path: {validation.get('error', 'Unknown error')}"
+                    )
+                
+                # Set the path
+                success = self.config_service.system_settings.set_pr_agent_install_path(path)
+                if success:
+                    # Refresh paths in config service
+                    self.config_service.refresh_paths()
+                    validation = self.config_service.validate_current_path()
+                    return APIResponse(data={
+                        "success": True,
+                        "message": "PR-agent path updated successfully",
+                        "effective_path": path,
+                        "validation": validation
+                    })
+                else:
+                    raise HTTPException(status_code=500, detail="Failed to update PR-agent path")
+                    
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error setting PR-agent path: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to set PR-agent path: {str(e)}")
 
         
         # Repository endpoints
@@ -1150,28 +1238,25 @@ class DashboardApplication:
         
         @self.app.get("/api/repositories/health")
         async def get_repositories_health(db: Session = Depends(get_db)):
-            """Get health status of all repositories"""
+            """Get health status of all repositories with runner services configured"""
             try:
-                # Get basic repository counts
-                repositories = db.query(RepositoryDB).filter(RepositoryDB.is_active == True).all()
+                from services.runner_health_service import RunnerHealthService
                 
-                total = len(repositories)
-                healthy = len([r for r in repositories if r.runner_status == "running"])
-                unhealthy = total - healthy
-                
-                # Build response matching expected format
-                response_data = {
-                    "data": {
-                        "total_repos": total,
-                        "healthy_repos": healthy,
-                        "unhealthy_repos": unhealthy,
-                        "overall_status": "running" if unhealthy == 0 else "error",
-                        "last_updated": datetime.utcnow().isoformat()
-                    },
-                    "message": "Repository health retrieved successfully"
-                }
-                
-                return response_data
+                runner_service = RunnerHealthService()
+                try:
+                    # Use the proper runner health service that only considers repositories with runner services
+                    health_summary = await runner_service.get_repository_health_summary(db)
+                    
+                    # Build response in expected format
+                    response_data = {
+                        "data": health_summary,
+                        "message": "Repository health retrieved successfully"
+                    }
+                    
+                    return response_data
+                        
+                finally:
+                    await runner_service.close_session()
                     
             except Exception as e:
                 logger.error(f"Error getting repository health: {e}")
@@ -2433,15 +2518,184 @@ This file can override any setting from the global PR-Agent configuration, inclu
 
         @self.app.get("/api/repositories/{repo_id}/github-action-config/template")
         async def get_github_action_config_template(repo_id: int):
-            """Get default GitHub Action configuration template"""
+            """Get GitHub Action config template for a repository"""
             try:
-                template = self.github_action_config_service.get_default_config_template()
-                return APIResponse(
-                    data={'template': template},
-                    message="GitHub Action configuration template retrieved"
-                )
+                from .services.github_action_config_service import GitHubActionConfigService
+                service = GitHubActionConfigService()
+                
+                # Get template with placeholder environment variables
+                template = service.get_yaml_template()
+                
+                return APIResponse(data={"template": template}, message="Template retrieved successfully")
+                
             except Exception as e:
-                logger.error(f"Error getting GitHub Action template: {e}")
+                logger.error(f"Error getting GitHub Action config template: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        # Runner service management endpoints
+        @self.app.post("/api/repositories/{repo_id}/runner-service/check")
+        async def check_runner_service(repo_id: int, request_data: dict, db: Session = Depends(get_db)):
+            """Check the status of a GitHub Actions runner service"""
+            try:
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                service_name = request_data.get("service_name")
+                if not service_name:
+                    raise HTTPException(status_code=400, detail="Service name is required")
+                
+                # Import and use the runner service monitor
+                from services.runner_service_monitor import RunnerServiceMonitor
+                monitor = RunnerServiceMonitor()
+                
+                # Check service status
+                service_status = monitor.check_service_status(service_name)
+                logger.info(f"Service status response from monitor: {service_status}")
+                
+                # Update repository with runner service information  
+                repo.runner_service_name = service_name
+                repo.runner_service_status = service_status.get('status', 'unknown')
+                repo.runner_service_last_checked = datetime.utcnow()
+                repo.runner_service_details = service_status
+                
+                # Map service status to repository health impact
+                health_impact = monitor.get_service_health_impact(service_status)
+                logger.info(f"Health impact determined: {health_impact}")
+                
+                # Update overall runner status based on service health impact
+                if health_impact == 'healthy':
+                    repo.runner_status = 'running'
+                    repo.runner_error = None
+                elif health_impact == 'warning':
+                    repo.runner_status = 'warning'
+                    repo.runner_error = f"Service {service_status.get('status')}: {service_status.get('status_display', 'Unknown')}"
+                else:  # error
+                    repo.runner_status = 'error'
+                    repo.runner_error = service_status.get('error') or f"Service {service_status.get('status')}: {service_status.get('status_display', 'Unknown')}"
+                
+                db.commit()
+                
+                # Trigger a health system refresh to update overall status
+                try:
+                    health_status = await self.health_service.get_system_health(use_cache=False)
+                    logger.info(f"System health refreshed after runner service check: {health_status.get('overall', {}).get('status', 'unknown')}")
+                except Exception as e:
+                    logger.warning(f"Failed to refresh system health after runner service check: {e}")
+                
+                logger.info(f"Final API response data: {service_status}")
+                return APIResponse(data=service_status, message="Service status checked successfully")
+                
+            except Exception as e:
+                logger.error(f"Error checking runner service: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.put("/api/repositories/{repo_id}/runner-service/name")
+        async def save_runner_service_name(repo_id: int, request_data: dict, db: Session = Depends(get_db)):
+            """Save the GitHub Actions runner service name for a repository"""
+            try:
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                service_name = request_data.get("service_name")
+                if not service_name:
+                    raise HTTPException(status_code=400, detail="Service name is required")
+                
+                # Update repository with runner service name
+                repo.runner_service_name = service_name
+                db.commit()
+                
+                return APIResponse(data={"service_name": service_name}, message="Runner service name saved successfully")
+                
+            except Exception as e:
+                logger.error(f"Error saving runner service name: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/repositories/{repo_id}/runner-service/list")
+        async def list_github_runner_services(repo_id: int, db: Session = Depends(get_db)):
+            """List all GitHub Actions runner services on the system"""
+            try:
+                # Get repository (for auth check)
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                # Import and use the runner service monitor
+                from services.runner_service_monitor import RunnerServiceMonitor
+                monitor = RunnerServiceMonitor()
+                
+                # List all GitHub runner services
+                services = monitor.list_github_runner_services()
+                
+                return APIResponse(data={"services": services}, message="GitHub runner services listed successfully")
+                
+            except Exception as e:
+                logger.error(f"Error listing GitHub runner services: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.get("/api/system/runner-services")
+        async def list_all_runner_services():
+            """List all GitHub Actions runner services on the system (for debugging)"""
+            try:
+                from services.runner_service_monitor import RunnerServiceMonitor
+                monitor = RunnerServiceMonitor()
+                
+                # List all GitHub runner services
+                services = monitor.list_github_runner_services()
+                
+                # Also try to get all services that might be runners
+                all_services = []
+                try:
+                    import subprocess
+                    import json
+                    
+                    # Get all services containing "GitHub", "Actions", or "Runner"
+                    cmd = [
+                        'powershell.exe', 
+                        '-NoProfile', 
+                        '-Command',
+                        'Get-Service | Where-Object { $_.Name -like "*GitHub*" -or $_.DisplayName -like "*GitHub*" -or $_.DisplayName -like "*Actions*" -or $_.DisplayName -like "*Runner*" } | ConvertTo-Json'
+                    ]
+                    
+                    result = subprocess.run(
+                        cmd, 
+                        capture_output=True, 
+                        text=True, 
+                        timeout=15,
+                        creationflags=subprocess.CREATE_NO_WINDOW
+                    )
+                    
+                    if result.returncode == 0 and result.stdout.strip():
+                        services_data = json.loads(result.stdout.strip())
+                        
+                        # Handle single service or list of services
+                        if isinstance(services_data, dict):
+                            services_data = [services_data]
+                        elif not isinstance(services_data, list):
+                            services_data = []
+                        
+                        for service in services_data:
+                            all_services.append({
+                                'name': service.get('Name', ''),
+                                'display_name': service.get('DisplayName', ''),
+                                'status': service.get('Status', 'Unknown'),
+                                'can_stop': service.get('CanStop', False)
+                            })
+                            
+                except Exception as e:
+                    logger.warning(f"Could not get extended service list: {e}")
+                
+                return APIResponse(data={
+                    "github_services": services,
+                    "all_runner_related_services": all_services,
+                    "total_found": len(services) + len(all_services)
+                }, message="All runner services listed successfully")
+                
+            except Exception as e:
+                logger.error(f"Error listing all runner services: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
         
         # Notification endpoints

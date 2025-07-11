@@ -16,7 +16,11 @@ import {
   FileText,
   Lightbulb,
   Github,
-  Gauge
+  Gauge,
+  Folder,
+  Check,
+  RefreshCw,
+  FolderOpen
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
@@ -36,6 +40,19 @@ const ConfigEditor = ({ navigationTarget = null }) => {
   const [dismissedInfo, setDismissedInfo] = useState(() => {
     return localStorage.getItem('dismissedConfigInfo') === 'true';
   });
+  
+  // PR-Agent path management state
+  const [prAgentPath, setPrAgentPath] = useState({
+    custom_path: null,
+    effective_path: '',
+    default_path: '',
+    using_custom: false,
+    validation: { valid: true }
+  });
+  const [prAgentPathLoading, setPrAgentPathLoading] = useState(false);
+  const [prAgentPathValidating, setPrAgentPathValidating] = useState(false);
+  const [tempPathValue, setTempPathValue] = useState('');
+  
   const { showSuccess, showError } = useContext(ToastContext);
 
   // Available models categorized by type
@@ -95,6 +112,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
 
   useEffect(() => {
     fetchConfig();
+    fetchPrAgentPath();
   }, []);
 
   // Handle navigation target (e.g., animate checkbox)
@@ -451,6 +469,11 @@ const ConfigEditor = ({ navigationTarget = null }) => {
   };
 
   const startEdit = () => {
+    // Check if PR-agent path is valid before allowing edit
+    if (!prAgentPath.validation?.valid) {
+      showError('Cannot edit configuration', 'Please fix the PR-agent install path before editing configuration settings.');
+      return;
+    }
     setEditing(true);
   };
 
@@ -466,6 +489,112 @@ const ConfigEditor = ({ navigationTarget = null }) => {
     if (window.confirm('Are you sure you want to reset all settings to defaults? This cannot be undone.')) {
       setConfig(JSON.parse(JSON.stringify(originalConfig))); // Reset to original
       showSuccess('Configuration Reset', 'Settings have been reset to last saved state.');
+    }
+  };
+
+  // PR-Agent path management functions
+  const fetchPrAgentPath = async () => {
+    try {
+      setPrAgentPathLoading(true);
+      const response = await api.get('/api/config/pr-agent-path');
+      const data = response.data?.data || response.data;
+      setPrAgentPath(data);
+      setTempPathValue(data.custom_path || '');
+    } catch (error) {
+      console.error('Error fetching PR-agent path:', error);
+      showError('Failed to fetch PR-agent path configuration');
+    } finally {
+      setPrAgentPathLoading(false);
+    }
+  };
+
+  const validatePrAgentPath = async (path) => {
+    if (!path.trim()) return { valid: true }; // Empty path is valid (means use default)
+    
+    try {
+      setPrAgentPathValidating(true);
+      const response = await api.post('/api/config/pr-agent-path/validate', { path: path.trim() });
+      return response.data?.data || response.data;
+    } catch (error) {
+      console.error('Error validating PR-agent path:', error);
+      return { valid: false, error: 'Validation failed', details: error.message };
+    } finally {
+      setPrAgentPathValidating(false);
+    }
+  };
+
+  const updatePrAgentPath = async (path) => {
+    try {
+      setPrAgentPathLoading(true);
+      const response = await api.post('/api/config/pr-agent-path', { path: path.trim() });
+      const result = response.data?.data || response.data;
+      
+      if (result.success) {
+        await fetchPrAgentPath(); // Refresh the path info
+        showSuccess(result.message || 'PR-agent path updated successfully');
+        return true;
+      } else {
+        showError(result.message || 'Failed to update PR-agent path');
+        return false;
+      }
+    } catch (error) {
+      console.error('Error updating PR-agent path:', error);
+      const errorMessage = error.response?.data?.detail || error.message || 'Failed to update PR-agent path';
+      showError(errorMessage);
+      return false;
+    } finally {
+      setPrAgentPathLoading(false);
+    }
+  };
+
+  const handlePrAgentPathChange = async (newPath) => {
+    setTempPathValue(newPath);
+    
+    if (newPath.trim() === (prAgentPath.custom_path || '')) {
+      // No change, reset validation to current state
+      setPrAgentPath(prev => ({ ...prev, validation: prev.validation }));
+      return;
+    }
+
+    // Validate the new path
+    const validation = await validatePrAgentPath(newPath);
+    setPrAgentPath(prev => ({
+      ...prev,
+      validation
+    }));
+  };
+
+  const applyPrAgentPath = async () => {
+    const validation = await validatePrAgentPath(tempPathValue);
+    if (!validation.valid && tempPathValue.trim() !== '') {
+      showError(`Invalid path: ${validation.error}`);
+      return;
+    }
+
+    const success = await updatePrAgentPath(tempPathValue);
+    if (success) {
+      // If the path changed, the config might need to be reloaded
+      if (editing) {
+        // If currently editing config, warn user they need to save/cancel first
+        showError('Configuration editing in progress. Please save or cancel your changes, then retry setting the PR-agent path.');
+      } else {
+        // Reload config to reflect any changes from the new path
+        fetchConfig();
+      }
+    }
+  };
+
+  const resetPrAgentPath = async () => {
+    if (window.confirm('Reset PR-agent path to default? This will use the relative path from the dashboard location.')) {
+      const success = await updatePrAgentPath(''); // Empty string resets to default
+      if (success) {
+        setTempPathValue('');
+        if (editing) {
+          showError('Configuration editing in progress. Please save or cancel your changes, then retry resetting the PR-agent path.');
+        } else {
+          fetchConfig();
+        }
+      }
     }
   };
 
@@ -593,7 +722,13 @@ const ConfigEditor = ({ navigationTarget = null }) => {
             {!editing ? (
               <button
                 onClick={startEdit}
-                className="flex items-center px-4 py-2 text-sm font-medium text-blue-600 bg-blue-50 dark:bg-blue-900/30 dark:text-blue-400 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors duration-200"
+                disabled={!prAgentPath.validation?.valid}
+                className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors duration-200 ${
+                  prAgentPath.validation?.valid
+                    ? 'text-blue-600 bg-blue-50 dark:bg-blue-900/30 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/50'
+                    : 'text-gray-400 bg-gray-100 dark:bg-gray-700 cursor-not-allowed'
+                }`}
+                title={!prAgentPath.validation?.valid ? 'Cannot edit: PR-agent path is invalid' : ''}
               >
                 <Edit className="h-4 w-4 mr-2" />
                 Edit
@@ -1550,7 +1685,159 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   </div>
                 </div>
 
+                {/* PR-Agent Install Path Configuration */}
+                <div className="border-t border-gray-200 dark:border-gray-700 pt-6">
+                  <h4 className="text-md font-medium text-gray-900 dark:text-white mb-4 flex items-center">
+                    <FolderOpen className="h-4 w-4 mr-2" />
+                    PR-Agent Install Path
+                  </h4>
+                  
+                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-4 mb-4">
+                    <div className="flex items-start">
+                      <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2 mt-0.5 flex-shrink-0" />
+                      <div className="text-blue-800 dark:text-blue-200 text-sm">
+                        <p className="font-medium mb-1">Configure PR-Agent Installation Location</p>
+                        <p>Specify where PR-Agent is installed so the dashboard can find configuration files. If left empty, the dashboard will use the default relative path. This setting affects where the dashboard looks for:</p>
+                        <ul className="list-disc list-inside mt-2 space-y-1 text-xs opacity-90">
+                          <li><code className="bg-blue-100 dark:bg-blue-900/40 px-1 rounded">configuration.toml</code> - Main configuration file</li>
+                          <li><code className="bg-blue-100 dark:bg-blue-900/40 px-1 rounded">secrets.toml</code> - API keys and secrets</li>
+                          <li><code className="bg-blue-100 dark:bg-blue-900/40 px-1 rounded">*.toml</code> - All other configuration files</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
 
+                  <div className="space-y-4">
+                    {/* Current Status */}
+                    {!prAgentPathLoading && (
+                      <div className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-md border border-gray-200 dark:border-gray-700">
+                        <div className="flex items-center space-x-2">
+                          <div className={`h-2 w-2 rounded-full ${prAgentPath.validation?.valid ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                          <span className="text-sm text-gray-700 dark:text-gray-300">
+                            Currently using: <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded text-xs">{prAgentPath.effective_path}</code>
+                          </span>
+                        </div>
+                        <div className="flex items-center space-x-1 text-xs">
+                          {prAgentPath.using_custom ? (
+                            <span className="text-blue-600 dark:text-blue-400 font-medium">Custom Path</span>
+                          ) : (
+                            <span className="text-gray-500 dark:text-gray-400">Default Path</span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Path Input */}
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Custom Install Path
+                        <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                          Absolute path to PR-Agent installation directory (leave empty for default)
+                        </span>
+                      </label>
+                      <div className="flex space-x-2">
+                        <div className="flex-1 relative">
+                          <input
+                            type="text"
+                            value={tempPathValue}
+                            onChange={(e) => handlePrAgentPathChange(e.target.value)}
+                            disabled={prAgentPathLoading || editing}
+                            placeholder={prAgentPath.default_path || "Default path will be used"}
+                            className={`w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed ${
+                              prAgentPath.validation?.valid 
+                                ? 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white' 
+                                : 'border-red-300 dark:border-red-600 bg-red-50 dark:bg-red-900/20 text-red-900 dark:text-red-200'
+                            }`}
+                          />
+                          {prAgentPathValidating && (
+                            <div className="absolute right-3 top-2.5">
+                              <RefreshCw className="h-4 w-4 animate-spin text-gray-400" />
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          onClick={applyPrAgentPath}
+                          disabled={prAgentPathLoading || prAgentPathValidating || editing || (tempPathValue.trim() === (prAgentPath.custom_path || ''))}
+                          className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                            prAgentPathLoading || prAgentPathValidating || editing || (tempPathValue.trim() === (prAgentPath.custom_path || ''))
+                              ? 'bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-not-allowed'
+                              : prAgentPath.validation?.valid
+                                ? 'bg-blue-600 text-white hover:bg-blue-700'
+                                : 'bg-red-600 text-white hover:bg-red-700'
+                          }`}
+                        >
+                          {prAgentPathLoading ? (
+                            <RefreshCw className="h-4 w-4 animate-spin" />
+                          ) : prAgentPath.validation?.valid ? (
+                            <Check className="h-4 w-4" />
+                          ) : (
+                            'Apply'
+                          )}
+                        </button>
+                        {prAgentPath.using_custom && (
+                          <button
+                            onClick={resetPrAgentPath}
+                            disabled={prAgentPathLoading || editing}
+                            className="px-3 py-2 rounded-md text-sm font-medium text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Reset to default path"
+                          >
+                            <RotateCcw className="h-4 w-4" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Validation Status */}
+                    {!prAgentPath.validation?.valid && prAgentPath.validation?.error && (
+                      <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md p-3">
+                        <div className="flex items-start">
+                          <AlertCircle className="h-4 w-4 text-red-600 dark:text-red-400 mr-2 mt-0.5 flex-shrink-0" />
+                          <div className="text-red-800 dark:text-red-200 text-sm">
+                            <p className="font-medium">Invalid Path</p>
+                            <p>{prAgentPath.validation.error}</p>
+                            {prAgentPath.validation.details && typeof prAgentPath.validation.details === 'object' && (
+                              <div className="mt-2 text-xs opacity-90">
+                                {prAgentPath.validation.details.missing_files?.length > 0 && (
+                                  <p>Missing files: {prAgentPath.validation.details.missing_files.join(', ')}</p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Path Validation Success */}
+                    {prAgentPath.validation?.valid && prAgentPath.validation?.details && tempPathValue.trim() && (
+                      <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md p-3">
+                        <div className="flex items-start">
+                          <Check className="h-4 w-4 text-green-600 dark:text-green-400 mr-2 mt-0.5 flex-shrink-0" />
+                          <div className="text-green-800 dark:text-green-200 text-sm">
+                            <p className="font-medium">Valid PR-Agent Installation</p>
+                            {typeof prAgentPath.validation.details === 'object' && (
+                              <div className="mt-1 text-xs opacity-90">
+                                <p>Found {prAgentPath.validation.details.total_found} of {prAgentPath.validation.details.total_expected} expected configuration files</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Warning when editing config */}
+                    {editing && (
+                      <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-md p-3">
+                        <div className="flex items-start">
+                          <AlertCircle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 mr-2 mt-0.5 flex-shrink-0" />
+                          <div className="text-yellow-800 dark:text-yellow-200 text-sm">
+                            <p className="font-medium">Configuration Editing in Progress</p>
+                            <p>Please save or cancel your configuration changes before modifying the PR-Agent path.</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>

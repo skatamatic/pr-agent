@@ -122,6 +122,12 @@ class RepositoryDB(Base):
     runner_last_seen = Column(DateTime, nullable=True)
     runner_error = Column(String, nullable=True)
     
+    # Runner service monitoring
+    runner_service_name = Column(String, nullable=True)  # Windows service name
+    runner_service_status = Column(String, nullable=True)  # "running", "stopped", "not_found", "error"
+    runner_service_last_checked = Column(DateTime, nullable=True)
+    runner_service_details = Column(JSON, nullable=True)  # Additional service details
+    
     # Repository configuration detection
     has_pr_agent_config = Column(Boolean, default=False)  # .pr_agent.toml exists
     has_workflow_config = Column(Boolean, default=False)  # GitHub Actions workflow with PR-Agent env vars exists
@@ -572,13 +578,19 @@ class Repository(BaseModel):
     runner_last_seen: Optional[str] = None
     runner_error: Optional[str] = None
     
+    # Runner service monitoring
+    runner_service_name: Optional[str] = Field(default=None, description="Windows service name")
+    runner_service_status: Optional[str] = Field(default=None, description="Windows service status")
+    runner_service_last_checked: Optional[str] = None
+    runner_service_details: Optional[Dict[str, Any]] = Field(default=None, description="Additional service details")
+    
     # Repository configuration detection
     has_pr_agent_config: bool = Field(default=False, description="Has .pr_agent.toml file")
     has_workflow_config: bool = Field(default=False, description="Has GitHub Actions workflow with PR-Agent configuration")
     config_last_checked: Optional[str] = None
     effective_config: Optional[Dict[str, Any]] = Field(default=None, description="Merged configuration")
     
-        # Best practices tracking
+    # Best practices tracking
     has_best_practices: bool = Field(default=False, description="Has best_practices.md file")
     best_practices_content: Optional[str] = Field(default=None, description="Cached best practices content")
     best_practices_last_fetched: Optional[str] = None

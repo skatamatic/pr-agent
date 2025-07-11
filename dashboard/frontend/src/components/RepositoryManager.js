@@ -25,7 +25,9 @@ import {
   EyeOff,
   Shield,
   Server,
-  ExternalLink
+  ExternalLink,
+  Download,
+  Search
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
@@ -59,7 +61,7 @@ const RepositoryManager = () => {
   const [checkingConfig, setCheckingConfig] = useState(new Set());
   const [showTokens, setShowTokens] = useState({});
   const [expandedTokenSections, setExpandedTokenSections] = useState(new Set());
-  const { showSuccess, showError } = useContext(ToastContext);
+  const { showSuccess, showError, showWarning } = useContext(ToastContext);
 
   const [repoActiveTabs, setRepoActiveTabs] = useState({});
   const [effectiveConfigModal, setEffectiveConfigModal] = useState({
@@ -76,6 +78,8 @@ const RepositoryManager = () => {
   const [isEditingBestPractices, setIsEditingBestPractices] = useState({});
   const [editedBestPracticesContent, setEditedBestPracticesContent] = useState({});
   const [savingBestPractices, setSavingBestPractices] = useState({});
+  const [isEditingGeneral, setIsEditingGeneral] = useState({});
+  const [editedGeneralData, setEditedGeneralData] = useState({});
   const [loadingBestPractices, setLoadingBestPractices] = useState(new Set());
   
   // PR-Agent config states
@@ -89,6 +93,15 @@ const RepositoryManager = () => {
   const [showGithubActionConfigEditor, setShowGithubActionConfigEditor] = useState(null);
   const [loadingGithubActionConfig, setLoadingGithubActionConfig] = useState(new Set());
   const [checkingGithubActionPrStatus, setCheckingGithubActionPrStatus] = useState(new Set());
+
+  // Runner service states
+  const [runnerServiceNames, setRunnerServiceNames] = useState({});
+  const [runnerServiceStatus, setRunnerServiceStatus] = useState({});
+  const [checkingRunnerService, setCheckingRunnerService] = useState(new Set());
+  const [savingRunnerServiceName, setSavingRunnerServiceName] = useState(new Set());
+  const [availableServices, setAvailableServices] = useState([]);
+  const [loadingServices, setLoadingServices] = useState(false);
+  const [serviceDropdownOpen, setServiceDropdownOpen] = useState({});
 
   const fetchRepositories = useCallback(async () => {
     try {
@@ -105,6 +118,59 @@ const RepositoryManager = () => {
   useEffect(() => {
     fetchRepositories();
   }, [fetchRepositories]);
+
+  // Auto-check runner service when github-runner-install tab becomes active
+  useEffect(() => {
+    const activeRunnerTabs = Object.entries(repoActiveTabs).filter(([_, tab]) => tab === 'github-runner-install');
+    
+    activeRunnerTabs.forEach(([repoId, _]) => {
+      const numericRepoId = parseInt(repoId);
+      if (!checkingRunnerService.has(numericRepoId) && !runnerServiceStatus[numericRepoId]) {
+        // Only auto-check if we haven't checked yet and we're not currently checking
+        checkRunnerService(numericRepoId);
+      }
+    });
+  }, [repoActiveTabs]); // Trigger when active tabs change
+
+  // Auto-check runner service when service name changes
+  useEffect(() => {
+    const timeouts = {};
+    
+    Object.entries(runnerServiceNames).forEach(([repoId, serviceName]) => {
+      const numericRepoId = parseInt(repoId);
+      
+      // Clear any existing timeout for this repo
+      if (timeouts[repoId]) {
+        clearTimeout(timeouts[repoId]);
+      }
+      
+      // Set a debounced timeout to check the service
+      timeouts[repoId] = setTimeout(() => {
+        if (serviceName && !checkingRunnerService.has(numericRepoId)) {
+          checkRunnerService(numericRepoId);
+        }
+      }, 1000); // Debounce for 1 second
+    });
+    
+    // Cleanup timeouts on unmount or dependency change
+    return () => {
+      Object.values(timeouts).forEach(timeout => clearTimeout(timeout));
+    };
+  }, [runnerServiceNames]); // Trigger when service names change
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (!event.target.closest('.service-dropdown-container')) {
+        setServiceDropdownOpen({});
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
   // Inject custom CSS for best practices markdown styling
   useEffect(() => {
@@ -389,11 +455,22 @@ const RepositoryManager = () => {
   const checkRunnerHealth = async (repoId) => {
     setCheckingHealth(prev => new Set(prev).add(repoId));
     try {
-      await api.checkRepositoryHealth(repoId);
-      showSuccess('Success', 'Runner health check completed');
+      // Check both repository health and runner service status
+      const promises = [
+        api.checkRepositoryHealth(repoId)
+      ];
+      
+      // Also check runner service if this is a GitHub repository
+      const repo = repositories.find(r => r.id === repoId);
+      if (repo && repo.provider === 'github') {
+        promises.push(checkRunnerService(repoId));
+      }
+      
+      await Promise.all(promises);
+      showSuccess('Success', 'Health check completed');
       fetchRepositories(); // Refresh to get updated health status
     } catch (error) {
-      const errorMsg = error.response?.data?.detail || 'Failed to check runner health';
+      const errorMsg = error.response?.data?.detail || 'Failed to check health';
       showError('Error', errorMsg);
     } finally {
       setCheckingHealth(prev => {
@@ -419,6 +496,40 @@ const RepositoryManager = () => {
         newSet.delete(repoId);
         return newSet;
       });
+    }
+  };
+
+  // Comprehensive refresh function that checks both health and config
+  const comprehensiveRefresh = async (repoId) => {
+    const isCheckingHealth = checkingHealth.has(repoId);
+    const isCheckingConfig = checkingConfig.has(repoId);
+    
+    if (isCheckingHealth || isCheckingConfig) return;
+
+    try {
+      // Run both checks concurrently
+      const promises = [];
+      
+      // Always check health
+      promises.push(checkRunnerHealth(repoId));
+      
+      // Check config if repository supports it
+      const repo = repositories.find(r => r.id === repoId);
+      if (repo && shouldShowConfigStatus(repo)) {
+        promises.push(checkRepositoryConfig(repoId));
+      }
+
+      // Check runner service if it's a GitHub repo
+      if (repo && repo.provider === 'github') {
+        promises.push(checkRunnerService(repoId));
+      }
+
+      await Promise.all(promises);
+      
+      showSuccess('Refresh Complete', 'Repository health, configuration, and services have been updated');
+    } catch (error) {
+      console.error('Error during comprehensive refresh:', error);
+      showError('Refresh Failed', 'Some checks failed during refresh. Please try individual checks.');
     }
   };
 
@@ -811,6 +922,60 @@ const RepositoryManager = () => {
     }
   };
 
+  // General/Authentication tab edit functions
+  const startEditingGeneral = (repoId) => {
+    const repo = repositories.find(r => r.id === repoId);
+    if (repo) {
+      setEditedGeneralData(prev => ({
+        ...prev,
+        [repoId]: {
+          name: repo.name,
+          url: repo.url,
+          provider: repo.provider,
+          github_token: '',
+          azure_pat: ''
+        }
+      }));
+      setIsEditingGeneral(prev => ({ ...prev, [repoId]: true }));
+    }
+  };
+
+  const cancelEditingGeneral = (repoId) => {
+    setIsEditingGeneral(prev => ({ ...prev, [repoId]: false }));
+    setEditedGeneralData(prev => ({ ...prev, [repoId]: undefined }));
+  };
+
+  const saveGeneralChanges = async (repoId) => {
+    if (!editedGeneralData[repoId]) return;
+    
+    try {
+      const response = await fetch(`/api/repositories/${repoId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(editedGeneralData[repoId]),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to update repository');
+      }
+
+      // Refresh the repositories list
+      await fetchRepositories();
+      
+      // Exit edit mode
+      setIsEditingGeneral(prev => ({ ...prev, [repoId]: false }));
+      setEditedGeneralData(prev => ({ ...prev, [repoId]: undefined }));
+      
+      showSuccess('Repository updated successfully');
+    } catch (error) {
+      console.error('Failed to update repository:', error);
+      showError('Failed to update repository', error.message || 'Failed to update repository');
+    }
+  };
+
   // PR-Agent Configuration Functions
   const loadPrAgentConfig = async (repoId, forceRefresh = false) => {
     if (loadingPrAgentConfig.has(repoId) && !forceRefresh) {
@@ -1059,7 +1224,7 @@ const RepositoryManager = () => {
     }
 
     // Check for errors in runner status or token issues
-    if (repo.runner_status === 'error' || repo.runner_status === 'misconfigured') {
+    if (repo.runner_status === 'error' || repo.runner_status === 'misconfigured' || repo.runner_status === 'warning') {
       return 'error';
     }
 
@@ -1138,6 +1303,177 @@ const RepositoryManager = () => {
     });
   };
 
+  // Runner service functions
+  const getDefaultServiceName = (repo) => {
+    if (!repo.name) return '';
+    const parts = repo.name.split('/');
+    if (parts.length === 2) {
+      return `actions.runner.${parts[0]}-${parts[1]}.PRMonitor`;
+    }
+    return `actions.runner.${repo.name}.PRMonitor`;
+  };
+
+  const checkRunnerService = async (repoId) => {
+    if (checkingRunnerService.has(repoId)) return;
+    
+    try {
+      setCheckingRunnerService(prev => new Set([...prev, repoId]));
+      
+      const serviceName = runnerServiceNames[repoId] || getDefaultServiceName(repositories.find(r => r.id === repoId));
+      
+      const response = await api.checkRunnerService(repoId, serviceName);
+      
+      console.log('Runner service check response:', response.data); // Debug logging
+      console.log('Service data:', response.data.data); // Debug the actual service data
+      
+      // Extract the actual service data from the API response wrapper
+      const serviceData = response.data.data;
+      
+      setRunnerServiceStatus(prev => ({
+        ...prev,
+        [repoId]: {
+          ...serviceData,
+          last_checked: new Date().toISOString()
+        }
+      }));
+      
+      // Update the repository data to reflect the new runner status
+      const mapServiceStatusToRunnerStatus = (serviceStatus) => {
+        switch (serviceStatus) {
+          case 'running':
+            return 'running';
+          case 'starting':
+          case 'stopping':
+          case 'paused':
+            return 'warning';
+          case 'stopped':
+          case 'not_found':
+          case 'error':
+          default:
+            return 'error';
+        }
+      };
+      
+      setRepositories(prevRepos => 
+        prevRepos.map(repo => 
+          repo.id === repoId 
+            ? { 
+                ...repo, 
+                runner_status: mapServiceStatusToRunnerStatus(serviceData.status),
+                runner_error: serviceData.error || (serviceData.status !== 'running' ? `Service is ${serviceData.status}` : null),
+                runner_service_last_checked: new Date().toISOString()
+              }
+            : repo
+        )
+      );
+      
+      const status = serviceData.status || 'unknown';
+      const statusDisplay = serviceData.status_display || status || 'Unknown';
+      
+      if (status === 'running') {
+        showSuccess('Service Running', `GitHub Actions runner service is running: ${serviceName}`);
+      } else if (status === 'stopped') {
+        showError('Service Stopped', `GitHub Actions runner service is stopped: ${serviceName}`);
+      } else if (status === 'not_found') {
+        const availableServices = serviceData.available_services || [];
+        let message = `Service not found: ${serviceName}`;
+        if (availableServices.length > 0) {
+          message += `\n\nAvailable GitHub runner services:\n${availableServices.map(s => `• ${s}`).join('\n')}`;
+        } else {
+          message += '\n\nNo GitHub Actions runner services detected on this system.';
+        }
+        showError('Service Not Found', message);
+      } else if (status === 'error') {
+        showError('Service Error', `Error checking service: ${serviceData.error || 'Unknown error'}`);
+      } else if (status === 'starting' || status === 'stopping') {
+        showWarning('Service Transitioning', `Service is ${status}: ${serviceName}`);
+      } else if (status === 'paused') {
+        showWarning('Service Paused', `Service is paused: ${serviceName}`);
+      } else {
+        const availableServices = serviceData.available_services || [];
+        let message = `Service status: ${statusDisplay}`;
+        if (status !== statusDisplay) {
+          message += ` (${status})`;
+        }
+        if (availableServices.length > 0) {
+          message += `\n\nAvailable services:\n${availableServices.map(s => `• ${s}`).join('\n')}`;
+        }
+        showError('Service Status Unknown', message);
+      }
+    } catch (error) {
+      console.error('Error checking runner service:', error);
+      showError('Error', 'Failed to check runner service status');
+      setRunnerServiceStatus(prev => ({
+        ...prev,
+        [repoId]: {
+          status: 'error',
+          status_display: 'Error checking service',
+          error: error.response?.data?.detail || error.message,
+          last_checked: new Date().toISOString()
+        }
+      }));
+    } finally {
+      setCheckingRunnerService(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(repoId);
+        return newSet;
+      });
+    }
+  };
+
+  const saveRunnerServiceName = async (repoId) => {
+    if (savingRunnerServiceName.has(repoId)) return;
+    
+    try {
+      setSavingRunnerServiceName(prev => new Set([...prev, repoId]));
+      
+      const serviceName = runnerServiceNames[repoId] || getDefaultServiceName(repositories.find(r => r.id === repoId));
+      
+      await api.saveRunnerServiceName(repoId, serviceName);
+      
+      showSuccess('Success', 'Runner service name saved successfully');
+    } catch (error) {
+      console.error('Error saving runner service name:', error);
+      showError('Error', 'Failed to save runner service name');
+    } finally {
+      setSavingRunnerServiceName(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(repoId);
+        return newSet;
+      });
+    }
+  };
+
+  const fetchAvailableServices = async () => {
+    if (loadingServices) return;
+    
+    try {
+      setLoadingServices(true);
+      const response = await api.listRunnerServices();
+      console.log('API response:', response.data); // Debug logging
+      setAvailableServices(response.data.data?.github_services || []);
+    } catch (error) {
+      console.error('Error fetching available services:', error);
+      showError('Error', 'Failed to fetch available services');
+    } finally {
+      setLoadingServices(false);
+    }
+  };
+
+  const toggleServiceDropdown = (repoId) => {
+    console.log('Toggling dropdown for repo:', repoId, 'Current state:', serviceDropdownOpen[repoId]);
+    setServiceDropdownOpen(prev => ({
+      ...prev,
+      [repoId]: !prev[repoId]
+    }));
+    
+    // Fetch services when opening dropdown for the first time
+    if (!serviceDropdownOpen[repoId] && availableServices.length === 0) {
+      console.log('Fetching available services...');
+      fetchAvailableServices();
+    }
+  };
+
   if (loading) {
     return (
       <div className="space-y-6">
@@ -1164,7 +1500,7 @@ const RepositoryManager = () => {
         rightComponent={
           <button
             onClick={() => setShowAddForm(true)}
-            className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-200 shadow-sm hover:shadow-md"
+            className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 transition-colors duration-200 shadow-sm hover:shadow-md"
           >
             <Plus className="h-4 w-4 mr-2" />
             Add Repository
@@ -1420,7 +1756,7 @@ const RepositoryManager = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2.5 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-200 shadow-sm hover:shadow-md"
+                  className="px-6 py-2.5 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 transition-colors duration-200 shadow-sm hover:shadow-md"
                 >
                   <Plus className="h-4 w-4 mr-2 inline" />
                   Add Repository
@@ -1432,7 +1768,7 @@ const RepositoryManager = () => {
       )}
 
       {/* Repository List */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
+      <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm overflow-visible">
         {repositories.length === 0 ? (
           <div className="p-12 text-center">
             <div className="mx-auto w-24 h-24 bg-gray-100 dark:bg-gray-700 rounded-full flex items-center justify-center mb-6">
@@ -1442,7 +1778,7 @@ const RepositoryManager = () => {
             <p className="text-gray-500 dark:text-gray-400 mb-6 max-w-md mx-auto">Get started by adding your first repository to begin monitoring pull requests and issues.</p>
             <button
               onClick={() => setShowAddForm(true)}
-              className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-200 shadow-sm hover:shadow-md"
+              className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 transition-colors duration-200 shadow-sm hover:shadow-md"
             >
               <Plus className="h-4 w-4 mr-2 inline" />
               Add Repository
@@ -1539,13 +1875,29 @@ const RepositoryManager = () => {
                         <div className="flex items-center space-x-3">
                           {editingRepo !== repo.id ? (
                             <>
+                              {/* Comprehensive Refresh Button */}
+                              {getTokenStatus(repo) === 'configured' && (
+                                <button
+                                  onClick={() => comprehensiveRefresh(repo.id)}
+                                  disabled={checkingHealth.has(repo.id) || checkingConfig.has(repo.id)}
+                                  className="flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  {(checkingHealth.has(repo.id) || checkingConfig.has(repo.id)) ? (
+                                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                                  ) : (
+                                    <RefreshCw className="h-4 w-4 mr-2" />
+                                  )}
+                                  Refresh
+                                </button>
+                              )}
+                              
                               {/* Active Toggle */}
                               <button
                                 onClick={() => toggleRepositoryActive(repo.id, repo.is_active)}
-                                className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors duration-200 ${
+                                className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors duration-200 shadow-sm ${
                                   repo.is_active
-                                    ? 'text-orange-600 bg-orange-50 dark:bg-orange-900/30 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/50'
-                                    : 'text-green-600 bg-green-50 dark:bg-green-900/30 dark:text-green-400 hover:bg-green-100 dark:hover:bg-green-900/50'
+                                    ? 'text-white bg-red-600 hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-600'
+                                    : 'text-white bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600'
                                 }`}
                               >
                                 {repo.is_active ? (
@@ -1556,41 +1908,7 @@ const RepositoryManager = () => {
                                 {repo.is_active ? 'Deactivate' : 'Activate'}
                               </button>
                               
-                              <button
-                                onClick={() => checkRunnerHealth(repo.id)}
-                                disabled={checkingHealth.has(repo.id)}
-                                className="flex items-center px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                              >
-                                {checkingHealth.has(repo.id) ? (
-                                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                                ) : (
-                                  <Activity className="h-4 w-4 mr-2" />
-                                )}
-                                Check Health
-                              </button>
-                              {shouldShowConfigStatus(repo) && (
-                                <button
-                                  onClick={() => checkRepositoryConfig(repo.id)}
-                                  disabled={checkingConfig.has(repo.id)}
-                                  className="flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  {checkingConfig.has(repo.id) ? (
-                                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                                  ) : (
-                                    <FileText className="h-4 w-4 mr-2" />
-                                  )}
-                                  Check Config
-                                </button>
-                              )}
 
-
-                              <button
-                                onClick={() => startEdit(repo.id)}
-                                className="flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 rounded-lg transition-colors duration-200 shadow-sm"
-                              >
-                                <Edit className="h-4 w-4 mr-2" />
-                                Edit
-                              </button>
                               <button
                                 onClick={() => handleDelete(repo)}
                                 className="flex items-center px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-600 rounded-lg transition-colors duration-200 shadow-sm"
@@ -1611,9 +1929,9 @@ const RepositoryManager = () => {
                               <button
                                 onClick={(e) => handleSubmit(e, repo.id)}
                                 disabled={!hasChanges()}
-                                className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors duration-200 ${
+                                className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors duration-200 shadow-sm ${
                                   hasChanges()
-                                    ? 'text-white bg-blue-600 hover:bg-blue-700 shadow-sm hover:shadow-md'
+                                    ? 'text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600'
                                     : 'text-gray-400 bg-gray-100 dark:bg-gray-700 cursor-not-allowed'
                                 }`}
                               >
@@ -1667,29 +1985,75 @@ const RepositoryManager = () => {
                             <span>General</span>
                           </button>
                           
-                          {/* GitHub Action Config Tab - Disabled if no auth token or not GitHub */}
-                          <button
-                            onClick={() => {
-                              if (getTokenStatus(repo) === 'configured' && repo.provider === 'github') {
-                                setRepoActiveTab(repo.id, 'github-action-config');
-                                // Auto-fetch GitHub Action config if not already loaded
-                                if (!githubActionConfigData[repo.id] && !loadingGithubActionConfig.has(repo.id)) {
-                                  loadGithubActionConfig(repo.id);
+                          {/* GitHub Action Config Tab - Only for GitHub repositories */}
+                          {repo.provider === 'github' && (
+                            <button
+                              onClick={() => {
+                                if (getTokenStatus(repo) === 'configured') {
+                                  setRepoActiveTab(repo.id, 'github-action-config');
+                                  // Auto-fetch GitHub Action config if not already loaded
+                                  if (!githubActionConfigData[repo.id] && !loadingGithubActionConfig.has(repo.id)) {
+                                    loadGithubActionConfig(repo.id);
+                                  }
                                 }
-                              }
-                            }}
-                            disabled={getTokenStatus(repo) !== 'configured' || repo.provider !== 'github'}
-                            className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                              getTokenStatus(repo) !== 'configured' || repo.provider !== 'github'
-                                ? 'text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-50'
-                                : getRepoActiveTab(repo.id) === 'github-action-config'
-                                ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
-                                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-                            }`}
-                          >
-                            <Server className="h-4 w-4 mr-2" />
-                            <span>GitHub Action</span>
-                          </button>
+                              }}
+                              disabled={getTokenStatus(repo) !== 'configured'}
+                              className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                                getTokenStatus(repo) !== 'configured'
+                                  ? 'text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-50'
+                                  : getRepoActiveTab(repo.id) === 'github-action-config'
+                                  ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
+                                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                              }`}
+                            >
+                              <Server className="h-4 w-4 mr-2" />
+                              <span>GitHub Action</span>
+                            </button>
+                          )}
+
+                          {/* Azure DevOps Action Runner Tab - Only for Azure DevOps repositories */}
+                          {repo.provider === 'azure_devops' && (
+                            <button
+                              onClick={() => {
+                                if (getTokenStatus(repo) === 'configured') {
+                                  setRepoActiveTab(repo.id, 'azure-action-runner');
+                                }
+                              }}
+                              disabled={getTokenStatus(repo) !== 'configured'}
+                              className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                                getTokenStatus(repo) !== 'configured'
+                                  ? 'text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-50'
+                                  : getRepoActiveTab(repo.id) === 'azure-action-runner'
+                                  ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
+                                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                              }`}
+                            >
+                              <Server className="h-4 w-4 mr-2" />
+                              <span>Azure Pipeline</span>
+                            </button>
+                          )}
+
+                          {/* GitHub Actions Runner Installation Tab - Only for GitHub repositories */}
+                          {repo.provider === 'github' && (
+                            <button
+                              onClick={() => {
+                                if (getTokenStatus(repo) === 'configured') {
+                                  setRepoActiveTab(repo.id, 'github-runner-install');
+                                }
+                              }}
+                              disabled={getTokenStatus(repo) !== 'configured'}
+                              className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                                getTokenStatus(repo) !== 'configured'
+                                  ? 'text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-50'
+                                  : getRepoActiveTab(repo.id) === 'github-runner-install'
+                                  ? 'bg-white dark:bg-gray-700 text-green-600 dark:text-green-400 shadow-sm'
+                                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                              }`}
+                            >
+                              <Download className="h-4 w-4 mr-2" />
+                              <span>Runner Install</span>
+                            </button>
+                          )}
                           
                           {/* Best Practices Tab - Disabled if no auth token */}
                           <button
@@ -1748,10 +2112,22 @@ const RepositoryManager = () => {
                           <div className="space-y-6 tab-enter">
                             {/* Runner Health Status */}
                             {repo.runner_status && (
-                              <div className="bg-gradient-to-r from-green-50 to-blue-50 dark:from-green-900/20 dark:to-blue-900/20 rounded-lg p-6 border border-green-200 dark:border-green-700">
+                              <div className={`rounded-lg p-6 border ${
+                                repo.runner_status === 'running' 
+                                  ? 'bg-gradient-to-r from-green-50 to-blue-50 dark:from-green-900/20 dark:to-blue-900/20 border-green-200 dark:border-green-700'
+                                  : repo.runner_status === 'error' || repo.runner_status === 'stopped' || repo.runner_status === 'misconfigured'
+                                  ? 'bg-gradient-to-r from-red-50 to-red-100 dark:from-red-900/20 dark:to-red-800/20 border-red-200 dark:border-red-700'
+                                  : 'bg-gradient-to-r from-yellow-50 to-orange-50 dark:from-yellow-900/20 dark:to-orange-900/20 border-yellow-200 dark:border-yellow-700'
+                              }`}>
                                 <div className="flex items-center justify-between mb-4">
                                   <h4 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
-                                    <Activity className="h-5 w-5 mr-2 text-green-600 dark:text-green-400" />
+                                    <Activity className={`h-5 w-5 mr-2 ${
+                                      repo.runner_status === 'running' 
+                                        ? 'text-green-600 dark:text-green-400'
+                                        : repo.runner_status === 'error' || repo.runner_status === 'stopped' || repo.runner_status === 'misconfigured'
+                                        ? 'text-red-600 dark:text-red-400'
+                                        : 'text-yellow-600 dark:text-yellow-400'
+                                    }`} />
                                     Runner Health Status
                                   </h4>
                                   <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${getRunnerStatusColor(repo.runner_status)}`}>
@@ -1779,6 +2155,43 @@ const RepositoryManager = () => {
                               </div>
                             )}
 
+                            {/* Health Check Actions */}
+                            <div className="bg-white dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700 shadow-sm">
+                              <div className="flex items-center justify-between mb-4">
+                                <h4 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
+                                  <Activity className="h-5 w-5 mr-2 text-green-600 dark:text-green-400" />
+                                  Health & Status Checks
+                                </h4>
+                                <div className="flex items-center space-x-2">
+                                  <button
+                                    onClick={() => checkRunnerHealth(repo.id)}
+                                    disabled={checkingHealth.has(repo.id)}
+                                    className="flex items-center px-3 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    {checkingHealth.has(repo.id) ? (
+                                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                                    ) : (
+                                      <Activity className="h-4 w-4 mr-2" />
+                                    )}
+                                    Check Health
+                                  </button>
+                                </div>
+                              </div>
+                              
+                              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                                <div className="flex items-start">
+                                  <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3 mt-0.5 flex-shrink-0" />
+                                  <div>
+                                    <h6 className="font-medium text-blue-800 dark:text-blue-200 mb-2">Health Check Actions</h6>
+                                    <div className="text-sm text-blue-700 dark:text-blue-300 space-y-1">
+                                      <p>• <strong>Refresh (Top-level):</strong> Comprehensive check of repository health, configuration, and services</p>
+                                      <p>• <strong>Check Health:</strong> Validates tokens, API access, and repository connectivity</p>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
                             {/* Enhanced Configuration Status */}
                             {shouldShowConfigStatus(repo) && (
                               <div className="bg-white dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700 shadow-sm">
@@ -1790,7 +2203,7 @@ const RepositoryManager = () => {
                                   <div className="flex items-center justify-end">
                                     <button
                                       onClick={() => loadEffectiveConfig(repo.id)}
-                                      className="flex items-center px-3 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                      className="flex items-center px-3 py-2 text-sm font-medium text-white bg-gray-600 hover:bg-gray-700 dark:bg-gray-500 dark:hover:bg-gray-600 rounded-lg transition-colors duration-200 shadow-sm"
                                     >
                                       <Eye className="h-4 w-4 mr-2" />
                                       View Effective Config
@@ -1807,13 +2220,11 @@ const RepositoryManager = () => {
                                         <Settings className="h-4 w-4 text-green-600 dark:text-green-400 mr-2" />
                                         <span className="font-medium text-green-900 dark:text-green-200 text-sm">System Default</span>
                                       </div>
-                                      <p className="text-xs text-gray-600 dark:text-gray-400">Base PR-Agent configuration from dashboard settings</p>
-                                      <div className="mt-2">
-                                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200">
-                                          <Check className="h-3 w-3 mr-1" />
-                                          Always Active
-                                        </span>
-                                      </div>
+                                      <p className="text-xs text-gray-600 dark:text-gray-400 mb-2">Base PR-Agent configuration from dashboard settings</p>
+                                      <span className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200">
+                                        <Check className="h-3 w-3 mr-1" />
+                                        Always Active
+                                      </span>
                                     </div>
 
                                     {/* Repository Config */}
@@ -1834,72 +2245,68 @@ const RepositoryManager = () => {
                                             : 'text-gray-600 dark:text-gray-400'
                                         }`}>Repository Config</span>
                                       </div>
-                                      <p className="text-xs text-gray-600 dark:text-gray-400">Custom .pr_agent.toml in repository root</p>
-                                      <div className="mt-2">
-                                        <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs ${
-                                          repo.has_pr_agent_config
-                                            ? 'bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200'
-                                            : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-400'
-                                        }`}>
-                                          {repo.has_pr_agent_config ? (
-                                            <>
-                                              <Check className="h-3 w-3 mr-1" />
-                                              {repo.effective_config?.override_keys?.length 
-                                                ? `${repo.effective_config.override_keys.length} overrides`
-                                                : 'Active'
-                                              }
-                                            </>
-                                          ) : (
-                                            <>
-                                              <X className="h-3 w-3 mr-1" />
-                                              Not Found
-                                            </>
-                                          )}
-                                        </span>
-                                      </div>
+                                      <p className="text-xs text-gray-600 dark:text-gray-400 mb-2">Custom .pr_agent.toml in repository root</p>
+                                      <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs ${
+                                        repo.has_pr_agent_config
+                                          ? 'bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200'
+                                          : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-400'
+                                      }`}>
+                                        {repo.has_pr_agent_config ? (
+                                          <>
+                                            <Check className="h-3 w-3 mr-1" />
+                                            {repo.effective_config?.override_keys?.length 
+                                              ? `${repo.effective_config.override_keys.length} overrides`
+                                              : 'Active'
+                                            }
+                                          </>
+                                        ) : (
+                                          <>
+                                            <X className="h-3 w-3 mr-1" />
+                                            Not Found
+                                          </>
+                                        )}
+                                      </span>
                                     </div>
 
                                     {/* Workflow Config */}
                                     <div className={`rounded-lg p-4 border ${
                                       repo.has_workflow_config 
-                                        ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700'
+                                        ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-700'
                                         : 'bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600'
                                     }`}>
                                       <div className="flex items-center mb-2">
                                         <Github className={`h-4 w-4 mr-2 ${
                                           repo.has_workflow_config 
-                                            ? 'text-blue-600 dark:text-blue-400'
+                                            ? 'text-green-600 dark:text-green-400'
                                             : 'text-gray-400 dark:text-gray-500'
                                         }`} />
                                         <span className={`font-medium text-sm ${
                                           repo.has_workflow_config
-                                            ? 'text-blue-900 dark:text-blue-200'
+                                            ? 'text-green-900 dark:text-green-200'
                                             : 'text-gray-600 dark:text-gray-400'
                                         }`}>GitHub Workflow</span>
                                       </div>
-                                      <p className="text-xs text-gray-600 dark:text-gray-400">Environment variables from .github/workflows/pr_agent.yml</p>
-                                      <div className="mt-2">
-                                        <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs ${
-                                          repo.has_workflow_config
-                                            ? 'bg-blue-200 dark:bg-blue-800 text-blue-800 dark:text-blue-200'
-                                            : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-400'
-                                        }`}>
-                                          {repo.has_workflow_config ? (
-                                            <>
-                                              <Check className="h-3 w-3 mr-1" />
-                                              {repo.effective_config?.workflow_config?.configuration_overrides 
-                                                ? `${Object.keys(repo.effective_config.workflow_config.configuration_overrides).length} env vars`
-                                                : 'Active'
-                                              }
-                                            </>
-                                          ) : (
-                                            <>
-                                              <X className="h-3 w-3 mr-1" />
-                                              Not Found
-                                            </>
-                                          )}
-                                        </span>
-                                      </div>
+                                      <p className="text-xs text-gray-600 dark:text-gray-400 mb-2">Environment variables from .github/workflows/pr_agent.yml</p>
+                                      <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs ${
+                                        repo.has_workflow_config
+                                          ? 'bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200'
+                                          : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-400'
+                                      }`}>
+                                        {repo.has_workflow_config ? (
+                                          <>
+                                            <Check className="h-3 w-3 mr-1" />
+                                            {repo.effective_config?.workflow_config?.configuration_overrides 
+                                              ? `${Object.keys(repo.effective_config.workflow_config.configuration_overrides).length} env vars`
+                                              : 'Active'
+                                            }
+                                          </>
+                                        ) : (
+                                          <>
+                                            <X className="h-3 w-3 mr-1" />
+                                            Not Found
+                                          </>
+                                        )}
+                                      </span>
                                     </div>
 
                                   </div>
@@ -1943,23 +2350,64 @@ const RepositoryManager = () => {
                         {/* Authentication & General Tab */}
                         {getRepoActiveTab(repo.id) === 'authentication' && (
                           <div className="space-y-6 tab-enter">
+                            {/* Header with Edit Button */}
+                            <div className="flex items-center justify-between">
+                              <h4 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
+                                <Key className="h-5 w-5 mr-2 text-blue-600 dark:text-blue-400" />
+                                General & Authentication
+                              </h4>
+                              <div className="flex items-center space-x-2">
+                                {!isEditingGeneral[repo.id] ? (
+                                  <button
+                                    onClick={() => startEditingGeneral(repo.id)}
+                                    className="flex items-center px-3 py-2 text-sm font-medium text-white bg-gray-600 hover:bg-gray-700 dark:bg-gray-500 dark:hover:bg-gray-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                  >
+                                    <Edit className="h-4 w-4 mr-2" />
+                                    Edit
+                                  </button>
+                                ) : (
+                                  <>
+                                    <button
+                                      onClick={() => cancelEditingGeneral(repo.id)}
+                                      className="flex items-center px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-600 border border-gray-300 dark:border-gray-500 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-500 hover:border-gray-400 dark:hover:border-gray-400 transition-colors duration-200 shadow-sm"
+                                    >
+                                      <X className="h-4 w-4 mr-2" />
+                                      Cancel
+                                    </button>
+                                    <button
+                                      onClick={() => saveGeneralChanges(repo.id)}
+                                      className="flex items-center px-3 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                    >
+                                      <Save className="h-4 w-4 mr-2" />
+                                      Save Changes
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+
                             {/* Repository Information */}
                             <div className="bg-gradient-to-r from-blue-50 to-cyan-50 dark:from-blue-900/20 dark:to-cyan-900/20 rounded-lg p-6 border border-blue-200 dark:border-blue-700">
-                              <h4 className="text-lg font-medium text-gray-900 dark:text-white mb-4 flex items-center">
-                                <Info className="h-5 w-5 mr-2 text-blue-600 dark:text-blue-400" />
-                                Repository Information
-                              </h4>
+                              <div className="flex items-center justify-between mb-4">
+                                <h4 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
+                                  <Info className="h-5 w-5 mr-2 text-blue-600 dark:text-blue-400" />
+                                  Repository Information
+                                </h4>
+                              </div>
                               
                               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div>
                                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                                     Repository Name
                                   </label>
-                                  {editingRepo === repo.id ? (
+                                  {isEditingGeneral[repo.id] ? (
                                     <input
                                       type="text"
-                                      value={formData.name}
-                                      onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                                      value={editedGeneralData[repo.id]?.name || ''}
+                                      onChange={(e) => setEditedGeneralData(prev => ({
+                                        ...prev,
+                                        [repo.id]: { ...prev[repo.id], name: e.target.value }
+                                      }))}
                                       className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
                                     />
                                   ) : (
@@ -1973,10 +2421,13 @@ const RepositoryManager = () => {
                                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                                     Provider
                                   </label>
-                                  {editingRepo === repo.id ? (
+                                  {isEditingGeneral[repo.id] ? (
                                     <select
-                                      value={formData.provider}
-                                      onChange={(e) => setFormData({ ...formData, provider: e.target.value })}
+                                      value={editedGeneralData[repo.id]?.provider || ''}
+                                      onChange={(e) => setEditedGeneralData(prev => ({
+                                        ...prev,
+                                        [repo.id]: { ...prev[repo.id], provider: e.target.value }
+                                      }))}
                                       className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
                                     >
                                       <option value="github">GitHub</option>
@@ -1997,11 +2448,14 @@ const RepositoryManager = () => {
                                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                                   Repository URL
                                 </label>
-                                {editingRepo === repo.id ? (
+                                {isEditingGeneral[repo.id] ? (
                                   <input
                                     type="url"
-                                    value={formData.url}
-                                    onChange={(e) => setFormData({ ...formData, url: e.target.value })}
+                                    value={editedGeneralData[repo.id]?.url || ''}
+                                    onChange={(e) => setEditedGeneralData(prev => ({
+                                      ...prev,
+                                      [repo.id]: { ...prev[repo.id], url: e.target.value }
+                                    }))}
                                     className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
                                   />
                                 ) : (
@@ -2034,12 +2488,15 @@ const RepositoryManager = () => {
                                       GitHub Access Token
                                       <span className="text-red-500 ml-1">*</span>
                                     </label>
-                                    {editingRepo === repo.id ? (
+                                    {isEditingGeneral[repo.id] ? (
                                       <div className="relative">
                                         <input
                                           type={isTokenVisible(repo.id, 'github') ? 'text' : 'password'}
-                                          value={formData.github_token}
-                                          onChange={(e) => setFormData({ ...formData, github_token: e.target.value })}
+                                          value={editedGeneralData[repo.id]?.github_token || ''}
+                                          onChange={(e) => setEditedGeneralData(prev => ({
+                                            ...prev,
+                                            [repo.id]: { ...prev[repo.id], github_token: e.target.value }
+                                          }))}
                                           placeholder="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
                                           className="w-full px-4 py-3 pr-12 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors font-mono text-sm"
                                         />
@@ -2087,12 +2544,15 @@ const RepositoryManager = () => {
                                       Azure DevOps Personal Access Token (PAT)
                                       <span className="text-red-500 ml-1">*</span>
                                     </label>
-                                    {editingRepo === repo.id ? (
+                                    {isEditingGeneral[repo.id] ? (
                                       <div className="relative">
                                         <input
                                           type={isTokenVisible(repo.id, 'azure') ? 'text' : 'password'}
-                                          value={formData.azure_pat}
-                                          onChange={(e) => setFormData({ ...formData, azure_pat: e.target.value })}
+                                          value={editedGeneralData[repo.id]?.azure_pat || ''}
+                                          onChange={(e) => setEditedGeneralData(prev => ({
+                                            ...prev,
+                                            [repo.id]: { ...prev[repo.id], azure_pat: e.target.value }
+                                          }))}
                                           placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
                                           className="w-full px-4 py-3 pr-12 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors font-mono text-sm"
                                         />
@@ -2198,7 +2658,7 @@ const RepositoryManager = () => {
                                   <button
                                     onClick={() => loadGithubActionConfig(repo.id, true)}
                                     disabled={loadingGithubActionConfig.has(repo.id)}
-                                    className="flex items-center px-3 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                    className="flex items-center px-3 py-2 text-sm font-medium text-white bg-gray-600 hover:bg-gray-700 dark:bg-gray-500 dark:hover:bg-gray-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
                                     <RefreshCw className={`h-4 w-4 mr-2 ${loadingGithubActionConfig.has(repo.id) ? 'animate-spin' : ''}`} />
                                     {loadingGithubActionConfig.has(repo.id) ? 'Loading...' : 'Refresh'}
@@ -2231,36 +2691,55 @@ const RepositoryManager = () => {
                                 </div>
                               ) : githubActionConfigData[repo.id]?.exists ? (
                                 /* Configuration Exists */
-                                <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-6">
-                                  <div className="flex items-center mb-4">
-                                    <Check className="h-6 w-6 text-green-600 dark:text-green-400 mr-3" />
-                                    <div>
-                                      <h5 className="font-medium text-green-800 dark:text-green-200">Configuration Found</h5>
-                                      <p className="text-green-700 dark:text-green-300 text-sm">
-                                        GitHub Action configuration exists at <code className="bg-green-100 dark:bg-green-800 px-1 rounded">.github/pr_agent.yml</code>
-                                      </p>
-                                    </div>
+                                <div className="bg-white dark:bg-gray-800 rounded-lg border border-green-100 dark:border-green-700 overflow-hidden">
+                                  <div className="bg-green-50 dark:bg-green-900/30 px-4 py-3 border-b border-green-100 dark:border-green-700 flex items-center justify-between">
+                                    <h5 className="font-medium text-green-900 dark:text-green-200 text-sm flex items-center">
+                                      <Check className="h-4 w-4 mr-2" />
+                                      .github/pr_agent.yml
+                                    </h5>
+                                    {githubActionConfigData[repo.id]?.last_fetched && (
+                                      <span className="text-xs text-green-700 dark:text-green-300">
+                                        Updated: {formatTimestamp(githubActionConfigData[repo.id].last_fetched)}
+                                      </span>
+                                    )}
                                   </div>
-                                  
-                                  {githubActionConfigData[repo.id]?.env_vars && (
-                                    <div className="mt-4">
-                                      <h6 className="text-sm font-medium text-green-800 dark:text-green-200 mb-2">
-                                        Environment Variables ({Object.keys(githubActionConfigData[repo.id].env_vars).length})
-                                      </h6>
-                                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 text-xs max-h-64 overflow-y-auto">
-                                        {Object.entries(githubActionConfigData[repo.id].env_vars).map(([key, value]) => (
-                                          <div key={key} className="bg-green-100 dark:bg-green-800/50 px-2 py-1 rounded flex items-center justify-between">
-                                            <span className="font-mono text-green-900 dark:text-green-100 truncate flex-1">{key}</span>
-                                            {value && value !== key && (
-                                              <span className="ml-2 text-green-700 dark:text-green-300 text-xs truncate max-w-20" title={value}>
-                                                {value.length > 15 ? `${value.substring(0, 15)}...` : value}
-                                              </span>
-                                            )}
+                                  <div className="px-4 py-3">
+                                    {githubActionConfigData[repo.id]?.env_vars && Object.keys(githubActionConfigData[repo.id].env_vars).length > 0 ? (
+                                      <div className="space-y-4">
+                                        <div className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+                                          <strong>Environment Variables:</strong>
+                                        </div>
+                                        <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 border border-gray-200 dark:border-gray-600">
+                                          <div className="font-mono text-sm font-semibold text-gray-900 dark:text-white mb-3 pb-2 border-b border-gray-200 dark:border-gray-600">
+                                            [env]
                                           </div>
-                                        ))}
+                                          <div className="space-y-2">
+                                            {Object.entries(githubActionConfigData[repo.id].env_vars).map(([key, value]) => (
+                                              <div key={key} className="flex items-start justify-between">
+                                                <div className="font-mono text-xs text-gray-700 dark:text-gray-300 font-medium">
+                                                  {key}
+                                                </div>
+                                                <div className="font-mono text-xs text-gray-600 dark:text-gray-400 ml-3 text-right max-w-xs">
+                                                  {value && value !== key
+                                                    ? String(value).length > 50
+                                                      ? `${String(value).substring(0, 50)}...`
+                                                      : String(value)
+                                                    : '(set)'
+                                                  }
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
                                       </div>
-                                    </div>
-                                  )}
+                                    ) : (
+                                      <div className="text-center py-4">
+                                        <p className="text-gray-500 dark:text-gray-400 text-sm">
+                                          No environment variables found in configuration
+                                        </p>
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
                               ) : githubActionConfigData[repo.id] !== undefined ? (
                                 /* No Configuration */
@@ -2353,7 +2832,7 @@ const RepositoryManager = () => {
                                       <button
                                         onClick={() => loadBestPractices(repo.id, true)}
                                         disabled={loadingBestPractices.has(repo.id)}
-                                        className="flex items-center px-3 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                        className="flex items-center px-3 py-2 text-sm font-medium text-white bg-gray-600 hover:bg-gray-700 dark:bg-gray-500 dark:hover:bg-gray-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                                       >
                                         <RefreshCw className={`h-4 w-4 mr-2 ${loadingBestPractices.has(repo.id) ? 'animate-spin' : ''}`} />
                                         {loadingBestPractices.has(repo.id) ? 'Loading...' : 'Refresh'}
@@ -2372,7 +2851,7 @@ const RepositoryManager = () => {
                                     <>
                                       <button
                                         onClick={() => cancelEditingBestPractices(repo.id)}
-                                        className="flex items-center px-3 py-2 text-sm font-medium text-white bg-gray-600 hover:bg-gray-700 dark:bg-gray-500 dark:hover:bg-gray-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                        className="flex items-center px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-600 border border-gray-300 dark:border-gray-500 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-500 hover:border-gray-400 dark:hover:border-gray-400 transition-colors duration-200 shadow-sm"
                                       >
                                         <X className="h-4 w-4 mr-2" />
                                         Cancel
@@ -2380,7 +2859,7 @@ const RepositoryManager = () => {
                                       <button
                                         onClick={() => saveBestPractices(repo.id)}
                                         disabled={savingBestPractices[repo.id] || !editedBestPracticesContent[repo.id]?.trim()}
-                                        className="flex items-center px-3 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        className="flex items-center px-3 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                                       >
                                         <GitBranch className={`h-4 w-4 mr-2 ${savingBestPractices[repo.id] ? 'animate-spin' : ''}`} />
                                         {savingBestPractices[repo.id] ? 'Creating PR...' : 'Create PR'}
@@ -2509,171 +2988,427 @@ const RepositoryManager = () => {
                         {/* PR-Agent Config Tab */}
                         {getRepoActiveTab(repo.id) === 'pr-agent-config' && (
                           <div className="space-y-6 tab-enter">
-                            <div className="bg-gradient-to-r from-indigo-50 to-purple-50 dark:from-indigo-900/20 dark:to-purple-900/20 rounded-lg p-6 border border-indigo-200 dark:border-indigo-700">
-                              <div className="flex items-center justify-between mb-6">
-                                <h4 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
-                                  <Settings className="h-5 w-5 mr-2 text-indigo-600 dark:text-indigo-400" />
-                                  PR-Agent Configuration
-                                </h4>
-                                <div className="flex items-center space-x-2">
-                                  {/* PR Status Display */}
-                                  {prAgentConfigData[repo.id]?.pr_status === 'pending' && prAgentConfigData[repo.id]?.pr_url && (
-                                    <div className="flex items-center bg-yellow-50 dark:bg-yellow-900/20 text-yellow-800 dark:text-yellow-200 px-3 py-1 rounded-lg border border-yellow-200 dark:border-yellow-700 mr-2">
-                                      <GitBranch className="h-4 w-4 mr-1" />
-                                      <span className="text-sm font-medium">
-                                        {checkingPrStatus.has(repo.id) ? (
-                                          <>
-                                            <RefreshCw className="h-3 w-3 animate-spin inline mr-1" />
-                                            Checking PR #{prAgentConfigData[repo.id].pr_number}...
-                                          </>
-                                        ) : (
-                                          <>
-                                            PR #{prAgentConfigData[repo.id].pr_number} Pending
-                                          </>
-                                        )}
-                                      </span>
-                                      <a 
-                                        href={prAgentConfigData[repo.id].pr_url} 
-                                        target="_blank" 
-                                        rel="noopener noreferrer"
-                                        className="ml-1 hover:text-yellow-900 dark:hover:text-yellow-100"
-                                      >
-                                        <ExternalLink className="h-3 w-3" />
-                                      </a>
-                                      <button
-                                        onClick={() => checkPrAgentConfigPRStatus(repo.id)}
-                                        disabled={checkingPrStatus.has(repo.id)}
-                                        className="ml-2 hover:text-yellow-900 dark:hover:text-yellow-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                                        title={checkingPrStatus.has(repo.id) ? "Checking..." : "Check PR status"}
-                                      >
-                                        <RefreshCw className={`h-3 w-3 ${checkingPrStatus.has(repo.id) ? 'animate-spin' : ''}`} />
-                                      </button>
+                            <div className="flex items-center justify-between">
+                              <h4 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
+                                <Settings className="h-5 w-5 mr-2 text-indigo-600 dark:text-indigo-400" />
+                                PR-Agent Configuration
+                              </h4>
+                              <div className="flex items-center space-x-2">
+                                {/* PR Status Display */}
+                                {prAgentConfigData[repo.id]?.pr_status === 'pending' && prAgentConfigData[repo.id]?.pr_url && (
+                                  <div className="flex items-center bg-yellow-50 dark:bg-yellow-900/20 text-yellow-800 dark:text-yellow-200 px-3 py-1 rounded-lg border border-yellow-200 dark:border-yellow-700 mr-2">
+                                    <GitBranch className="h-4 w-4 mr-1" />
+                                    <span className="text-sm font-medium">
+                                      {checkingPrStatus.has(repo.id) ? (
+                                        <>
+                                          <RefreshCw className="h-3 w-3 animate-spin inline mr-1" />
+                                          Checking PR #{prAgentConfigData[repo.id].pr_number}...
+                                        </>
+                                      ) : (
+                                        <>
+                                          PR #{prAgentConfigData[repo.id].pr_number} Pending
+                                        </>
+                                      )}
+                                    </span>
+                                    <a 
+                                      href={prAgentConfigData[repo.id].pr_url} 
+                                      target="_blank" 
+                                      rel="noopener noreferrer"
+                                      className="ml-1 hover:text-yellow-900 dark:hover:text-yellow-100"
+                                    >
+                                      <ExternalLink className="h-3 w-3" />
+                                    </a>
+                                    <button
+                                      onClick={() => checkPrAgentConfigPRStatus(repo.id)}
+                                      disabled={checkingPrStatus.has(repo.id)}
+                                      className="ml-2 hover:text-yellow-900 dark:hover:text-yellow-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                                      title={checkingPrStatus.has(repo.id) ? "Checking..." : "Check PR status"}
+                                    >
+                                      <RefreshCw className={`h-3 w-3 ${checkingPrStatus.has(repo.id) ? 'animate-spin' : ''}`} />
+                                    </button>
+                                  </div>
+                                )}
+                                
+                                <button
+                                  onClick={() => loadPrAgentConfig(repo.id, true)}
+                                  disabled={loadingPrAgentConfig.has(repo.id)}
+                                  className="flex items-center px-3 py-2 text-sm font-medium text-white bg-gray-600 hover:bg-gray-700 dark:bg-gray-500 dark:hover:bg-gray-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  <RefreshCw className={`h-4 w-4 mr-2 ${loadingPrAgentConfig.has(repo.id) ? 'animate-spin' : ''}`} />
+                                  {loadingPrAgentConfig.has(repo.id) ? 'Loading...' : 'Refresh'}
+                                </button>
+                                <button
+                                  onClick={() => openPrAgentConfigEditor(repo.id)}
+                                  className="flex items-center px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                >
+                                  <Edit className="h-4 w-4 mr-2" />
+                                  {prAgentConfigData[repo.id]?.has_config ? 'Edit' : 'Create'}
+                                </button>
+                              </div>
+                            </div>
+                            
+                            {/* Config Status */}
+                            {loadingPrAgentConfig.has(repo.id) ? (
+                              <div className="flex items-center justify-center py-8">
+                                <RefreshCw className="h-6 w-6 text-indigo-600 dark:text-indigo-400 animate-spin mr-3" />
+                                <span className="text-gray-600 dark:text-gray-400">Loading PR-Agent configuration...</span>
+                              </div>
+                            ) : prAgentConfigData[repo.id]?.parse_error ? (
+                              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+                                <div className="flex items-center">
+                                  <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 mr-3" />
+                                  <div>
+                                    <h5 className="font-medium text-red-800 dark:text-red-200">Configuration Parse Error</h5>
+                                    <p className="text-red-700 dark:text-red-300 text-sm mt-1">{prAgentConfigData[repo.id].parse_error}</p>
+                                    <p className="text-red-600 dark:text-red-400 text-xs mt-2">Please fix the TOML syntax to resolve this error.</p>
+                                  </div>
+                                </div>
+                              </div>
+                            ) : prAgentConfigData[repo.id]?.has_config ? (
+                              <div className="bg-white dark:bg-gray-800 rounded-lg border border-indigo-100 dark:border-indigo-700 overflow-hidden">
+                                <div className="bg-indigo-50 dark:bg-indigo-900/30 px-4 py-3 border-b border-indigo-100 dark:border-indigo-700 flex items-center justify-between">
+                                  <h5 className="font-medium text-indigo-900 dark:text-indigo-200 text-sm flex items-center">
+                                    <FileText className="h-4 w-4 mr-2" />
+                                    .pr_agent.toml
+                                  </h5>
+                                  {prAgentConfigData[repo.id].last_fetched && (
+                                    <span className="text-xs text-indigo-700 dark:text-indigo-300">
+                                      Updated: {formatTimestamp(prAgentConfigData[repo.id].last_fetched)}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="px-4 py-3">
+                                  {prAgentConfigData[repo.id].parsed_config ? (
+                                    <div className="space-y-4">
+                                      <div className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+                                        <strong>Overridden Settings:</strong>
+                                      </div>
+                                      <div className="space-y-3">
+                                        {Object.entries(prAgentConfigData[repo.id].parsed_config).map(([section, settings]) => (
+                                          <div key={section} className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 border border-gray-200 dark:border-gray-600">
+                                            <div className="font-mono text-sm font-semibold text-gray-900 dark:text-white mb-3 pb-2 border-b border-gray-200 dark:border-gray-600">
+                                              [{section}]
+                                            </div>
+                                            <div className="space-y-2">
+                                              {Object.entries(settings || {}).map(([key, value]) => (
+                                                <div key={key} className="flex items-start justify-between">
+                                                  <div className="font-mono text-xs text-gray-700 dark:text-gray-300 font-medium">
+                                                    {key}
+                                                  </div>
+                                                  <div className="font-mono text-xs text-gray-600 dark:text-gray-400 ml-3 text-right max-w-xs">
+                                                    {Array.isArray(value) 
+                                                      ? `[${value.join(', ')}]`
+                                                      : typeof value === 'object'
+                                                        ? JSON.stringify(value)
+                                                        : String(value).length > 50
+                                                          ? `${String(value).substring(0, 50)}...`
+                                                          : String(value)
+                                                    }
+                                                  </div>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="bg-gray-50 dark:bg-gray-700 rounded p-3">
+                                      <pre className="text-xs text-gray-700 dark:text-gray-300 font-mono whitespace-pre-wrap">
+                                        {prAgentConfigData[repo.id].content || 'No content available'}
+                                      </pre>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ) : prAgentConfigData[repo.id] !== undefined ? (
+                              <div className="text-center py-8">
+                                <Settings className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500 mb-4" />
+                                <h5 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No Configuration Override Found</h5>
+                                <p className="text-gray-500 dark:text-gray-400 mb-4">
+                                  Create a <code className="bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded text-sm">.pr_agent.toml</code> file to override global settings for this repository.
+                                </p>
+                                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 text-left max-w-2xl mx-auto">
+                                  <div className="flex items-start">
+                                    <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3 mt-0.5 flex-shrink-0" />
+                                    <div>
+                                      <h6 className="font-medium text-blue-800 dark:text-blue-200 mb-2">How Repository Configuration Works</h6>
+                                      <div className="text-sm text-blue-700 dark:text-blue-300 space-y-2">
+                                        <p>• Click "Create Config" to add repository-specific settings</p>
+                                        <p>• Override any global PR-Agent setting for this repository</p>
+                                        <p>• Configure models, thresholds, prompts, and behavior</p>
+                                        <p>• Changes are deployed via pull request for review</p>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="text-center py-8">
+                                <Settings className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500 mb-4" />
+                                <h5 className="text-lg font-medium text-gray-900 dark:text-white mb-2">PR-Agent Configuration</h5>
+                                <p className="text-gray-500 dark:text-gray-400 mb-4">
+                                  Click "Refresh" to check for a .pr_agent.toml file in your repository.
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Azure DevOps Action Runner Tab */}
+                        {getRepoActiveTab(repo.id) === 'azure-action-runner' && (
+                          <div className="space-y-6 tab-enter">
+                            <div className="flex items-center justify-between">
+                              <h4 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
+                                <Server className="h-5 w-5 mr-2 text-blue-600 dark:text-blue-400" />
+                                Azure DevOps Pipeline Configuration
+                              </h4>
+                              <div className="flex items-center space-x-2">
+                                <button
+                                  onClick={() => {/* TODO: Add refresh functionality */}}
+                                  className="flex items-center px-3 py-2 text-sm font-medium text-white bg-gray-600 hover:bg-gray-700 dark:bg-gray-500 dark:hover:bg-gray-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                >
+                                  <RefreshCw className="h-4 w-4 mr-2" />
+                                  Refresh
+                                </button>
+                                <button
+                                  onClick={() => {/* TODO: Add create functionality */}}
+                                  className="flex items-center px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                >
+                                  <Edit className="h-4 w-4 mr-2" />
+                                  Create Pipeline
+                                </button>
+                              </div>
+                            </div>
+                            
+                            <div className="text-center py-8">
+                              <Server className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500 mb-4" />
+                              <h5 className="text-lg font-medium text-gray-900 dark:text-white mb-2">Azure DevOps Pipeline</h5>
+                              <p className="text-gray-500 dark:text-gray-400 mb-4">
+                                Azure DevOps pipeline configuration for PR-Agent automation (Coming Soon)
+                              </p>
+                              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 text-left max-w-2xl mx-auto">
+                                <div className="flex items-start">
+                                  <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3 mt-0.5 flex-shrink-0" />
+                                  <div>
+                                    <h6 className="font-medium text-blue-800 dark:text-blue-200 mb-2">Azure DevOps Pipeline Integration</h6>
+                                    <div className="text-sm text-blue-700 dark:text-blue-300 space-y-2">
+                                      <p>• Configure Azure DevOps pipeline for automatic PR processing</p>
+                                      <p>• Set up PR-Agent environment variables and secrets</p>
+                                      <p>• Enable automated code reviews and improvements</p>
+                                      <p>• Support for both hosted and self-hosted agents</p>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* GitHub Actions Runner Installation Tab */}
+                        {getRepoActiveTab(repo.id) === 'github-runner-install' && (
+                          <div className="space-y-6 tab-enter">
+                            <div className="flex items-center justify-between">
+                              <h4 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
+                                <Download className="h-5 w-5 mr-2 text-green-600 dark:text-green-400" />
+                                GitHub Actions Runner Management
+                              </h4>
+                              <div className="flex items-center space-x-2">
+                                {/* Only show Add Runner button if service is not found */}
+                                {runnerServiceStatus[repo.id]?.status === 'not_found' && (
+                                  <a
+                                    href={`${repo.url}/settings/actions/runners/new`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex items-center px-3 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                  >
+                                    <ExternalLink className="h-4 w-4 mr-2" />
+                                    Add Runner
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                            
+                            {/* Service Configuration */}
+                            <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-visible">
+                              <div className="bg-gray-50 dark:bg-gray-900/30 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                                <h5 className="font-medium text-gray-900 dark:text-gray-200 text-sm flex items-center">
+                                  <Settings className="h-4 w-4 mr-2" />
+                                  Service Configuration
+                                </h5>
+                              </div>
+                              <div className="p-4 space-y-4">
+                                <div className="relative service-dropdown-container">
+                                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                    Service Name
+                                  </label>
+                                  <div className="relative">
+                                    <input
+                                      type="text"
+                                      value={runnerServiceNames[repo.id] || getDefaultServiceName(repo)}
+                                      onChange={(e) => setRunnerServiceNames(prev => ({ ...prev, [repo.id]: e.target.value }))}
+                                      className="w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                                      placeholder={getDefaultServiceName(repo)}
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleServiceDropdown(repo.id)}
+                                      className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                                    >
+                                      <ChevronDown className={`h-4 w-4 transition-transform ${serviceDropdownOpen[repo.id] ? 'rotate-180' : ''}`} />
+                                    </button>
+                                  </div>
+                                  
+                                  {/* Dropdown */}
+                                  {serviceDropdownOpen[repo.id] && (
+                                    <div className="absolute z-50 mt-1 w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md shadow-2xl max-h-60 overflow-y-auto" style={{ minWidth: '100%' }}>
+                                      {loadingServices ? (
+                                        <div className="flex items-center justify-center py-4">
+                                          <RefreshCw className="h-4 w-4 animate-spin mr-2" />
+                                          <span className="text-sm text-gray-600 dark:text-gray-400">Loading services...</span>
+                                        </div>
+                                      ) : availableServices.length > 0 ? (
+                                        <>
+                                          <div className="px-3 py-2 border-b border-gray-200 dark:border-gray-700">
+                                            <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">
+                                              Available GitHub Runner Services ({availableServices.length})
+                                            </p>
+                                          </div>
+                                          {availableServices.map((service, index) => (
+                                            <button
+                                              key={index}
+                                              type="button"
+                                              onClick={() => {
+                                                setRunnerServiceNames(prev => ({ ...prev, [repo.id]: service.name }));
+                                                setServiceDropdownOpen(prev => ({ ...prev, [repo.id]: false }));
+                                              }}
+                                              className="w-full text-left px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors border-b border-gray-100 dark:border-gray-700 last:border-b-0"
+                                            >
+                                              <div className="flex items-center justify-between">
+                                                <div className="flex-1 min-w-0">
+                                                  <p className="text-sm font-medium text-gray-900 dark:text-white truncate">
+                                                    {service.name}
+                                                  </p>
+                                                  <div className="flex items-center mt-1 space-x-3">
+                                                    <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
+                                                      service.status === 'running' 
+                                                        ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
+                                                        : service.status === 'stopped'
+                                                        ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300'
+                                                        : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
+                                                    }`}>
+                                                      {service.status_display || 'Unknown'}
+                                                    </span>
+                                                    {service.display_name && service.display_name !== service.name && (
+                                                      <span className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                                                        {service.display_name}
+                                                      </span>
+                                                    )}
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            </button>
+                                          ))}
+                                        </>
+                                      ) : (
+                                        <div className="px-3 py-4 text-center">
+                                          <Search className="h-6 w-6 text-gray-400 mx-auto mb-2" />
+                                          <p className="text-sm text-gray-600 dark:text-gray-400">No GitHub runner services found</p>
+                                          <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">
+                                            Make sure runner services are installed and running
+                                          </p>
+                                          <p className="text-xs text-red-500 mt-1">
+                                            Debug: Available services: {availableServices.length}
+                                          </p>
+                                        </div>
+                                      )}
                                     </div>
                                   )}
                                   
-                                  <button
-                                    onClick={() => loadPrAgentConfig(repo.id, true)}
-                                    disabled={loadingPrAgentConfig.has(repo.id)}
-                                    className="flex items-center px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                  >
-                                    <RefreshCw className={`h-4 w-4 mr-2 ${loadingPrAgentConfig.has(repo.id) ? 'animate-spin' : ''}`} />
-                                    {loadingPrAgentConfig.has(repo.id) ? 'Loading...' : 'Refresh'}
-                                  </button>
-                                  <button
-                                    onClick={() => openPrAgentConfigEditor(repo.id)}
-                                    className="flex items-center px-3 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 rounded-lg transition-colors duration-200 shadow-sm"
-                                  >
-                                    <Edit className="h-4 w-4 mr-2" />
-                                    {prAgentConfigData[repo.id]?.has_config ? 'Edit Config' : 'Create Config'}
-                                  </button>
+                                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                    Default format: actions.runner.{'{owner}'}.{'{repo}'}.PRMonitor
+                                  </p>
                                 </div>
-                              </div>
-                              
-                              {/* Config Status */}
-                              {loadingPrAgentConfig.has(repo.id) ? (
-                                <div className="flex items-center justify-center py-8">
-                                  <RefreshCw className="h-6 w-6 text-indigo-600 dark:text-indigo-400 animate-spin mr-3" />
-                                  <span className="text-gray-600 dark:text-gray-400">Loading PR-Agent configuration...</span>
-                                </div>
-                              ) : prAgentConfigData[repo.id]?.parse_error ? (
-                                <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
-                                  <div className="flex items-center">
-                                    <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 mr-3" />
-                                    <div>
-                                      <h5 className="font-medium text-red-800 dark:text-red-200">Configuration Parse Error</h5>
-                                      <p className="text-red-700 dark:text-red-300 text-sm mt-1">{prAgentConfigData[repo.id].parse_error}</p>
-                                      <p className="text-red-600 dark:text-red-400 text-xs mt-2">Please fix the TOML syntax to resolve this error.</p>
-                                    </div>
-                                  </div>
-                                </div>
-                              ) : prAgentConfigData[repo.id]?.has_config ? (
-                                <div className="bg-white dark:bg-gray-800 rounded-lg border border-indigo-100 dark:border-indigo-700 overflow-hidden">
-                                  <div className="bg-indigo-50 dark:bg-indigo-900/30 px-4 py-3 border-b border-indigo-100 dark:border-indigo-700 flex items-center justify-between">
-                                    <h5 className="font-medium text-indigo-900 dark:text-indigo-200 text-sm flex items-center">
-                                      <FileText className="h-4 w-4 mr-2" />
-                                      .pr_agent.toml
-                                    </h5>
-                                    {prAgentConfigData[repo.id].last_fetched && (
-                                      <span className="text-xs text-indigo-700 dark:text-indigo-300">
-                                        Updated: {formatTimestamp(prAgentConfigData[repo.id].last_fetched)}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="px-4 py-3">
-                                                        {prAgentConfigData[repo.id].parsed_config ? (
-                      <div className="space-y-4">
-                        <div className="text-sm text-gray-600 dark:text-gray-400 mb-3">
-                          <strong>Overridden Settings:</strong>
-                        </div>
-                        <div className="space-y-3">
-                          {Object.entries(prAgentConfigData[repo.id].parsed_config).map(([section, settings]) => (
-                            <div key={section} className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 border border-gray-200 dark:border-gray-600">
-                              <div className="font-mono text-sm font-semibold text-gray-900 dark:text-white mb-3 pb-2 border-b border-gray-200 dark:border-gray-600">
-                                [{section}]
-                              </div>
-                              <div className="space-y-2">
-                                {Object.entries(settings || {}).map(([key, value]) => (
-                                  <div key={key} className="flex items-start justify-between">
-                                    <div className="font-mono text-xs text-gray-700 dark:text-gray-300 font-medium">
-                                      {key}
-                                    </div>
-                                    <div className="font-mono text-xs text-gray-600 dark:text-gray-400 ml-3 text-right max-w-xs">
-                                      {Array.isArray(value) 
-                                        ? `[${value.join(', ')}]`
-                                        : typeof value === 'object'
-                                          ? JSON.stringify(value)
-                                          : String(value).length > 50
-                                            ? `${String(value).substring(0, 50)}...`
-                                            : String(value)
-                                      }
-                                    </div>
-                                  </div>
-                                ))}
+                                <button
+                                  onClick={() => saveRunnerServiceName(repo.id)}
+                                  disabled={savingRunnerServiceName.has(repo.id)}
+                                  className="flex items-center px-3 py-2 text-sm font-medium text-white bg-gray-600 hover:bg-gray-700 dark:bg-gray-500 dark:hover:bg-gray-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  <Save className={`h-4 w-4 mr-2 ${savingRunnerServiceName.has(repo.id) ? 'animate-spin' : ''}`} />
+                                  {savingRunnerServiceName.has(repo.id) ? 'Saving...' : 'Save Service Name'}
+                                </button>
                               </div>
                             </div>
-                          ))}
-                        </div>
-                      </div>
+
+                            {/* Service Status */}
+                                        {runnerServiceStatus[repo.id] && (
+              <div className={`rounded-lg border p-4 ${
+                runnerServiceStatus[repo.id]?.status === 'running' 
+                  ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
+                  : runnerServiceStatus[repo.id]?.status === 'stopped'
+                  ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800'
+                  : 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800'
+              }`}>
+                <div className="flex items-center justify-between mb-3">
+                  <h5 className={`font-medium text-sm flex items-center ${
+                    runnerServiceStatus[repo.id]?.status === 'running' 
+                      ? 'text-green-800 dark:text-green-200'
+                      : runnerServiceStatus[repo.id]?.status === 'stopped'
+                      ? 'text-red-800 dark:text-red-200'
+                      : 'text-yellow-800 dark:text-yellow-200'
+                  }`}>
+                    {runnerServiceStatus[repo.id]?.status === 'running' ? (
+                      <CheckCircle className="h-4 w-4 mr-2" />
+                    ) : runnerServiceStatus[repo.id]?.status === 'stopped' ? (
+                      <X className="h-4 w-4 mr-2" />
                     ) : (
-                                      <div className="bg-gray-50 dark:bg-gray-700 rounded p-3">
-                                        <pre className="text-xs text-gray-700 dark:text-gray-300 font-mono whitespace-pre-wrap">
-                                          {prAgentConfigData[repo.id].content || 'No content available'}
-                                        </pre>
-                                      </div>
-                                    )}
+                      <AlertCircle className="h-4 w-4 mr-2" />
+                    )}
+                    Service Status: {runnerServiceStatus[repo.id]?.status_display || 'Unknown'}
+                  </h5>
+                  <span className={`text-xs px-2 py-1 rounded-full ${
+                    runnerServiceStatus[repo.id]?.status === 'running' 
+                      ? 'bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200'
+                      : runnerServiceStatus[repo.id]?.status === 'stopped'
+                      ? 'bg-red-200 dark:bg-red-800 text-red-800 dark:text-red-200'
+                      : 'bg-yellow-200 dark:bg-yellow-800 text-yellow-800 dark:text-yellow-200'
+                  }`}>
+                    {(runnerServiceStatus[repo.id]?.status || 'UNKNOWN').toUpperCase()}
+                  </span>
+                </div>
+                <div className={`text-sm space-y-1 ${
+                  runnerServiceStatus[repo.id]?.status === 'running' 
+                    ? 'text-green-700 dark:text-green-300'
+                    : runnerServiceStatus[repo.id]?.status === 'stopped'
+                    ? 'text-red-700 dark:text-red-300'
+                    : 'text-yellow-700 dark:text-yellow-300'
+                }`}>
+                  <p><strong>Service Name:</strong> {runnerServiceStatus[repo.id]?.service_name || 'N/A'}</p>
+                  {runnerServiceStatus[repo.id]?.last_checked && (
+                    <p><strong>Last Checked:</strong> {formatTimestamp(runnerServiceStatus[repo.id].last_checked)}</p>
+                  )}
+                  {runnerServiceStatus[repo.id]?.error && (
+                    <p><strong>Error:</strong> {runnerServiceStatus[repo.id].error}</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+                            {/* Instructions */}
+                            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                              <div className="flex items-start">
+                                <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3 mt-0.5 flex-shrink-0" />
+                                <div>
+                                  <h6 className="font-medium text-blue-800 dark:text-blue-200 mb-2">GitHub Actions Runner Setup</h6>
+                                  <div className="text-sm text-blue-700 dark:text-blue-300 space-y-2">
+                                    <p>1. Click "Add Runner" to go to GitHub's runner setup page</p>
+                                    <p>2. Follow GitHub's instructions to download and configure the runner</p>
+                                    <p>3. Install the runner as a Windows service with the configured name</p>
+                                    <p>4. Use "Check Service" to verify the service is running</p>
+                                    <p>5. The service status will be integrated into repository health monitoring</p>
                                   </div>
                                 </div>
-                              ) : prAgentConfigData[repo.id] !== undefined ? (
-                                <div className="text-center py-8">
-                                  <Settings className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500 mb-4" />
-                                  <h5 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No Configuration Override Found</h5>
-                                  <p className="text-gray-500 dark:text-gray-400 mb-4">
-                                    Create a <code className="bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded text-sm">.pr_agent.toml</code> file to override global settings for this repository.
-                                  </p>
-                                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 text-left max-w-2xl mx-auto">
-                                    <div className="flex items-start">
-                                      <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3 mt-0.5 flex-shrink-0" />
-                                      <div>
-                                        <h6 className="font-medium text-blue-800 dark:text-blue-200 mb-2">How Repository Configuration Works</h6>
-                                        <div className="text-sm text-blue-700 dark:text-blue-300 space-y-2">
-                                          <p>• Click "Create Config" to add repository-specific settings</p>
-                                          <p>• Override any global PR-Agent setting for this repository</p>
-                                          <p>• Configure models, thresholds, prompts, and behavior</p>
-                                          <p>• Changes are deployed via pull request for review</p>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                              ) : (
-                                <div className="text-center py-8">
-                                  <Settings className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500 mb-4" />
-                                  <h5 className="text-lg font-medium text-gray-900 dark:text-white mb-2">PR-Agent Configuration</h5>
-                                  <p className="text-gray-500 dark:text-gray-400 mb-4">
-                                    Click "Refresh" to check for a .pr_agent.toml file in your repository.
-                                  </p>
-                                </div>
-                              )}
+                              </div>
                             </div>
                           </div>
                         )}

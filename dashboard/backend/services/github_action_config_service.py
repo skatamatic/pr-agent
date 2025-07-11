@@ -691,8 +691,27 @@ jobs:
             # Check if the config has the expected structure
             if 'jobs' in config:
                 for job_name, job_config in config['jobs'].items():
+                    # Extract variables from main env section
                     if 'env' in job_config:
                         env_vars.update(job_config['env'])
+                    
+                    # Extract dotted variables from PowerShell step
+                    if 'steps' in job_config:
+                        for step in job_config['steps']:
+                            if (step.get('name') == 'Export environment variables with dots' and 
+                                step.get('shell') == 'powershell' and 
+                                'run' in step):
+                                
+                                # Parse the PowerShell commands to extract dotted variables
+                                run_script = step['run']
+                                # Look for lines like: Add-Content $env:GITHUB_ENV "KEY=value"
+                                import re
+                                for line in run_script.split('\n'):
+                                    match = re.match(r'^\s*Add-Content\s+\$env:GITHUB_ENV\s+"([^=]+)=([^"]*)"', line)
+                                    if match:
+                                        key = match.group(1)
+                                        value = match.group(2)
+                                        env_vars[key] = value
             
             return {
                 'success': True,

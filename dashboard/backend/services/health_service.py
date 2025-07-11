@@ -203,7 +203,7 @@ class HealthService:
             if last_state != 'unknown' and current_state != last_state:
                 logger.info(f"Health change detected for {service_name}: {last_state} -> {current_state}")
                 
-                # Send notification
+                # Enhanced notification data with repository details
                 event_data = {
                     'service': service_name,
                     'previous_status': last_state,
@@ -211,6 +211,20 @@ class HealthService:
                     'message': current_info.get('message', ''),
                     'timestamp': datetime.utcnow().isoformat()
                 }
+                
+                # Add repository-specific details for repository health changes
+                if service_name == 'repositories' and current_info.get('affected_repositories'):
+                    affected_repos = current_info.get('affected_repositories', [])
+                    if affected_repos:
+                        repo_details = []
+                        for repo in affected_repos:
+                            repo_details.append(f"{repo.get('name', 'Unknown')}: {repo.get('status', 'unknown')} - {repo.get('error', 'No details')}")
+                        
+                        event_data['repository_details'] = repo_details
+                        event_data['affected_count'] = len(affected_repos)
+                        event_data['message'] = f"{current_info.get('message', '')} - Affected repositories: {', '.join([r.get('name', 'Unknown') for r in affected_repos[:3]])}"
+                        if len(affected_repos) > 3:
+                            event_data['message'] += f" and {len(affected_repos) - 3} more"
                 
                 try:
                     await self.notification_service.send_notification(
@@ -553,7 +567,8 @@ class HealthService:
                         'message': f'{healthy}/{total} repositories healthy',
                         'error_details': f'Issues with: {error_text}',
                         'timestamp': datetime.utcnow().isoformat(),
-                        'details': {'total': total, 'healthy': healthy, 'unhealthy': unhealthy, 'error_repos': error_repos}
+                        'details': {'total': total, 'healthy': healthy, 'unhealthy': unhealthy, 'error_repos': error_repos},
+                        'affected_repositories': error_repos  # Add this for notifications
                     }
                     
             finally:

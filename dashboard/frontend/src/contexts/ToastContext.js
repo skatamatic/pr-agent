@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
-import { CheckCircle, AlertCircle, Activity, X } from 'lucide-react';
+import { CheckCircle, AlertCircle, AlertTriangle, Activity, X } from 'lucide-react';
 
 const ToastContext = createContext();
 
@@ -18,6 +18,8 @@ const ToastItem = ({ toast, onDismiss }) => {
         return 'bg-green-50 border-green-200 text-green-800 dark:bg-green-900/50 dark:border-green-700 dark:text-green-100';
       case 'error':
         return 'bg-red-50 border-red-200 text-red-800 dark:bg-red-900/50 dark:border-red-700 dark:text-red-100';
+      case 'warning':
+        return 'bg-yellow-50 border-yellow-200 text-yellow-800 dark:bg-yellow-900/50 dark:border-yellow-700 dark:text-yellow-100';
       case 'progress':
         return 'bg-blue-50 border-blue-200 text-blue-800 dark:bg-blue-900/50 dark:border-blue-700 dark:text-blue-100';
       default:
@@ -31,6 +33,8 @@ const ToastItem = ({ toast, onDismiss }) => {
         return <CheckCircle className="h-5 w-5 text-green-600 dark:text-green-400" />;
       case 'error':
         return <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400" />;
+      case 'warning':
+        return <AlertTriangle className="h-5 w-5 text-yellow-600 dark:text-yellow-400" />;
       case 'progress':
         return <Activity className="h-5 w-5 text-blue-600 dark:text-blue-400 animate-spin" />;
       default:
@@ -311,6 +315,14 @@ export const ToastProvider = ({ children }) => {
     }, 'progress', false, options.errorKey);
   }, [showToast]);
 
+  const showWarning = useCallback((title, message = '', options = {}) => {
+    return showToast({
+      title,
+      message,
+      details: options.details
+    }, 'warning', options.autoDismiss !== false, options.errorKey);
+  }, [showToast]);
+
   const updateToast = useCallback((id, updates) => {
     setToasts(prev => prev.map(toast => 
       toast.id === id 
@@ -325,6 +337,7 @@ export const ToastProvider = ({ children }) => {
     showSuccess,
     showError,
     showProgress,
+    showWarning,
     updateToast,
     removeToast,
     handleApiError,

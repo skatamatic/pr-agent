@@ -128,7 +128,23 @@ const apiService = {
     api.put(`/api/repositories/${repoId}/pr-agent-config`, { content }),
   checkPrAgentConfigPrStatus: (repoId) => 
     api.post(`/api/repositories/${repoId}/pr-agent-config/check-pr-status`),
-  
+
+  // GitHub Action config
+  getRepositoryGithubActionConfig: (repoId, forceRefresh = false) => 
+    api.get(`/api/repositories/${repoId}/github-action-config?force_refresh=${forceRefresh}`),
+  updateRepositoryGithubActionConfig: (repoId, envVars) => 
+    api.put(`/api/repositories/${repoId}/github-action-config`, { env_vars: envVars }),
+  checkGithubActionConfigPrStatus: (repoId) => 
+    api.post(`/api/repositories/${repoId}/github-action-config/check-pr-status`),
+
+  // Runner service management
+  checkRunnerService: (repoId, serviceName) => 
+    api.post(`/api/repositories/${repoId}/runner-service/check`, { service_name: serviceName }),
+  saveRunnerServiceName: (repoId, serviceName) => 
+    api.put(`/api/repositories/${repoId}/runner-service/name`, { service_name: serviceName }),
+  listRunnerServices: () => 
+    api.get('/api/system/runner-services'),
+
   // Developer mode
   getDeveloperMode: () => api.get('/api/developer-mode'),
   
