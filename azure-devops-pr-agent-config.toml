@@ -1,0 +1,72 @@
+# Azure DevOps PR-Agent Configuration
+# Place this file as .pr_agent.toml in your repository root
+# or reference it from your Azure DevOps pipeline
+
+[config]
+model = "gpt-4"
+fallback_models = ["gpt-4o", "claude-3-5-sonnet-20241022"]
+max_tokens = 8000
+verbosity_level = 1
+publish_output_progress = false
+
+[azure_devops]
+# These will be auto-configured from pipeline environment variables
+# org = "your-organization-url"
+# pat = "your-personal-access-token"
+
+[azure_devops_config]
+# Auto-run configuration (can be overridden by pipeline environment variables)
+auto_describe = true
+auto_review = true  
+auto_improve = true
+
+[pr_description]
+publish_description = true
+publish_description_as_comment = false
+add_original_user_description = true
+keep_original_user_title = true
+generate_ai_title = false
+use_bullet_points = true
+include_generated_by_header = true
+final_update_message = false
+
+[pr_reviewer]
+publish_review = true
+require_score = true
+require_tests = true
+require_security_review = true
+num_code_suggestions_per_chunk = 2
+inline_code_comments = true
+persistent_comment_for_initial_review = true
+
+[pr_code_suggestions]
+publish_code_suggestions = true
+num_code_suggestions = 5
+summarize = true
+commitable_code_suggestions = true
+persistent_comment_for_initial_suggestions = true
+
+[pr_custom_labels]
+enable_custom_labels = true
+
+[ignore]
+# Files to ignore for analysis
+paths = [
+    "docs/",
+    "*.md",
+    "*.txt",
+    "*.json",
+    "*.yml",
+    "*.yaml",
+    "package-lock.json",
+    "yarn.lock",
+    "Pipfile.lock"
+]
+
+[github_action_config]
+# For compatibility with existing configurations
+pr_actions = ["opened", "reopened", "ready_for_review", "review_requested"]
+auto_review = true
+auto_describe = true  
+auto_improve = true
+enable_output = true 

@@ -1,0 +1,109 @@
+# ────────────────────────────────────────────────────────────────
+#  PRAgent on a SELF‑HOSTED Windows Azure DevOps agent
+#  – minimal: no Python install, no Git clone of PR‑Agent, no pip
+# ────────────────────────────────────────────────────────────────
+
+trigger: none
+pr:
+  branches:
+    include: ['*']     # run for every PR branch
+
+pool:
+  name: 'PRAgent_SelfHosted'  # Use your self-hosted agent pool name
+  demands:
+  - agent.os -equals Windows_NT  # or Linux depending on your agent
+
+# ───────────── Variables & Secrets ─────────────
+variables:
+- name: PYTHONUTF8
+  value: 1
+- name: CSHARP_CODE_CONTEXT_SERVICE__BASE_URL
+  value: http://localhost:7110
+- name: CSHARP_CODE_CONTEXT_SERVICE__USERNAME
+  value: Skatamatic
+
+# duplicate keys PR‑Agent expects
+- name: OPENAI__KEY
+  value: $(OPENAI_KEY)
+- name: ANTHROPIC__KEY
+  value: $(ANTHROPIC_KEY)
+
+# PR-Agent configuration for Azure DevOps
+- name: AZURE_DEVOPS_CONFIG.PR_ACTIONS
+  value: '["pullrequest"]'  # Which PR actions trigger the runner
+
+stages:
+- stage: pr_agent
+  displayName: 'PR‑Agent'
+
+  # skip bots
+  # condition: |
+  #   and(
+  #     eq(variables['Build.Reason'], 'PullRequest'),
+  #     not(contains(variables['Build.RequestedFor'], '[bot]'))
+  #   )
+
+  jobs:
+  - job: run_agent
+    displayName: 'Run PR‑Agent tools'
+    timeoutInMinutes: 45
+
+    steps:
+    # ----------------------------------------------------------------
+    # 1. Checkout repository with credentials for PR analysis
+    # ----------------------------------------------------------------
+    - checkout: self
+      clean: true
+      persistCredentials: true
+      displayName: 'Checkout repository for PR analysis'
+
+    # ----------------------------------------------------------------
+    # 2. Define the dotted env‑vars (AUTO_* flags) that YAML can't hold
+    # ----------------------------------------------------------------
+    - pwsh: |
+        Write-Host '##vso[task.setvariable variable=AZURE_DEVOPS_CONFIG.AUTO_IMPROVE]true'
+        Write-Host '##vso[task.setvariable variable=AZURE_DEVOPS_CONFIG.AUTO_REVIEW]true'
+        Write-Host '##vso[task.setvariable variable=AZURE_DEVOPS_CONFIG.AUTO_DESCRIBE]true'
+        Write-Host '##vso[task.setvariable variable=AZURE_DEVOPS_CONFIG.ENABLE_OUTPUT]true'
+      displayName: 'Set AZDO dotted config vars'
+
+    # ----------------------------------------------------------------
+    # 3. Launch the agent
+    # ----------------------------------------------------------------
+    - pwsh: |
+        py "c:/pr_agent/pr-agent/servers/azuredevops_pipeline_runner.py"
+      workingDirectory: $(System.DefaultWorkingDirectory)
+      displayName: 'Execute PR‑Agent'
+      env:
+        # REQUIRED: Azure DevOps Environment Variables (auto-provided by Azure DevOps)
+        BUILD_REASON: $(Build.Reason)
+        SYSTEM_PULLREQUEST_PULLREQUESTID: $(System.PullRequest.PullRequestId)
+        SYSTEM_TEAMPROJECT: $(System.TeamProject)
+        BUILD_REPOSITORY_NAME: $(Build.Repository.Name)
+        SYSTEM_COLLECTIONURI: $(System.CollectionUri)
+        
+        # REQUIRED: Authentication tokens
+        AZURE_DEVOPS_PAT: $(System.AccessToken)
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+        
+        # REQUIRED: AI Model API Keys (configure these in Pipeline Variables)
+        OPENAI_KEY: $(OPENAI_KEY)
+        ANTHROPIC_KEY: $(ANTHROPIC_KEY)
+        
+        # OPTIONAL: OpenAI Organization
+        OPENAI_ORG: $(OPENAI_ORG)
+        
+        # OPTIONAL: C# Context Service (configure these in Pipeline Variables if using)
+        CSHARP_CODE_CONTEXT_SERVICE__BASE_URL: $(CSHARP_CODE_CONTEXT_SERVICE__BASE_URL)
+        CSHARP_CODE_CONTEXT_SERVICE__USERNAME: $(CSHARP_CODE_CONTEXT_SERVICE__USERNAME)
+        CSHARP_CODE_CONTEXT_SERVICE__PASSWORD: $(CSHARP_CODE_CONTEXT_SERVICE__PASSWORD)
+        
+        # CONFIGURATION: Auto-run settings (configure these in Pipeline Variables)
+        AZURE_DEVOPS_CONFIG_AUTO_DESCRIBE: $(AZURE_DEVOPS_CONFIG_AUTO_DESCRIBE)
+        AZURE_DEVOPS_CONFIG_AUTO_REVIEW: $(AZURE_DEVOPS_CONFIG_AUTO_REVIEW)
+        AZURE_DEVOPS_CONFIG_AUTO_IMPROVE: $(AZURE_DEVOPS_CONFIG_AUTO_IMPROVE)
+        AZURE_DEVOPS_CONFIG_ENABLE_OUTPUT: $(AZURE_DEVOPS_CONFIG_ENABLE_OUTPUT)
+        AZURE_DEVOPS_CONFIG_PR_ACTIONS: $(AZURE_DEVOPS_CONFIG_PR_ACTIONS)
+        
+        # SYSTEM: UTF8 encoding for proper character handling
+        PYTHONUTF8: 1

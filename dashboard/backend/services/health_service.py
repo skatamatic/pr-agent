@@ -525,15 +525,19 @@ class HealthService:
             }
 
     async def _check_repositories_health(self):
-        """Check repository runner health"""
+        """Check repository runner health including Azure pipeline monitoring"""
         try:
             from database import SessionLocal
             from services.runner_health_service import RunnerHealthService
+            from services.azure_pipeline_config_service import AzurePipelineConfigService
+            from models import RepositoryDB
             
             runner_service = RunnerHealthService()
+            azure_service = AzurePipelineConfigService()
             db = SessionLocal()
             
             try:
+                # Get base runner health summary
                 summary = await runner_service.get_repository_health_summary(db)
                 
                 total = summary.get('total_repos', 0)
@@ -541,7 +545,51 @@ class HealthService:
                 unhealthy = summary.get('unhealthy_repos', 0)
                 error_repos = summary.get('error_repos', [])
                 
-                if total == 0:
+                # Enhanced monitoring for Azure DevOps repositories
+                azure_repos = db.query(RepositoryDB).filter(
+                    RepositoryDB.provider == 'azure_devops',
+                    RepositoryDB.is_active == True
+                ).all()
+                
+                azure_pipeline_issues = []
+                
+                for repo in azure_repos:
+                    if repo.azure_pat:
+                        try:
+                            # Check Azure pipeline health
+                            pipeline_check = await azure_service.check_azure_pipeline_config({
+                                'name': repo.name,
+                                'url': repo.url,
+                                'provider': repo.provider,
+                                'azure_pat': repo.azure_pat
+                            })
+                            
+                            # If pipeline check shows issues, add to error tracking
+                            if not pipeline_check.get('has_pipeline') or pipeline_check.get('status') == 'error':
+                                azure_pipeline_issues.append({
+                                    'name': repo.name,
+                                    'error': pipeline_check.get('error', 'No pipeline configuration found'),
+                                    'status': 'pipeline_missing'
+                                })
+                                
+                            # Update repository with pipeline status
+                            repo.last_activity = datetime.utcnow()
+                            
+                        except Exception as azure_error:
+                            logger.warning(f"Azure pipeline check failed for {repo.name}: {azure_error}")
+                            azure_pipeline_issues.append({
+                                'name': repo.name,
+                                'error': f'Pipeline check failed: {str(azure_error)}',
+                                'status': 'check_failed'
+                            })
+                
+                # Combine runner health issues with Azure pipeline issues
+                all_error_repos = list(error_repos) + azure_pipeline_issues
+                total_unhealthy = unhealthy + len(azure_pipeline_issues)
+                total_repos = total + len(azure_repos)
+                total_healthy = total_repos - total_unhealthy
+                
+                if total_repos == 0:
                     return {
                         'status': 'warning',
                         'message': 'No repositories configured',
@@ -549,27 +597,44 @@ class HealthService:
                         'details': {'total': 0, 'healthy': 0, 'unhealthy': 0}
                     }
                 
-                if unhealthy == 0:
+                if total_unhealthy == 0:
                     return {
                         'status': 'connected',
-                        'message': f'All {healthy}/{total} repositories are healthy',
+                        'message': f'All {total_healthy}/{total_repos} repositories are healthy',
                         'timestamp': datetime.utcnow().isoformat(),
-                        'details': {'total': total, 'healthy': healthy, 'unhealthy': unhealthy}
+                        'details': {
+                            'total': total_repos, 
+                            'healthy': total_healthy, 
+                            'unhealthy': total_unhealthy,
+                            'azure_repos': len(azure_repos),
+                            'azure_pipeline_issues': len(azure_pipeline_issues)
+                        }
                     }
                 else:
-                    error_names = [repo['name'] for repo in error_repos[:3]]  # Show first 3
+                    error_names = [repo['name'] for repo in all_error_repos[:3]]  # Show first 3
                     error_text = ', '.join(error_names)
-                    if len(error_repos) > 3:
-                        error_text += f' and {len(error_repos) - 3} more'
+                    if len(all_error_repos) > 3:
+                        error_text += f' and {len(all_error_repos) - 3} more'
                     
                     return {
                         'status': 'error',
-                        'message': f'{healthy}/{total} repositories healthy',
+                        'message': f'{total_healthy}/{total_repos} repositories healthy',
                         'error_details': f'Issues with: {error_text}',
                         'timestamp': datetime.utcnow().isoformat(),
-                        'details': {'total': total, 'healthy': healthy, 'unhealthy': unhealthy, 'error_repos': error_repos},
-                        'affected_repositories': error_repos  # Add this for notifications
+                        'details': {
+                            'total': total_repos, 
+                            'healthy': total_healthy, 
+                            'unhealthy': total_unhealthy, 
+                            'error_repos': all_error_repos,
+                            'azure_repos': len(azure_repos),
+                            'azure_pipeline_issues': len(azure_pipeline_issues),
+                            'runner_issues': unhealthy
+                        },
+                        'affected_repositories': all_error_repos  # Add this for notifications
                     }
+                
+                # Commit any repository updates
+                db.commit()
                     
             finally:
                 await runner_service.close_session()

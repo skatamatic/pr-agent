@@ -145,6 +145,18 @@ const apiService = {
   listRunnerServices: () => 
     api.get('/api/system/runner-services'),
 
+  // Azure agent service management
+  checkAzureAgentService: (repoId, data) => 
+    api.post(`/api/repositories/${repoId}/azure-agent-service/check`, data),
+  saveAzureAgentServiceName: (repoId, data) => 
+    api.put(`/api/repositories/${repoId}/azure-agent-service/name`, data),
+  listAzureAgentServices: (repoId) => 
+    api.get(`/api/repositories/${repoId}/azure-agent-service/list`),
+
+  // Token testing
+  testRepositoryToken: (repoId) => 
+    api.post(`/api/repositories/${repoId}/test-token`),
+
   // Developer mode
   getDeveloperMode: () => api.get('/api/developer-mode'),
   

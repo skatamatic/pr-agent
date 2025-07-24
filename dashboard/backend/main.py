@@ -45,18 +45,18 @@ class DashboardApplication:
             # Setup lifespan first
             self._setup_background_tasks_lifespan()
             
-            self.app = FastAPI(
-                title=settings.app_name,
-                description="API for monitoring PR Agent operations and logs",
-                version="1.0.0",
+        self.app = FastAPI(
+            title=settings.app_name,
+            description="API for monitoring PR Agent operations and logs",
+            version="1.0.0",
                 debug=settings.debug,
                 lifespan=self.lifespan_handler
-            )
-            
-            # Initialize services (Dependency Injection)
-            self.database_manager = DatabaseManager()
+        )
+        
+        # Initialize services (Dependency Injection)
+        self.database_manager = DatabaseManager()
             self.config_service = ConfigService(self.database_manager)
-            self.notification_service = NotificationService(self.database_manager)
+        self.notification_service = NotificationService(self.database_manager)
             
             # Pass config_service to health service as third parameter
             self.websocket_manager = WebSocketManager()
@@ -69,20 +69,25 @@ class DashboardApplication:
             )
             
             self.metrics_service = MetricsService(self.websocket_manager)
-            self.operation_service = OperationService()
-            self.log_service = LogService()
-            self.repository_service = RepositoryService()
+        self.operation_service = OperationService()
+        self.log_service = LogService()
+        self.repository_service = RepositoryService()
             # Use RobustCachedJobService with notification support
             self.cached_job_service = get_robust_cached_job_service(self.notification_service)
-            self.retention_service = RetentionService(self.database_manager)
+        self.retention_service = RetentionService(self.database_manager)
             self.auth_service = AuthService()
             self.github_action_config_service = GitHubActionConfigService()
-            self.security = HTTPBearer(auto_error=False)
             
-            # Setup application
-            self._setup_middleware()
+            # Initialize Azure Pipeline config service
+            from services.azure_pipeline_config_service import AzurePipelineConfigService
+            self.azure_pipeline_config_service = AzurePipelineConfigService()
+            
+            self.security = HTTPBearer(auto_error=False)
+        
+        # Setup application
+        self._setup_middleware()
             self._initialize_auth()
-            self._setup_routes()
+        self._setup_routes()
             
         except Exception as e:
             logger.error(f"Failed to initialize dashboard application: {e}")
@@ -958,17 +963,17 @@ class DashboardApplication:
                 for log_data in logs:
                     if log_data.get('status'):
                         await self.operation_service.update_operation_status(db, log_data)
-                    
+                
                     # Extract and update metrics if present
                     if any(key in log_data for key in ['model_used', 'input_tokens', 'output_tokens', 'estimated_dev_hours_saved']):
                         await self.metrics_service.update_metrics_from_operation(db, log_data)
                 
                 # Broadcast FULL log data to WebSocket clients
                 for log_broadcast in broadcast_logs:
-                    await self.websocket_manager.broadcast({
+                await self.websocket_manager.broadcast({
                         "type": "log",
                         "data": log_broadcast
-                    })
+                })
                 
                 return {"status": "received", "count": len(received_log_ids)}
                 
@@ -1463,7 +1468,7 @@ class DashboardApplication:
                     
                     # Auto-fetch best practices content
                     try:
-                        from pr_agent.algo.utils import get_best_practices_content
+                        from services.git_utils import get_best_practices_content
                         from pr_agent.git_providers.github_provider import GithubProvider
                         from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
                         
@@ -1478,9 +1483,10 @@ class DashboardApplication:
                             except Exception as repo_error:
                                 logger.warning(f"Could not get repository object for {repo.name}: {repo_error}")
                                 # Continue without repo_obj, get_best_practices_content will try different approaches
-                        elif repo.provider == 'azure' and repo.azure_pat:
+                        elif repo.provider == 'azure_devops' and repo.azure_pat:
+                            # Configure Azure DevOps settings
+                            self._configure_azure_devops_settings(repo)
                             git_provider = AzureDevopsProvider()
-                            git_provider.azure_personal_access_token = repo.azure_pat
                             # Set repository information
                             git_provider.repo = repo.name
                         
@@ -1651,7 +1657,7 @@ class DashboardApplication:
                 # If no cached content or forcing refresh, fetch from git
                 if not best_practices_content or force_refresh:
                     try:
-                        from pr_agent.algo.utils import get_best_practices_content
+                        from services.git_utils import get_best_practices_content
                         from pr_agent.git_providers.github_provider import GithubProvider
                         from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
                         
@@ -1666,9 +1672,10 @@ class DashboardApplication:
                             except Exception as repo_error:
                                 logger.warning(f"Could not get repository object for {repo.name}: {repo_error}")
                                 # Continue without repo_obj, get_best_practices_content will try different approaches
-                        elif repo.provider == 'azure' and repo.azure_pat:
+                        elif repo.provider == 'azure_devops' and repo.azure_pat:
+                            # Configure Azure DevOps settings
+                            self._configure_azure_devops_settings(repo)
                             git_provider = AzureDevopsProvider()
-                            git_provider.azure_personal_access_token = repo.azure_pat
                             # Set repository information
                             git_provider.repo = repo.name
                         else:
@@ -1774,9 +1781,17 @@ class DashboardApplication:
                     owner, repo_name = repo_parts
                     git_provider.repo = repo.name
                     git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
-                elif repo.provider == 'azure' and repo.azure_pat:
-                    # TODO: Implement Azure DevOps PR creation
-                    raise HTTPException(status_code=501, detail="Azure DevOps PR creation not yet implemented")
+                elif repo.provider == 'azure_devops' and repo.azure_pat:
+                    # Azure DevOps PR creation using REST API
+                    from services.azure_pipeline_config_service import AzurePipelineConfigService
+                    azure_service = AzurePipelineConfigService()
+                    
+                    # Parse Azure URL to get org/project/repo info
+                    org_info = azure_service._parse_azure_repo_url(repo.url)
+                    if not org_info['success']:
+                        raise HTTPException(status_code=400, detail=f"Invalid Azure DevOps URL: {org_info['error']}")
+                    
+                    repo_name = org_info['repository']
                 else:
                     raise HTTPException(status_code=400, detail=f"Repository provider {repo.provider} not supported or tokens not configured")
                 
@@ -1930,7 +1945,7 @@ This PR {'creates' if not repo.has_best_practices else 'updates'} the `best_prac
                             repo.best_practices_pr_status = "merged"
                             
                             # Refresh best practices content from main branch
-                            from pr_agent.algo.utils import get_best_practices_content
+                            from services.git_utils import get_best_practices_content
                             best_practices_content = get_best_practices_content(git_provider)
                             repo.has_best_practices = bool(best_practices_content)
                             repo.best_practices_content = best_practices_content
@@ -1990,7 +2005,7 @@ This PR {'creates' if not repo.has_best_practices else 'updates'} the `best_prac
                 # Fetch fresh content if no cache or force refresh
                 if not pr_agent_config_content or force_refresh:
                     try:
-                        from pr_agent.algo.utils import get_pr_agent_config_content
+                        from services.git_utils import get_pr_agent_config_content
                         from pr_agent.git_providers.github_provider import GithubProvider
                         from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
                         
@@ -2000,9 +2015,12 @@ This PR {'creates' if not repo.has_best_practices else 'updates'} the `best_prac
                             git_provider.github_token = repo.github_token
                             git_provider.repo = repo.name
                             git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
-                        elif repo.provider == 'azure' and repo.azure_pat:
-                            # TODO: Add Azure DevOps support
-                            raise HTTPException(status_code=501, detail="Azure DevOps PR-Agent config fetching not yet implemented")
+                        elif repo.provider == 'azure_devops' and repo.azure_pat:
+                            # Configure Azure DevOps settings
+                            self._configure_azure_devops_settings(repo)
+                            git_provider = AzureDevopsProvider()
+                            # Set repository information
+                            git_provider.repo = repo.name
                         else:
                             # Continue without repo_obj, get_pr_agent_config_content will try different approaches
                             logger.warning(f"No provider configured for repository {repo.name}, attempting direct fetch")
@@ -2116,9 +2134,17 @@ This PR {'creates' if not repo.has_best_practices else 'updates'} the `best_prac
                     owner, repo_name = repo_parts
                     git_provider.repo = repo.name
                     git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
-                elif repo.provider == 'azure' and repo.azure_pat:
-                    # TODO: Implement Azure DevOps PR creation
-                    raise HTTPException(status_code=501, detail="Azure DevOps PR creation not yet implemented")
+                elif repo.provider == 'azure_devops' and repo.azure_pat:
+                    # Azure DevOps PR creation using REST API  
+                    from services.azure_pipeline_config_service import AzurePipelineConfigService
+                    azure_service = AzurePipelineConfigService()
+                    
+                    # Parse Azure URL to get org/project/repo info
+                    org_info = azure_service._parse_azure_repo_url(repo.url)
+                    if not org_info['success']:
+                        raise HTTPException(status_code=400, detail=f"Invalid Azure DevOps URL: {org_info['error']}")
+                    
+                    repo_name = org_info['repository']
                 else:
                     raise HTTPException(status_code=400, detail=f"Repository provider {repo.provider} not supported or tokens not configured")
                 
@@ -2532,6 +2558,255 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 logger.error(f"Error getting GitHub Action config template: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
 
+        # Azure Pipeline config endpoints
+        @self.app.get("/api/repositories/{repo_id}/azure-pipeline-config")
+        async def get_repository_azure_pipeline_config(repo_id: int, force_refresh: bool = False, db: Session = Depends(get_db)):
+            """Get Azure Pipeline configuration for a repository"""
+            try:
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                # Only check Azure DevOps repositories
+                if repo.provider != 'azure_devops':
+                    raise HTTPException(status_code=400, detail="Azure Pipeline config is only supported for Azure DevOps repositories")
+                
+                # Convert repository data to dict for service
+                repo_data = {
+                    'id': repo.id,
+                    'name': repo.name,
+                    'provider': repo.provider,
+                    'url': repo.url,
+                    'azure_pat': repo.azure_pat
+                }
+                
+                # Check pipeline configuration
+                config_info = await self.azure_pipeline_config_service.check_azure_pipeline_config(repo_data)
+                
+                return APIResponse(data=config_info, message="Azure Pipeline config checked successfully")
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error getting Azure Pipeline config for repository {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Error retrieving configuration: {str(e)}")
+
+        @self.app.put("/api/repositories/{repo_id}/azure-pipeline-config")
+        async def update_repository_azure_pipeline_config(repo_id: int, content_data: dict, db: Session = Depends(get_db)):
+            """Update Azure Pipeline configuration for a repository"""
+            try:
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                # Validate required fields
+                if 'content' not in content_data:
+                    raise HTTPException(status_code=400, detail="Configuration content is required")
+                
+                # Convert to dict for service
+                repo_data = {
+                    'id': repo.id,
+                    'name': repo.name,
+                    'provider': repo.provider,
+                    'url': repo.url,
+                    'azure_pat': repo.azure_pat
+                }
+                
+                # Use the provided content directly
+                config_content = content_data['content']
+                
+                # Create PR with the configuration
+                result = await self.azure_pipeline_config_service.create_azure_pipeline_config_pr(repo_data, config_content, db)
+                
+                if result['success']:
+                    return APIResponse(
+                        data={
+                            'pr_created': True,
+                            'pr_number': result['pr_number'],
+                            'pr_url': result['pr_url'],
+                            'branch_name': result['branch_name']
+                        },
+                        message="Azure Pipeline configuration PR created successfully"
+                    )
+                else:
+                    raise HTTPException(status_code=500, detail=f"Failed to create PR: {result['error']}")
+                    
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error updating Azure Pipeline config for repository {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Error updating configuration: {str(e)}")
+
+        @self.app.get("/api/repositories/{repo_id}/azure-pipeline-config/env-vars")
+        async def get_azure_pipeline_env_vars(repo_id: int):
+            """Get list of available environment variables for Azure Pipeline configuration"""
+            try:
+                env_vars = self.azure_pipeline_config_service.get_azure_pipeline_env_vars()
+                return APIResponse(data={"env_vars": env_vars}, message="Environment variables retrieved successfully")
+            except Exception as e:
+                logger.error(f"Error getting Azure Pipeline env vars: {e}")
+                raise HTTPException(status_code=500, detail=f"Error retrieving environment variables: {str(e)}")
+
+        @self.app.get("/api/repositories/{repo_id}/azure-pipeline-config/template")
+        async def get_azure_pipeline_config_template(repo_id: int):
+            """Get Azure Pipeline configuration template"""
+            try:
+                template = self.azure_pipeline_config_service.get_default_config_template()
+                return APIResponse(data={"template": template}, message="Azure Pipeline config template retrieved successfully")
+            except Exception as e:
+                logger.error(f"Error getting Azure Pipeline config template: {e}")
+                raise HTTPException(status_code=500, detail=f"Error retrieving template: {str(e)}")
+
+        @self.app.get("/api/repositories/{repo_id}/azure-pipeline-config/check")
+        async def check_azure_pipeline_config(repo_id: int, db: Session = Depends(get_db)):
+            """Check Azure pipeline configuration status for a repository"""
+            try:
+                from services.azure_pipeline_config_service import AzurePipelineConfigService
+                
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                if repo.provider != 'azure_devops':
+                    raise HTTPException(status_code=400, detail="Repository is not an Azure DevOps repository")
+                
+                if not repo.azure_pat:
+                    raise HTTPException(status_code=400, detail="Azure PAT not configured for this repository")
+                
+                service = AzurePipelineConfigService()
+                
+                # Check pipeline configuration
+                pipeline_check = await service.check_azure_pipeline_config({
+                    'name': repo.name,
+                    'url': repo.url,
+                    'provider': repo.provider,
+                    'azure_pat': repo.azure_pat
+                })
+                
+                return APIResponse(data=pipeline_check, message="Azure pipeline configuration checked")
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error checking Azure pipeline config for repository {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/repositories/{repo_id}/azure-pipeline-config/installation-guide")
+        async def get_azure_pipeline_installation_guide(repo_id: int, db: Session = Depends(get_db)):
+            """Get Azure Pipeline installation guide for a repository"""
+            try:
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                if repo.provider != 'azure_devops':
+                    raise HTTPException(status_code=400, detail="Repository is not an Azure DevOps repository")
+                
+                from services.azure_pipeline_config_service import AzurePipelineConfigService
+                service = AzurePipelineConfigService()
+                
+                # Parse Azure repo info
+                org_info = service._parse_azure_repo_url(repo.url)
+                if not org_info['success']:
+                    raise HTTPException(status_code=400, detail=f"Invalid Azure DevOps URL: {org_info['error']}")
+                
+                # Generate installation guide
+                guide = {
+                    "title": "Azure DevOps Pipeline Installation Guide",
+                    "repository": repo.name,
+                    "organization": org_info['organization'],
+                    "project": org_info['project'],
+                    "steps": [
+                        {
+                            "step": 1,
+                            "title": "Create Azure Pipeline",
+                            "description": "Set up a new pipeline in your Azure DevOps project",
+                            "instructions": [
+                                f"1. Navigate to your Azure DevOps project: https://dev.azure.com/{org_info['organization']}/{org_info['project']}",
+                                "2. Click on 'Pipelines' in the left navigation menu",
+                                "3. Click 'New pipeline' or 'Create Pipeline'",
+                                "4. Select 'Azure Repos Git' as your code location",
+                                f"5. Select your repository: {org_info['repository']}",
+                                "6. Choose 'Existing Azure Pipelines YAML file'",
+                                "7. Select the branch and path: '/azure-pipelines.yml'",
+                                "8. Review and run the pipeline"
+                            ]
+                        },
+                        {
+                            "step": 2,
+                            "title": "Configure Environment Variables",
+                            "description": "Add required environment variables to your pipeline",
+                            "instructions": [
+                                "1. In your pipeline, click on 'Edit'",
+                                "2. Click on 'Variables' (top right)",
+                                "3. Add the following variables:",
+                                "   - AZURE_DEVOPS_PAT: Your Azure DevOps Personal Access Token",
+                                "   - AZURE_DEVOPS_ORG: Your organization name",
+                                "   - Any additional PR-Agent configuration variables"
+                            ],
+                            "variables": service.get_environment_variables()
+                        },
+                        {
+                            "step": 3,
+                            "title": "Install Azure DevOps Agent (Optional)",
+                            "description": "For private agents, install the Azure DevOps agent",
+                            "instructions": [
+                                "1. Download the agent from Azure DevOps",
+                                "2. Extract and configure the agent",
+                                "3. Register agent with your organization",
+                                "4. Start the agent service"
+                            ],
+                            "agent_links": {
+                                "download_url": f"https://dev.azure.com/{org_info['organization']}/_settings/agentpools",
+                                "documentation": "https://docs.microsoft.com/en-us/azure/devops/pipelines/agents/"
+                            }
+                        },
+                        {
+                            "step": 4,
+                            "title": "Test Pipeline",
+                            "description": "Verify the pipeline works correctly",
+                            "instructions": [
+                                "1. Create a test pull request",
+                                "2. Check that the pipeline triggers automatically",
+                                "3. Verify PR-Agent comments appear on the pull request",
+                                "4. Check pipeline logs for any errors"
+                            ]
+                        }
+                    ],
+                    "links": {
+                        "project_url": f"https://dev.azure.com/{org_info['organization']}/{org_info['project']}",
+                        "pipelines_url": f"https://dev.azure.com/{org_info['organization']}/{org_info['project']}/_build",
+                        "settings_url": f"https://dev.azure.com/{org_info['organization']}/{org_info['project']}/_settings",
+                        "agent_pools_url": f"https://dev.azure.com/{org_info['organization']}/_settings/agentpools"
+                    },
+                    "troubleshooting": [
+                        {
+                            "issue": "Pipeline not triggering on pull requests",
+                            "solution": "Check that PR triggers are enabled in your azure-pipelines.yml file"
+                        },
+                        {
+                            "issue": "Authentication errors",
+                            "solution": "Verify your Azure DevOps PAT has the correct permissions (Code: Read & Write, Pull Request: Read & Write)"
+                        },
+                        {
+                            "issue": "Agent not found",
+                            "solution": "Check agent pool configuration and ensure agents are online"
+                        }
+                    ]
+                }
+                
+                return APIResponse(data=guide, message="Installation guide generated")
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error generating Azure pipeline installation guide: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
         # Runner service management endpoints
         @self.app.post("/api/repositories/{repo_id}/runner-service/check")
         async def check_runner_service(repo_id: int, request_data: dict, db: Session = Depends(get_db)):
@@ -2696,6 +2971,143 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 
             except Exception as e:
                 logger.error(f"Error listing all runner services: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        # Azure DevOps agent service management endpoints
+        @self.app.post("/api/repositories/{repo_id}/azure-agent-service/check")
+        async def check_azure_agent_service(repo_id: int, request_data: dict, db: Session = Depends(get_db)):
+            """Check the status of an Azure DevOps agent service"""
+            try:
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                service_name = request_data.get("service_name")
+                if not service_name:
+                    raise HTTPException(status_code=400, detail="Service name is required")
+                
+                # Import and use the Azure agent service monitor
+                from services.azure_agent_service_monitor import AzureAgentServiceMonitor
+                monitor = AzureAgentServiceMonitor()
+                
+                # Check service status
+                service_status = monitor.check_service_status(service_name)
+                logger.info(f"Azure agent service status response: {service_status}")
+                
+                # Update repository with Azure agent service information  
+                repo.azure_agent_service_name = service_name
+                repo.azure_agent_service_status = service_status.get('status', 'unknown')
+                repo.azure_agent_service_last_checked = datetime.utcnow()
+                repo.azure_agent_service_details = service_status
+                
+                # Map service status to repository health impact
+                health_impact = monitor.get_service_health_impact(service_status)
+                logger.info(f"Azure agent health impact determined: {health_impact}")
+                
+                # Update overall Azure agent status based on service health impact
+                if health_impact == 'healthy':
+                    repo.azure_agent_status = 'running'
+                    repo.azure_agent_error = None
+                elif health_impact == 'warning':
+                    repo.azure_agent_status = 'warning'
+                    repo.azure_agent_error = f"Service {service_status.get('status')}: {service_status.get('status_display', 'Unknown')}"
+                else:  # error
+                    repo.azure_agent_status = 'error'
+                    repo.azure_agent_error = service_status.get('error') or f"Service {service_status.get('status')}: {service_status.get('status_display', 'Unknown')}"
+                
+                db.commit()
+                
+                # Trigger a health system refresh to update overall status
+                try:
+                    health_status = await self.health_service.get_system_health(use_cache=False)
+                    logger.info(f"System health refreshed after Azure agent service check: {health_status.get('overall', {}).get('status', 'unknown')}")
+                except Exception as e:
+                    logger.warning(f"Failed to refresh system health after Azure agent service check: {e}")
+                
+                logger.info(f"Final Azure agent API response data: {service_status}")
+                return APIResponse(data=service_status, message="Azure agent service status checked successfully")
+                
+            except Exception as e:
+                logger.error(f"Error checking Azure agent service: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.put("/api/repositories/{repo_id}/azure-agent-service/name")
+        async def save_azure_agent_service_name(repo_id: int, request_data: dict, db: Session = Depends(get_db)):
+            """Save the Azure DevOps agent service name for a repository"""
+            try:
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                service_name = request_data.get("service_name")
+                if not service_name:
+                    raise HTTPException(status_code=400, detail="Service name is required")
+                
+                # Update repository with Azure agent service name
+                repo.azure_agent_service_name = service_name
+                db.commit()
+                
+                return APIResponse(data={"service_name": service_name}, message="Azure agent service name saved successfully")
+                
+            except Exception as e:
+                logger.error(f"Error saving Azure agent service name: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/repositories/{repo_id}/azure-agent-service/list")
+        async def list_azure_agent_services(repo_id: int, db: Session = Depends(get_db)):
+            """List all Azure DevOps agent services on the system"""
+            try:
+                # Get repository (for auth check)
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                # Import and use the Azure agent service monitor
+                from services.azure_agent_service_monitor import AzureAgentServiceMonitor
+                monitor = AzureAgentServiceMonitor()
+                
+                # List all Azure agent services
+                services = monitor.list_azure_agent_services()
+                
+                return APIResponse(data={"services": services}, message="Azure agent services listed successfully")
+                
+            except Exception as e:
+                logger.error(f"Error listing Azure agent services: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        # Token testing endpoints
+        @self.app.post("/api/repositories/{repo_id}/test-token")
+        async def test_repository_token(repo_id: int, db: Session = Depends(get_db)):
+            """Test the repository's access token permissions"""
+            try:
+                # Get repository
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                
+                if repo.provider == 'github':
+                    if not repo.github_token:
+                        raise HTTPException(status_code=400, detail="No GitHub token configured")
+                    
+                    # Test GitHub token
+                    result = await self._test_github_token(repo)
+                    
+                elif repo.provider == 'azure_devops':
+                    if not repo.azure_pat:
+                        raise HTTPException(status_code=400, detail="No Azure DevOps PAT configured")
+                    
+                    # Test Azure DevOps PAT
+                    result = await self._test_azure_devops_token(repo)
+                    
+                else:
+                    raise HTTPException(status_code=400, detail=f"Token testing not supported for provider: {repo.provider}")
+                
+                return APIResponse(data=result, message="Token test completed")
+                
+            except Exception as e:
+                logger.error(f"Error testing token for repository {repo_id}: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
         
         # Notification endpoints
@@ -3304,10 +3716,10 @@ This file can override any setting from the global PR-Agent configuration, inclu
                     # Check if connection is still active before sending ping
                     if websocket.client_state.value == 1:  # CONNECTED state
                         try:
-                            await websocket.send_json({
-                                "type": "ping", 
-                                "timestamp": datetime.utcnow().isoformat()
-                            })
+                    await websocket.send_json({
+                        "type": "ping", 
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
                         except Exception as ping_error:
                             logger.debug(f"Failed to send ping, connection likely closed: {ping_error}")
                             break
@@ -3961,7 +4373,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
             startup_logging_task = None
             
             try:
-                cleanup_task = asyncio.create_task(self._cleanup_old_data())
+            cleanup_task = asyncio.create_task(self._cleanup_old_data())
             except Exception as e:
                 logger.error(f"Failed to start cleanup task: {e}")
                 
@@ -3971,7 +4383,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 logger.error(f"Failed to start backup scheduler: {e}")
                 
             try:
-                health_task = asyncio.create_task(self._monitor_system_health())
+            health_task = asyncio.create_task(self._monitor_system_health())
             except Exception as e:
                 logger.error(f"Failed to start system health monitoring: {e}")
                 
@@ -3982,7 +4394,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
             
             # Start health service background monitoring
             try:
-                await self.health_service.start_background_monitoring()
+            await self.health_service.start_background_monitoring()
             except Exception as e:
                 logger.error(f"Failed to start health monitoring: {e}")
             
@@ -4008,7 +4420,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
             
             # Gracefully stop health service monitoring first
             try:
-                await self.health_service.stop_background_monitoring()
+            await self.health_service.stop_background_monitoring()
                 logger.info("Health service monitoring stopped")
             except Exception as e:
                 logger.error(f"Failed to stop health monitoring: {e}")
@@ -4095,6 +4507,308 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 }
             }
     
+    def _configure_azure_devops_settings(self, repo):
+        """Configure Azure DevOps settings for provider initialization"""
+        from pr_agent.config_loader import get_settings
+        settings = get_settings()
+        
+        # Parse organization from repository URL
+        org_url = repo.url
+        if 'dev.azure.com' in org_url:
+            # Extract organization from URL like https://dev.azure.com/organization/project/_git/repo
+            org_parts = org_url.split('/')
+            if len(org_parts) >= 4:
+                org_name = org_parts[3]
+                org_url = f"https://dev.azure.com/{org_name}"
+        elif 'visualstudio.com' in org_url:
+            # Extract organization from URL like https://organization.visualstudio.com/project/_git/repo
+            from urllib.parse import urlparse
+            parsed_url = urlparse(org_url)
+            # For visualstudio.com, the organization is the subdomain
+            org_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        
+        # Set Azure DevOps configuration in settings
+        if not hasattr(settings, 'azure_devops'):
+            settings.azure_devops = {}
+        settings.azure_devops['org'] = org_url
+        settings.azure_devops['pat'] = repo.azure_pat
+
+    async def _test_github_token(self, repo):
+        """Test GitHub token permissions"""
+        import requests
+        from datetime import datetime
+        
+        headers = {
+            'Authorization': f'token {repo.github_token}',
+            'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': 'PR-Agent-Dashboard'
+        }
+        
+        # Parse repository from URL
+        repo_parts = repo.url.replace('https://github.com/', '').replace('.git', '').split('/')
+        if len(repo_parts) < 2:
+            return {
+                'success': False,
+                'error': 'Invalid GitHub repository URL format',
+                'details': {},
+                'tested_at': datetime.utcnow().isoformat()
+            }
+        
+        owner, repo_name = repo_parts[0], repo_parts[1]
+        
+        try:
+            # Test 1: Get user info
+            user_response = requests.get('https://api.github.com/user', headers=headers, timeout=10)
+            
+            # Test 2: Get repository info
+            repo_response = requests.get(f'https://api.github.com/repos/{owner}/{repo_name}', headers=headers, timeout=10)
+            
+            # Test 3: Check actions permissions
+            actions_response = requests.get(f'https://api.github.com/repos/{owner}/{repo_name}/actions/runs?per_page=1', headers=headers, timeout=10)
+            
+            # Analyze results
+            permissions = []
+            issues = []
+            
+            if user_response.status_code == 200:
+                user_data = user_response.json()
+                permissions.append("✅ User authentication successful")
+            else:
+                issues.append(f"❌ User authentication failed: {user_response.status_code}")
+            
+            if repo_response.status_code == 200:
+                repo_data = repo_response.json()
+                permissions.append("✅ Repository access granted")
+                
+                # Check specific permissions
+                if repo_data.get('permissions', {}).get('admin'):
+                    permissions.append("✅ Admin permissions")
+                elif repo_data.get('permissions', {}).get('push'):
+                    permissions.append("✅ Push permissions")
+                elif repo_data.get('permissions', {}).get('pull'):
+                    permissions.append("✅ Pull permissions")
+                else:
+                    issues.append("⚠️ Limited repository permissions")
+                    
+            else:
+                issues.append(f"❌ Repository access denied: {repo_response.status_code}")
+            
+            if actions_response.status_code == 200:
+                permissions.append("✅ Actions read access")
+            elif actions_response.status_code == 404:
+                permissions.append("⚠️ Actions not enabled or no runs found")
+            else:
+                issues.append(f"❌ Actions access denied: {actions_response.status_code}")
+            
+            # Check rate limit
+            rate_limit_remaining = user_response.headers.get('X-RateLimit-Remaining', 'Unknown')
+            rate_limit_reset = user_response.headers.get('X-RateLimit-Reset', 'Unknown')
+            
+            return {
+                'success': len(issues) == 0,
+                'permissions': permissions,
+                'issues': issues,
+                'details': {
+                    'username': user_data.get('login') if user_response.status_code == 200 else None,
+                    'rate_limit_remaining': rate_limit_remaining,
+                    'rate_limit_reset': rate_limit_reset,
+                    'repository_accessible': repo_response.status_code == 200,
+                    'actions_accessible': actions_response.status_code == 200
+                },
+                'tested_at': datetime.utcnow().isoformat()
+            }
+            
+        except requests.exceptions.RequestException as e:
+            return {
+                'success': False,
+                'error': f'Network error: {str(e)}',
+                'details': {},
+                'tested_at': datetime.utcnow().isoformat()
+            }
+
+    async def _test_azure_devops_token(self, repo):
+        """Test Azure DevOps PAT permissions"""
+        import requests
+        import base64
+        from datetime import datetime
+        from urllib.parse import urlparse
+        
+        logger.info(f"Testing Azure DevOps token for repository: {repo.name} ({repo.url})")
+        
+        # Parse Azure DevOps URL
+        try:
+            parsed_url = urlparse(repo.url)
+            logger.info(f"Parsed URL: netloc={parsed_url.netloc}, path={parsed_url.path}")
+            
+            if 'dev.azure.com' in parsed_url.netloc:
+                # Format: https://dev.azure.com/organization/project/_git/repo
+                path_parts = parsed_url.path.strip('/').split('/')
+                logger.info(f"dev.azure.com path parts: {path_parts}")
+                if len(path_parts) >= 3:
+                    organization = path_parts[0]
+                    project = path_parts[1]
+                    repo_name = path_parts[3] if len(path_parts) > 3 else path_parts[2]
+                else:
+                    raise ValueError("Invalid Azure DevOps URL format")
+            elif 'visualstudio.com' in parsed_url.netloc:
+                # Format: https://organization.visualstudio.com/project/_git/repo
+                organization = parsed_url.netloc.split('.')[0]
+                path_parts = parsed_url.path.strip('/').split('/')
+                logger.info(f"visualstudio.com path parts: {path_parts}")
+                if len(path_parts) >= 3:
+                    project = path_parts[0]
+                    repo_name = path_parts[2]
+                else:
+                    raise ValueError("Invalid Azure DevOps URL format")
+            else:
+                raise ValueError("Unrecognized Azure DevOps URL format")
+                
+            logger.info(f"Parsed Azure DevOps details: org={organization}, project={project}, repo={repo_name}")
+            
+        except Exception as e:
+            logger.error(f"Failed to parse Azure DevOps URL: {e}")
+            return {
+                'success': False,
+                'error': f'Invalid Azure DevOps URL: {str(e)}',
+                'details': {},
+                'tested_at': datetime.utcnow().isoformat()
+            }
+        
+        # Setup authentication
+        auth_string = base64.b64encode(f':{repo.azure_pat}'.encode()).decode()
+        headers = {
+            'Authorization': f'Basic {auth_string}',
+            'Accept': 'application/json',
+            'User-Agent': 'PR-Agent-Dashboard'
+        }
+        
+        try:
+            permissions = []
+            issues = []
+            
+            # Test 1: Get user profile
+            if 'dev.azure.com' in repo.url:
+                profile_url = f'https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=6.0'
+                org_url = f'https://dev.azure.com/{organization}'
+            else:
+                profile_url = f'https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=6.0'
+                org_url = f'https://{organization}.visualstudio.com'
+            
+            logger.info(f"Testing user profile: {profile_url}")
+            profile_response = requests.get(profile_url, headers=headers, timeout=10)
+            logger.info(f"Profile response: {profile_response.status_code}")
+            
+            # Test 2: Get project info
+            project_url = f'{org_url}/_apis/projects/{project}?api-version=6.0'
+            logger.info(f"Testing project access: {project_url}")
+            project_response = requests.get(project_url, headers=headers, timeout=10)
+            logger.info(f"Project response: {project_response.status_code}")
+            
+            # Test 3: Get repository info
+            repo_url = f'{org_url}/{project}/_apis/git/repositories/{repo_name}?api-version=6.0'
+            logger.info(f"Testing repository access: {repo_url}")
+            repo_response = requests.get(repo_url, headers=headers, timeout=10)
+            logger.info(f"Repository response: {repo_response.status_code}")
+            
+            # Test 4: Get pipelines (if accessible)
+            pipelines_url = f'{org_url}/{project}/_apis/pipelines?api-version=6.0-preview.1'
+            logger.info(f"Testing pipelines access: {pipelines_url}")
+            pipelines_response = requests.get(pipelines_url, headers=headers, timeout=10)
+            logger.info(f"Pipelines response: {pipelines_response.status_code}")
+            
+            # Helper function to get detailed error info
+            def get_error_details(response):
+                try:
+                    if response.status_code >= 400:
+                        error_data = response.json()
+                        return error_data.get('message', f'HTTP {response.status_code}')
+                except:
+                    return f'HTTP {response.status_code}'
+                return None
+            
+            # Analyze results with detailed error logging
+            profile_data = None
+            if profile_response.status_code == 200:
+                profile_data = profile_response.json()
+                permissions.append("✅ User authentication successful")
+                logger.info(f"User profile success: {profile_data.get('displayName', 'Unknown')}")
+            else:
+                error_detail = get_error_details(profile_response)
+                # Profile failure is not critical if other endpoints work
+                permissions.append(f"⚠️ User profile unavailable: {error_detail}")
+                logger.warning(f"User profile failed (non-critical): {error_detail}")
+                if profile_response.status_code == 401:
+                    logger.warning("Profile endpoint requires different permissions (this is normal for some PAT scopes)")
+                elif profile_response.status_code == 403:
+                    logger.warning("Profile endpoint access denied (this is normal for some PAT scopes)")
+            
+            if project_response.status_code == 200:
+                permissions.append("✅ Project access granted")
+                logger.info(f"Project access success for: {project}")
+            else:
+                error_detail = get_error_details(project_response)
+                issues.append(f"❌ Project access denied: {error_detail}")
+                logger.error(f"Project access failed: {error_detail}")
+                if project_response.status_code == 404:
+                    logger.error(f"Project '{project}' not found or no access")
+            
+            if repo_response.status_code == 200:
+                permissions.append("✅ Repository access granted")
+                logger.info(f"Repository access success for: {repo_name}")
+            else:
+                error_detail = get_error_details(repo_response)
+                issues.append(f"❌ Repository access denied: {error_detail}")
+                logger.error(f"Repository access failed: {error_detail}")
+                if repo_response.status_code == 404:
+                    logger.error(f"Repository '{repo_name}' not found or no access")
+            
+            if pipelines_response.status_code == 200:
+                permissions.append("✅ Pipelines read access")
+                logger.info("Pipelines access success")
+            elif pipelines_response.status_code == 403:
+                permissions.append("⚠️ Limited pipeline permissions")
+                logger.warning("Limited pipeline permissions")
+            else:
+                error_detail = get_error_details(pipelines_response)
+                issues.append(f"❌ Pipelines access denied: {error_detail}")
+                logger.error(f"Pipelines access failed: {error_detail}")
+            
+            # Token is considered successful if core functionality works (project and repository access)
+            core_functionality_works = (project_response.status_code == 200 and 
+                                       repo_response.status_code == 200)
+            
+            result = {
+                'success': core_functionality_works and len(issues) == 0,
+                'permissions': permissions,
+                'issues': issues,
+                'details': {
+                    'organization': organization,
+                    'project': project,
+                    'repository': repo_name,
+                    'username': profile_data.get('displayName') if profile_data else None,
+                    'project_accessible': project_response.status_code == 200,
+                    'repository_accessible': repo_response.status_code == 200,
+                    'pipelines_accessible': pipelines_response.status_code == 200
+                },
+                'tested_at': datetime.utcnow().isoformat()
+            }
+            
+            logger.info(f"Token test result: success={result['success']}, issues={len(issues)}")
+            if issues:
+                logger.warning(f"Token test issues: {issues}")
+            
+            return result
+            
+        except requests.exceptions.RequestException as e:
+            error_msg = f'Network error: {str(e)}'
+            logger.error(f"Azure DevOps token test failed: {error_msg}")
+            return {
+                'success': False,
+                'error': error_msg,
+                'details': {},
+                'tested_at': datetime.utcnow().isoformat()
+            }
+
     def _log_system_event(self, level: str, message: str, context: dict = None):
         """Log system events to the dashboard logging system"""
         try:
@@ -4243,12 +4957,17 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 self.database_manager.set_system_setting("last_health_check_time", datetime.utcnow().isoformat())
                 
                 # Log any issues
-                if health["status"] != "healthy":
-                    logger.warning(f"System health degraded: {health['status']}")
+                overall_status = health.get("overall", {}).get("status", "unknown")
+                if overall_status != "healthy":
+                    logger.warning(f"System health degraded: {overall_status}")
                     
-                    for service_name, service_health in health["services"].items():
-                        if service_health["status"] not in ["healthy", "disabled", "configured"]:
-                            logger.warning(f"Service {service_name} status: {service_health['status']}")
+                    # Check individual services (exclude 'overall' from service checks)
+                    for service_name, service_health in health.items():
+                        if service_name == "overall":
+                            continue
+                        service_status = service_health.get("status", "unknown")
+                        if service_status not in ["healthy", "disabled", "configured"]:
+                            logger.warning(f"Service {service_name} status: {service_status}")
                 
             except Exception as e:
                 logger.error(f"Error in health monitoring: {e}")

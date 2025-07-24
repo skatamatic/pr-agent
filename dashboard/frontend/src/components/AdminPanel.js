@@ -356,29 +356,29 @@ const AdminPanel = () => {
         icon={Database}
       />
 
-      {/* Section Navigation */}
-      <div className="flex space-x-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
+        {/* Section Navigation */}
+        <div className="flex space-x-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
         {[
           { id: 'retention', name: 'Retention', icon: Calendar },
           { id: 'database', name: 'Stats', icon: BarChart3 },
           { id: 'backup', name: 'Backup & Export', icon: Archive }
         ].map((section) => {
-          const Icon = section.icon;
-          return (
-            <button
-              key={section.id}
-              onClick={() => setActiveSection(section.id)}
-              className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                activeSection === section.id
-                  ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
-                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-              }`}
-            >
-              <Icon className="h-4 w-4 mr-2" />
-              {section.name}
-            </button>
-          );
-        })}
+            const Icon = section.icon;
+            return (
+              <button
+                key={section.id}
+                onClick={() => setActiveSection(section.id)}
+                className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeSection === section.id
+                    ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                <Icon className="h-4 w-4 mr-2" />
+                {section.name}
+              </button>
+            );
+          })}
       </div>
 
       {/* Retention Policy Section */}
@@ -1094,14 +1094,14 @@ const AdminPanel = () => {
                         Delete All
                       </button>
                     )}
-                    <button
-                      onClick={loadBackupList}
-                      className="px-3 py-1 text-blue-600 hover:text-blue-700 dark:text-blue-400 
-                               dark:hover:text-blue-300 font-medium flex items-center text-sm"
-                    >
-                      <RefreshCw className="h-4 w-4 mr-1" />
-                      Refresh
-                    </button>
+                  <button
+                    onClick={loadBackupList}
+                    className="px-3 py-1 text-blue-600 hover:text-blue-700 dark:text-blue-400 
+                             dark:hover:text-blue-300 font-medium flex items-center text-sm"
+                  >
+                    <RefreshCw className="h-4 w-4 mr-1" />
+                    Refresh
+                  </button>
                   </div>
                 </div>
                 
@@ -1113,44 +1113,44 @@ const AdminPanel = () => {
 
                 {backupList.length > 0 ? (
                   <>
-                    <div className="overflow-hidden border border-gray-200 dark:border-gray-700 rounded-lg">
-                      <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                        <thead className="bg-gray-50 dark:bg-gray-700">
-                          <tr>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                              Filename
-                            </th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                              Size
-                            </th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                              Created
-                            </th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                              Type
-                            </th>
+                  <div className="overflow-hidden border border-gray-200 dark:border-gray-700 rounded-lg">
+                    <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                      <thead className="bg-gray-50 dark:bg-gray-700">
+                        <tr>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                            Filename
+                          </th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                            Size
+                          </th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                            Created
+                          </th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                            Type
+                          </th>
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                               Format
                             </th>
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                               Actions
                             </th>
-                          </tr>
-                        </thead>
-                        <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                           {currentBackups.map((backup, index) => (
-                            <tr key={index}>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
+                          <tr key={index}>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
                                 <div className="max-w-xs truncate" title={backup.filename}>
-                                  {backup.filename}
+                              {backup.filename}
                                 </div>
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                                {formatBytes(backup.size)}
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                                {formatDate(backup.created_at)}
-                              </td>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                              {formatBytes(backup.size)}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                              {formatDate(backup.created_at)}
+                            </td>
                               <td className="px-6 py-4 whitespace-nowrap">
                                 <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
                                   backup.type === 'automatic'
@@ -1163,15 +1163,15 @@ const AdminPanel = () => {
                                    backup.type === 'safety' ? 'Safety' : 'Manual'}
                                 </span>
                               </td>
-                              <td className="px-6 py-4 whitespace-nowrap">
-                                <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                                  backup.compressed 
-                                    ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                                backup.compressed 
+                                  ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
                                     : 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200'
-                                }`}>
-                                  {backup.compressed ? 'Compressed' : 'Standard'}
-                                </span>
-                              </td>
+                              }`}>
+                                {backup.compressed ? 'Compressed' : 'Standard'}
+                              </span>
+                            </td>
                               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                 <div className="flex items-center space-x-2">
                                   <button
@@ -1203,11 +1203,11 @@ const AdminPanel = () => {
                                   </button>
                                 </div>
                               </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                     
                     {/* Pagination */}
                     {totalPages > 1 && (

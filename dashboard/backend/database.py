@@ -238,6 +238,273 @@ def migrate_database():
                 conn.execute(text("ALTER TABLE repositories ADD COLUMN has_workflow_config BOOLEAN DEFAULT FALSE"))
                 conn.commit()
             print("Added has_workflow_config column to repositories table")
+        
+        # Azure Pipeline config tracking columns
+        if not check_column_exists(engine, 'repositories', 'azure_pipeline_config_pr_url'):
+            print("Adding azure_pipeline_config_pr_url column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN azure_pipeline_config_pr_url VARCHAR"))
+                conn.commit()
+            print("Added azure_pipeline_config_pr_url column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'azure_pipeline_config_pr_number'):
+            print("Adding azure_pipeline_config_pr_number column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN azure_pipeline_config_pr_number INTEGER"))
+                conn.commit()
+            print("Added azure_pipeline_config_pr_number column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'azure_pipeline_config_pr_branch'):
+            print("Adding azure_pipeline_config_pr_branch column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN azure_pipeline_config_pr_branch VARCHAR"))
+                conn.commit()
+            print("Added azure_pipeline_config_pr_branch column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'azure_pipeline_config_pr_status'):
+            print("Adding azure_pipeline_config_pr_status column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN azure_pipeline_config_pr_status VARCHAR"))
+                conn.commit()
+            print("Added azure_pipeline_config_pr_status column to repositories table")
+        
+        # Runner service monitoring columns
+        if not check_column_exists(engine, 'repositories', 'runner_service_name'):
+            print("Adding runner_service_name column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN runner_service_name VARCHAR"))
+                conn.commit()
+            print("Added runner_service_name column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'runner_service_last_checked'):
+            print("Adding runner_service_last_checked column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN runner_service_last_checked DATETIME"))
+                conn.commit()
+            print("Added runner_service_last_checked column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'runner_service_details'):
+            print("Adding runner_service_details column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN runner_service_details JSON"))
+                conn.commit()
+            print("Added runner_service_details column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'runner_service_status'):
+            print("Adding runner_service_status column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN runner_service_status VARCHAR"))
+                conn.commit()
+            print("Added runner_service_status column to repositories table")
+        
+        # Azure agent service monitoring columns
+        if not check_column_exists(engine, 'repositories', 'azure_agent_service_name'):
+            print("Adding azure_agent_service_name column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN azure_agent_service_name VARCHAR"))
+                conn.commit()
+            print("Added azure_agent_service_name column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'azure_agent_service_status'):
+            print("Adding azure_agent_service_status column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN azure_agent_service_status VARCHAR"))
+                conn.commit()
+            print("Added azure_agent_service_status column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'azure_agent_service_last_checked'):
+            print("Adding azure_agent_service_last_checked column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN azure_agent_service_last_checked DATETIME"))
+                conn.commit()
+            print("Added azure_agent_service_last_checked column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'azure_agent_service_details'):
+            print("Adding azure_agent_service_details column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN azure_agent_service_details JSON"))
+                conn.commit()
+            print("Added azure_agent_service_details column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'azure_agent_status'):
+            print("Adding azure_agent_status column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN azure_agent_status VARCHAR"))
+                conn.commit()
+            print("Added azure_agent_status column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'azure_agent_error'):
+            print("Adding azure_agent_error column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN azure_agent_error VARCHAR"))
+                conn.commit()
+            print("Added azure_agent_error column to repositories table")
+        
+        # Best practices tracking columns
+        if not check_column_exists(engine, 'repositories', 'has_best_practices'):
+            print("Adding has_best_practices column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN has_best_practices BOOLEAN DEFAULT FALSE"))
+                conn.commit()
+            print("Added has_best_practices column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'best_practices_content'):
+            print("Adding best_practices_content column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN best_practices_content TEXT"))
+                conn.commit()
+            print("Added best_practices_content column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'best_practices_last_fetched'):
+            print("Adding best_practices_last_fetched column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN best_practices_last_fetched DATETIME"))
+                conn.commit()
+            print("Added best_practices_last_fetched column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'best_practices_pr_url'):
+            print("Adding best_practices_pr_url column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN best_practices_pr_url VARCHAR"))
+                conn.commit()
+            print("Added best_practices_pr_url column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'best_practices_pr_number'):
+            print("Adding best_practices_pr_number column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN best_practices_pr_number INTEGER"))
+                conn.commit()
+            print("Added best_practices_pr_number column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'best_practices_pr_branch'):
+            print("Adding best_practices_pr_branch column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN best_practices_pr_branch VARCHAR"))
+                conn.commit()
+            print("Added best_practices_pr_branch column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'best_practices_pr_status'):
+            print("Adding best_practices_pr_status column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN best_practices_pr_status VARCHAR"))
+                conn.commit()
+            print("Added best_practices_pr_status column to repositories table")
+        
+        # PR-Agent config tracking columns
+        if not check_column_exists(engine, 'repositories', 'pr_agent_config_content'):
+            print("Adding pr_agent_config_content column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN pr_agent_config_content TEXT"))
+                conn.commit()
+            print("Added pr_agent_config_content column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'pr_agent_config_last_fetched'):
+            print("Adding pr_agent_config_last_fetched column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN pr_agent_config_last_fetched DATETIME"))
+                conn.commit()
+            print("Added pr_agent_config_last_fetched column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'pr_agent_config_pr_url'):
+            print("Adding pr_agent_config_pr_url column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN pr_agent_config_pr_url VARCHAR"))
+                conn.commit()
+            print("Added pr_agent_config_pr_url column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'pr_agent_config_pr_number'):
+            print("Adding pr_agent_config_pr_number column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN pr_agent_config_pr_number INTEGER"))
+                conn.commit()
+            print("Added pr_agent_config_pr_number column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'pr_agent_config_pr_branch'):
+            print("Adding pr_agent_config_pr_branch column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN pr_agent_config_pr_branch VARCHAR"))
+                conn.commit()
+            print("Added pr_agent_config_pr_branch column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'pr_agent_config_pr_status'):
+            print("Adding pr_agent_config_pr_status column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN pr_agent_config_pr_status VARCHAR"))
+                conn.commit()
+            print("Added pr_agent_config_pr_status column to repositories table")
+        
+        # GitHub Action config tracking columns
+        if not check_column_exists(engine, 'repositories', 'github_action_config_pr_url'):
+            print("Adding github_action_config_pr_url column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN github_action_config_pr_url VARCHAR"))
+                conn.commit()
+            print("Added github_action_config_pr_url column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'github_action_config_pr_number'):
+            print("Adding github_action_config_pr_number column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN github_action_config_pr_number INTEGER"))
+                conn.commit()
+            print("Added github_action_config_pr_number column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'github_action_config_pr_branch'):
+            print("Adding github_action_config_pr_branch column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN github_action_config_pr_branch VARCHAR"))
+                conn.commit()
+            print("Added github_action_config_pr_branch column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'github_action_config_pr_status'):
+            print("Adding github_action_config_pr_status column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN github_action_config_pr_status VARCHAR"))
+                conn.commit()
+            print("Added github_action_config_pr_status column to repositories table")
+        
+        # Monitoring settings columns
+        if not check_column_exists(engine, 'repositories', 'monitor_prs'):
+            print("Adding monitor_prs column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN monitor_prs BOOLEAN DEFAULT TRUE"))
+                conn.commit()
+            print("Added monitor_prs column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'monitor_issues'):
+            print("Adding monitor_issues column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN monitor_issues BOOLEAN DEFAULT FALSE"))
+                conn.commit()
+            print("Added monitor_issues column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'auto_review'):
+            print("Adding auto_review column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN auto_review BOOLEAN DEFAULT TRUE"))
+                conn.commit()
+            print("Added auto_review column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'auto_describe'):
+            print("Adding auto_describe column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN auto_describe BOOLEAN DEFAULT TRUE"))
+                conn.commit()
+            print("Added auto_describe column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'auto_improve'):
+            print("Adding auto_improve column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN auto_improve BOOLEAN DEFAULT FALSE"))
+                conn.commit()
+            print("Added auto_improve column to repositories table")
+        
+        # Metadata columns
+        if not check_column_exists(engine, 'repositories', 'last_activity'):
+            print("Adding last_activity column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN last_activity DATETIME"))
+                conn.commit()
+            print("Added last_activity column to repositories table")
     
     # Check and fix metrics_aggregate table
     if check_table_exists(engine, 'metrics_aggregate'):

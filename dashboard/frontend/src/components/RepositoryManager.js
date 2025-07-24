@@ -35,6 +35,7 @@ import ViewHeader from './ViewHeader';
 import PrAgentConfigEditor from './PrAgentConfigEditor';
 import { formatTimestamp } from '../utils/timeUtils';
 import GitHubActionConfigEditor from './GitHubActionConfigEditor';
+import AzurePipelineConfigEditor from './AzurePipelineConfigEditor';
 
 const RepositoryManager = () => {
   const [repositories, setRepositories] = useState([]);
@@ -92,7 +93,13 @@ const RepositoryManager = () => {
   const [githubActionConfigData, setGithubActionConfigData] = useState({});
   const [showGithubActionConfigEditor, setShowGithubActionConfigEditor] = useState(null);
   const [loadingGithubActionConfig, setLoadingGithubActionConfig] = useState(new Set());
+  
+  // Azure Pipeline config states
+  const [azurePipelineConfigData, setAzurePipelineConfigData] = useState({});
+  const [showAzurePipelineConfigEditor, setShowAzurePipelineConfigEditor] = useState(null);
+  const [loadingAzurePipelineConfig, setLoadingAzurePipelineConfig] = useState(new Set());
   const [checkingGithubActionPrStatus, setCheckingGithubActionPrStatus] = useState(new Set());
+  const [checkingAzurePipelinePrStatus, setCheckingAzurePipelinePrStatus] = useState(new Set());
 
   // Runner service states
   const [runnerServiceNames, setRunnerServiceNames] = useState({});
@@ -102,6 +109,19 @@ const RepositoryManager = () => {
   const [availableServices, setAvailableServices] = useState([]);
   const [loadingServices, setLoadingServices] = useState(false);
   const [serviceDropdownOpen, setServiceDropdownOpen] = useState({});
+
+  // Azure agent service state
+  const [azureAgentServiceNames, setAzureAgentServiceNames] = useState({});
+  const [azureAgentServiceStatus, setAzureAgentServiceStatus] = useState({});
+  const [checkingAzureAgentService, setCheckingAzureAgentService] = useState(new Set());
+  const [savingAzureAgentServiceName, setSavingAzureAgentServiceName] = useState(new Set());
+  const [availableAzureServices, setAvailableAzureServices] = useState([]);
+  const [loadingAzureServices, setLoadingAzureServices] = useState(false);
+  const [azureServiceDropdownOpen, setAzureServiceDropdownOpen] = useState({});
+
+  // Token testing state
+  const [testingTokens, setTestingTokens] = useState(new Set());
+  const [tokenTestResults, setTokenTestResults] = useState({});
 
   const fetchRepositories = useCallback(async () => {
     try {
@@ -1216,6 +1236,124 @@ const RepositoryManager = () => {
     }
   };
 
+  // Azure Pipeline config functions
+  const loadAzurePipelineConfig = async (repoId, forceRefresh = false) => {
+    if (loadingAzurePipelineConfig.has(repoId) && !forceRefresh) return;
+
+    try {
+      setLoadingAzurePipelineConfig(prev => new Set([...prev, repoId]));
+      const response = await api.get(`/api/repositories/${repoId}/azure-pipeline-config?force_refresh=${forceRefresh}`);
+      const configData = response.data;
+
+      setAzurePipelineConfigData(prev => ({
+        ...prev,
+        [repoId]: {
+          ...configData,
+          error: null
+        }
+      }));
+
+      // Check for pending PR status if config exists
+      if (configData.pr_number) {
+        checkAzurePipelineConfigPRStatus(repoId);
+      }
+
+    } catch (error) {
+      console.error('Error loading Azure Pipeline config:', error);
+      showError('Error', 'Failed to load Azure Pipeline configuration');
+    } finally {
+      setLoadingAzurePipelineConfig(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(repoId);
+        return newSet;
+      });
+    }
+  };
+
+  const openAzurePipelineConfigEditor = (repoId) => {
+    setShowAzurePipelineConfigEditor(repoId);
+  };
+
+  const closeAzurePipelineConfigEditor = () => {
+    setShowAzurePipelineConfigEditor(null);
+  };
+
+  const handleAzurePipelineConfigSave = async (result) => {
+    try {
+      // Update the Azure Pipeline config data with PR info
+      setAzurePipelineConfigData(prev => ({
+        ...prev,
+        [showAzurePipelineConfigEditor]: {
+          ...prev[showAzurePipelineConfigEditor],
+          pr_url: result.pr_url,
+          pr_number: result.pr_number,
+          pr_status: result.status || 'pending',
+          has_pending_pr: true
+        }
+      }));
+      closeAzurePipelineConfigEditor();
+    } catch (error) {
+      console.error('Error after Azure Pipeline config save:', error);
+    }
+  };
+
+  const checkAzurePipelineConfigPRStatus = async (repoId) => {
+    try {
+      setCheckingAzurePipelinePrStatus(prev => new Set([...prev, repoId]));
+      const configData = azurePipelineConfigData[repoId];
+      if (!configData?.pr_number) {
+        console.warn('No PR number found for Azure Pipeline config');
+        return;
+      }
+
+      // Call the backend to check PR status - Azure DevOps uses REST API
+      const response = await api.post(`/api/repositories/${repoId}/azure-pipeline-config/check-pr-status`, {
+        pr_number: configData.pr_number
+      });
+      const result = response.data;
+
+      if (result.status === 'merged') {
+        // PR was merged - refresh config and show success
+        showSuccess('PR Merged!', 'Azure Pipeline config PR was merged. Configuration is now active.');
+        
+        setAzurePipelineConfigData(prev => ({
+          ...prev,
+          [repoId]: {
+            ...prev[repoId],
+            has_pending_pr: false,
+            pr_status: 'merged',
+            exists: true
+          }
+        }));
+
+        // Refresh the config data
+        await loadAzurePipelineConfig(repoId, true);
+      } else if (result.status === 'closed') {
+        showSuccess('PR Closed', 'Azure Pipeline config PR was closed without merging.');
+        
+        setAzurePipelineConfigData(prev => ({
+          ...prev,
+          [repoId]: {
+            ...prev[repoId],
+            has_pending_pr: false,
+            pr_status: 'closed'
+          }
+        }));
+      }
+      // If still pending, no action needed
+
+    } catch (error) {
+      console.error('Error checking Azure Pipeline config PR status:', error);
+      showError('Error', 'Failed to check Azure Pipeline PR status');
+    } finally {
+      setCheckingAzurePipelinePrStatus(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(repoId);
+        return newSet;
+      });
+    }
+  };
+
   // Get overall repository status for the main badge
   const getRepositoryStatus = (repo) => {
     // If repository is not active, show as disabled
@@ -1301,6 +1439,54 @@ const RepositoryManager = () => {
       // Then sort by repository name alphabetically
       return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     });
+  };
+
+  // Helper function to parse Azure DevOps URLs correctly
+  const parseAzureDevOpsUrl = (url) => {
+    try {
+      const urlObj = new URL(url);
+      
+      if (urlObj.hostname.includes('dev.azure.com')) {
+        // Format: https://dev.azure.com/organization/project/_git/repo
+        const pathParts = urlObj.pathname.split('/').filter(p => p);
+        if (pathParts.length >= 3) {
+          return {
+            organization: pathParts[0],
+            project: pathParts[1],
+            repository: pathParts[pathParts.length - 1],
+            baseUrl: `https://dev.azure.com/${pathParts[0]}`
+          };
+        }
+      } else if (urlObj.hostname.includes('visualstudio.com')) {
+        // Format: https://organization.visualstudio.com/project/_git/repo
+        const pathParts = urlObj.pathname.split('/').filter(p => p);
+        const organization = urlObj.hostname.split('.')[0];
+        if (pathParts.length >= 2) {
+          return {
+            organization: organization,
+            project: pathParts[0],
+            repository: pathParts[pathParts.length - 1],
+            baseUrl: `https://${organization}.visualstudio.com`
+          };
+        }
+      }
+      
+      // Fallback to original parsing
+      const pathParts = url.split('/');
+      return {
+        organization: pathParts[3] || 'unknown',
+        project: pathParts[4] || 'unknown',
+        repository: pathParts[pathParts.length - 1] || 'unknown',
+        baseUrl: `${pathParts[0]}//${pathParts[2]}`
+      };
+    } catch (e) {
+      return {
+        organization: 'unknown',
+        project: 'unknown', 
+        repository: 'unknown',
+        baseUrl: 'unknown'
+      };
+    }
   };
 
   // Runner service functions
@@ -1471,6 +1657,172 @@ const RepositoryManager = () => {
     if (!serviceDropdownOpen[repoId] && availableServices.length === 0) {
       console.log('Fetching available services...');
       fetchAvailableServices();
+    }
+  };
+
+  // Azure agent service functions
+  const getDefaultAzureAgentServiceName = (repo) => {
+    try {
+      const azureInfo = parseAzureDevOpsUrl(repo.url);
+      return `vstsagent.${azureInfo.organization}.${azureInfo.repository}`;
+    } catch (error) {
+      console.warn('Could not parse Azure DevOps URL:', error);
+      return `vstsagent.${repo.name.replace('/', '.')}`;
+    }
+  };
+
+  const checkAzureAgentService = async (repoId) => {
+    if (checkingAzureAgentService.has(repoId)) {
+      return; // Already checking this service
+    }
+
+    const serviceName = azureAgentServiceNames[repoId] || getDefaultAzureAgentServiceName(repositories.find(r => r.id === repoId));
+    
+    try {
+      setCheckingAzureAgentService(prev => new Set([...prev, repoId]));
+      
+      console.log(`Checking Azure agent service: ${serviceName} for repo ${repoId}`);
+      
+      const response = await api.checkAzureAgentService(repoId, { service_name: serviceName });
+      
+      setAzureAgentServiceStatus(prev => ({
+        ...prev,
+        [repoId]: response.data.data
+      }));
+      
+      console.log(`Azure agent service check result for ${serviceName}:`, response.data.data);
+      
+    } catch (error) {
+      console.error(`Error checking Azure agent service ${serviceName}:`, error);
+      setAzureAgentServiceStatus(prev => ({
+        ...prev,
+        [repoId]: {
+          status: 'error',
+          status_display: 'Check Failed',
+          service_name: serviceName,
+          error: error.response?.data?.detail || error.message || 'Unknown error',
+          exists: false
+        }
+      }));
+    } finally {
+      setCheckingAzureAgentService(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(repoId);
+        return newSet;
+      });
+    }
+  };
+
+  const saveAzureAgentServiceName = async (repoId) => {
+    if (savingAzureAgentServiceName.has(repoId)) {
+      return; // Already saving
+    }
+
+    const serviceName = azureAgentServiceNames[repoId] || getDefaultAzureAgentServiceName(repositories.find(r => r.id === repoId));
+    
+    try {
+      setSavingAzureAgentServiceName(prev => new Set([...prev, repoId]));
+      
+      await api.saveAzureAgentServiceName(repoId, { service_name: serviceName });
+      
+      showSuccess('Success', 'Azure agent service name saved successfully');
+      
+      // Automatically check the service status after saving
+      setTimeout(() => {
+        checkAzureAgentService(repoId);
+      }, 500);
+      
+    } catch (error) {
+      console.error('Error saving Azure agent service name:', error);
+      showError('Error', error.response?.data?.detail || 'Failed to save Azure agent service name');
+    } finally {
+      setSavingAzureAgentServiceName(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(repoId);
+        return newSet;
+      });
+    }
+  };
+
+  const fetchAvailableAzureServices = async () => {
+    if (loadingAzureServices) {
+      return; // Already loading
+    }
+
+    try {
+      setLoadingAzureServices(true);
+      
+      // We need a repository ID to make the call, use the first available one
+      const firstRepo = repositories.find(r => r.provider === 'azure_devops');
+      if (!firstRepo) {
+        console.warn('No Azure DevOps repositories found for service listing');
+        return;
+      }
+      
+      const response = await api.listAzureAgentServices(firstRepo.id);
+      setAvailableAzureServices(response.data.services || []);
+      
+    } catch (error) {
+      console.error('Error fetching available Azure services:', error);
+      setAvailableAzureServices([]);
+    } finally {
+      setLoadingAzureServices(false);
+    }
+  };
+
+  const toggleAzureServiceDropdown = (repoId) => {
+    console.log('Toggling Azure service dropdown for repo:', repoId, 'Current state:', azureServiceDropdownOpen[repoId]);
+    setAzureServiceDropdownOpen(prev => ({
+      ...prev,
+      [repoId]: !prev[repoId]
+    }));
+    
+    // Fetch Azure services when opening dropdown for the first time
+    if (!azureServiceDropdownOpen[repoId] && availableAzureServices.length === 0) {
+      console.log('Fetching available Azure services...');
+      fetchAvailableAzureServices();
+    }
+  };
+
+  // Token testing function
+  const testToken = async (repoId) => {
+    if (testingTokens.has(repoId)) {
+      return; // Already testing
+    }
+
+    try {
+      setTestingTokens(prev => new Set([...prev, repoId]));
+      
+      const response = await api.testRepositoryToken(repoId);
+      
+      setTokenTestResults(prev => ({
+        ...prev,
+        [repoId]: response.data.data
+      }));
+      
+      if (response.data.data.success) {
+        showSuccess('Token Test Successful', 'All token permissions are working correctly');
+      } else {
+        showError('Token Test Issues Found', 'Some permissions are missing or token is invalid');
+      }
+      
+    } catch (error) {
+      console.error('Error testing token:', error);
+      setTokenTestResults(prev => ({
+        ...prev,
+        [repoId]: {
+          success: false,
+          error: error.response?.data?.detail || error.message || 'Unknown error',
+          tested_at: new Date().toISOString()
+        }
+      }));
+      showError('Token Test Failed', error.response?.data?.detail || 'Failed to test token');
+    } finally {
+      setTestingTokens(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(repoId);
+        return newSet;
+      });
     }
   };
 
@@ -2011,25 +2363,51 @@ const RepositoryManager = () => {
                             </button>
                           )}
 
-                          {/* Azure DevOps Action Runner Tab - Only for Azure DevOps repositories */}
+                          {/* Azure Pipeline Config Tab - Only for Azure DevOps repositories */}
                           {repo.provider === 'azure_devops' && (
                             <button
                               onClick={() => {
                                 if (getTokenStatus(repo) === 'configured') {
-                                  setRepoActiveTab(repo.id, 'azure-action-runner');
+                                  setRepoActiveTab(repo.id, 'azure-pipeline-config');
+                                  // Auto-fetch Azure Pipeline config if not already loaded
+                                  if (!azurePipelineConfigData[repo.id] && !loadingAzurePipelineConfig.has(repo.id)) {
+                                    loadAzurePipelineConfig(repo.id);
+                                  }
                                 }
                               }}
                               disabled={getTokenStatus(repo) !== 'configured'}
                               className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                                 getTokenStatus(repo) !== 'configured'
                                   ? 'text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-50'
-                                  : getRepoActiveTab(repo.id) === 'azure-action-runner'
+                                  : getRepoActiveTab(repo.id) === 'azure-pipeline-config'
                                   ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-sm'
                                   : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
                               }`}
                             >
                               <Server className="h-4 w-4 mr-2" />
                               <span>Azure Pipeline</span>
+                            </button>
+                          )}
+
+                          {/* Azure DevOps Agent Installation Tab - Only for Azure DevOps repositories */}
+                          {repo.provider === 'azure_devops' && (
+                            <button
+                              onClick={() => {
+                                if (getTokenStatus(repo) === 'configured') {
+                                  setRepoActiveTab(repo.id, 'azure-agent-install');
+                                }
+                              }}
+                              disabled={getTokenStatus(repo) !== 'configured'}
+                              className={`flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                                getTokenStatus(repo) !== 'configured'
+                                  ? 'text-gray-400 dark:text-gray-500 cursor-not-allowed opacity-50'
+                                  : getRepoActiveTab(repo.id) === 'azure-agent-install'
+                                  ? 'bg-white dark:bg-gray-700 text-green-600 dark:text-green-400 shadow-sm'
+                                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                              }`}
+                            >
+                              <Download className="h-4 w-4 mr-2" />
+                              <span>Agent Install</span>
                             </button>
                           )}
 
@@ -2605,6 +2983,126 @@ const RepositoryManager = () => {
                                     </div>
                                   </div>
                                 )}
+
+                                {/* Token Testing Section */}
+                                <div>
+                                  <div className="flex items-center justify-between mb-3">
+                                    <h5 className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                                      Token Verification
+                                    </h5>
+                                    <button
+                                      onClick={() => testToken(repo.id)}
+                                      disabled={testingTokens.has(repo.id) || (!repo.has_github_token && !repo.has_azure_pat)}
+                                      className="flex items-center px-3 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                      <RefreshCw className={`h-4 w-4 mr-2 ${testingTokens.has(repo.id) ? 'animate-spin' : ''}`} />
+                                      {testingTokens.has(repo.id) ? 'Testing...' : 'Test Token'}
+                                    </button>
+                                  </div>
+
+                                  {/* Token Test Results */}
+                                  {tokenTestResults[repo.id] && (
+                                    <div className={`rounded-lg border p-4 ${
+                                      tokenTestResults[repo.id].success 
+                                        ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
+                                        : 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800'
+                                    }`}>
+                                      <div className="flex items-center justify-between mb-3">
+                                        <h6 className={`font-medium text-sm flex items-center ${
+                                          tokenTestResults[repo.id].success 
+                                            ? 'text-green-800 dark:text-green-200'
+                                            : 'text-red-800 dark:text-red-200'
+                                        }`}>
+                                          {tokenTestResults[repo.id].success ? (
+                                            <CheckCircle className="h-4 w-4 mr-2" />
+                                          ) : (
+                                            <X className="h-4 w-4 mr-2" />
+                                          )}
+                                          Token Test Results
+                                        </h6>
+                                        <span className={`text-xs px-2 py-1 rounded-full ${
+                                          tokenTestResults[repo.id].success 
+                                            ? 'bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200'
+                                            : 'bg-red-200 dark:bg-red-800 text-red-800 dark:text-red-200'
+                                        }`}>
+                                          {tokenTestResults[repo.id].success ? 'PASSED' : 'FAILED'}
+                                        </span>
+                                      </div>
+
+                                      {/* Test Results Details */}
+                                      <div className={`text-sm space-y-2 ${
+                                        tokenTestResults[repo.id].success 
+                                          ? 'text-green-700 dark:text-green-300'
+                                          : 'text-red-700 dark:text-red-300'
+                                      }`}>
+                                        {/* Permissions */}
+                                        {tokenTestResults[repo.id].permissions && tokenTestResults[repo.id].permissions.length > 0 && (
+                                          <div>
+                                            <div className="font-medium mb-1">✅ Permissions Granted:</div>
+                                            <ul className="list-none space-y-1 ml-2">
+                                              {tokenTestResults[repo.id].permissions.map((permission, index) => (
+                                                <li key={index} className="text-xs">{permission}</li>
+                                              ))}
+                                            </ul>
+                                          </div>
+                                        )}
+
+                                        {/* Issues */}
+                                        {tokenTestResults[repo.id].issues && tokenTestResults[repo.id].issues.length > 0 && (
+                                          <div>
+                                            <div className="font-medium mb-1">⚠️ Issues Found:</div>
+                                            <ul className="list-none space-y-1 ml-2">
+                                              {tokenTestResults[repo.id].issues.map((issue, index) => (
+                                                <li key={index} className="text-xs">{issue}</li>
+                                              ))}
+                                            </ul>
+                                          </div>
+                                        )}
+
+                                        {/* Error */}
+                                        {tokenTestResults[repo.id].error && (
+                                          <div>
+                                            <div className="font-medium">Error:</div>
+                                            <div className="text-xs mt-1">{tokenTestResults[repo.id].error}</div>
+                                          </div>
+                                        )}
+
+                                        {/* Details */}
+                                        {tokenTestResults[repo.id].details && (
+                                          <div className="pt-2 border-t border-current/20">
+                                            <div className="font-medium mb-1">Details:</div>
+                                            <div className="text-xs space-y-1">
+                                              {tokenTestResults[repo.id].details.username && (
+                                                <div><strong>User:</strong> {tokenTestResults[repo.id].details.username}</div>
+                                              )}
+                                              {tokenTestResults[repo.id].details.organization && (
+                                                <div><strong>Organization:</strong> {tokenTestResults[repo.id].details.organization}</div>
+                                              )}
+                                              {tokenTestResults[repo.id].details.project && (
+                                                <div><strong>Project:</strong> {tokenTestResults[repo.id].details.project}</div>
+                                              )}
+                                              {tokenTestResults[repo.id].details.repository && (
+                                                <div><strong>Repository:</strong> {tokenTestResults[repo.id].details.repository}</div>
+                                              )}
+                                              {tokenTestResults[repo.id].details.rate_limit_remaining && (
+                                                <div><strong>Rate Limit Remaining:</strong> {tokenTestResults[repo.id].details.rate_limit_remaining}</div>
+                                              )}
+                                              {tokenTestResults[repo.id].tested_at && (
+                                                <div><strong>Tested:</strong> {new Date(tokenTestResults[repo.id].tested_at).toLocaleString()}</div>
+                                              )}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {!tokenTestResults[repo.id] && !testingTokens.has(repo.id) && (
+                                    <div className="text-xs text-gray-500 dark:text-gray-400">
+                                      Click "Test Token" to verify your {repo.provider === 'github' ? 'GitHub' : 'Azure DevOps'} token permissions and connectivity.
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -3155,51 +3653,690 @@ const RepositoryManager = () => {
                           </div>
                         )}
 
-                        {/* Azure DevOps Action Runner Tab */}
-                        {getRepoActiveTab(repo.id) === 'azure-action-runner' && (
+                        {/* Azure Pipeline Config Tab */}
+                        {getRepoActiveTab(repo.id) === 'azure-pipeline-config' && (
                           <div className="space-y-6 tab-enter">
                             <div className="flex items-center justify-between">
                               <h4 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
                                 <Server className="h-5 w-5 mr-2 text-blue-600 dark:text-blue-400" />
-                                Azure DevOps Pipeline Configuration
+                                Azure Pipeline Configuration
                               </h4>
                               <div className="flex items-center space-x-2">
+                                {/* PR Status Check Button */}
+                                {azurePipelineConfigData[repo.id]?.has_pending_pr && (
+                                  <button
+                                    onClick={() => checkAzurePipelineConfigPRStatus(repo.id)}
+                                    disabled={checkingAzurePipelinePrStatus.has(repo.id)}
+                                    className="flex items-center px-3 py-2 text-sm font-medium text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg hover:bg-orange-100 dark:hover:bg-orange-900/30 transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    <RefreshCw className={`h-4 w-4 mr-2 ${checkingAzurePipelinePrStatus.has(repo.id) ? 'animate-spin' : ''}`} />
+                                    {checkingAzurePipelinePrStatus.has(repo.id) ? 'Checking PR...' : `Check PR #${azurePipelineConfigData[repo.id].pr_number}`}
+                                  </button>
+                                )}
+                                {azurePipelineConfigData[repo.id]?.has_pending_pr && (
+                                  <a
+                                    href={azurePipelineConfigData[repo.id].pr_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex items-center px-3 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors duration-200 shadow-sm"
+                                  >
+                                    <ExternalLink className="h-4 w-4 mr-2" />
+                                    View PR #{azurePipelineConfigData[repo.id].pr_number}
+                                  </a>
+                                )}
                                 <button
-                                  onClick={() => {/* TODO: Add refresh functionality */}}
-                                  className="flex items-center px-3 py-2 text-sm font-medium text-white bg-gray-600 hover:bg-gray-700 dark:bg-gray-500 dark:hover:bg-gray-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                  onClick={() => loadAzurePipelineConfig(repo.id, true)}
+                                  disabled={loadingAzurePipelineConfig.has(repo.id)}
+                                  className="flex items-center px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
-                                  <RefreshCw className="h-4 w-4 mr-2" />
-                                  Refresh
+                                  <RefreshCw className={`h-4 w-4 mr-2 ${loadingAzurePipelineConfig.has(repo.id) ? 'animate-spin' : ''}`} />
+                                  {loadingAzurePipelineConfig.has(repo.id) ? 'Loading...' : 'Refresh'}
                                 </button>
                                 <button
-                                  onClick={() => {/* TODO: Add create functionality */}}
-                                  className="flex items-center px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                  onClick={() => openAzurePipelineConfigEditor(repo.id)}
+                                  className="flex items-center px-3 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 rounded-lg transition-colors duration-200 shadow-sm"
                                 >
-                                  <Edit className="h-4 w-4 mr-2" />
-                                  Create Pipeline
+                                  <FileText className="h-4 w-4 mr-2" />
+                                  {azurePipelineConfigData[repo.id]?.exists ? 'Edit' : 'Create'} Configuration
                                 </button>
                               </div>
                             </div>
                             
-                            <div className="text-center py-8">
-                              <Server className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500 mb-4" />
-                              <h5 className="text-lg font-medium text-gray-900 dark:text-white mb-2">Azure DevOps Pipeline</h5>
-                              <p className="text-gray-500 dark:text-gray-400 mb-4">
-                                Azure DevOps pipeline configuration for PR-Agent automation (Coming Soon)
-                              </p>
-                              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 text-left max-w-2xl mx-auto">
+                            {/* Configuration Content */}
+                            {loadingAzurePipelineConfig.has(repo.id) ? (
+                              <div className="flex items-center justify-center py-8">
+                                <RefreshCw className="h-6 w-6 animate-spin mr-3 text-blue-600 dark:text-blue-400" />
+                                <span className="text-gray-600 dark:text-gray-400">Loading Azure Pipeline configuration...</span>
+                              </div>
+                            ) : azurePipelineConfigData[repo.id]?.error ? (
+                              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
                                 <div className="flex items-start">
-                                  <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3 mt-0.5 flex-shrink-0" />
+                                  <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 mr-3 mt-0.5 flex-shrink-0" />
                                   <div>
-                                    <h6 className="font-medium text-blue-800 dark:text-blue-200 mb-2">Azure DevOps Pipeline Integration</h6>
-                                    <div className="text-sm text-blue-700 dark:text-blue-300 space-y-2">
-                                      <p>• Configure Azure DevOps pipeline for automatic PR processing</p>
-                                      <p>• Set up PR-Agent environment variables and secrets</p>
-                                      <p>• Enable automated code reviews and improvements</p>
-                                      <p>• Support for both hosted and self-hosted agents</p>
+                                    <h5 className="font-medium text-red-800 dark:text-red-200 mb-1">Configuration Error</h5>
+                                    <p className="text-red-700 dark:text-red-300 text-sm mt-1">{azurePipelineConfigData[repo.id].error}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            ) : azurePipelineConfigData[repo.id]?.exists ? (
+                              <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-6 shadow-sm">
+                                <div className="flex items-center justify-between mb-4">
+                                  <h5 className="font-medium text-gray-900 dark:text-white flex items-center">
+                                    <Check className="h-5 w-5 text-green-500 mr-2" />
+                                    Azure Pipeline Configuration Found
+                                  </h5>
+                                  {azurePipelineConfigData[repo.id]?.last_fetched && (
+                                    <span className="text-sm text-gray-500 dark:text-gray-400">
+                                      Updated: {formatTimestamp(azurePipelineConfigData[repo.id].last_fetched)}
+                                    </span>
+                                  )}
+                                </div>
+                                
+                                {/* Environment Variables */}
+                                {azurePipelineConfigData[repo.id]?.env_vars && Object.keys(azurePipelineConfigData[repo.id].env_vars).length > 0 ? (
+                                  <div className="space-y-3">
+                                    <h6 className="font-medium text-gray-900 dark:text-gray-200 text-sm">
+                                      Required Environment Variables:
+                                    </h6>
+                                    <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4 space-y-2">
+                                      {Object.entries(azurePipelineConfigData[repo.id].env_vars).map(([key, value]) => (
+                                        <div key={key} className="flex items-center justify-between py-1">
+                                          <code className="text-sm font-mono text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 px-2 py-1 rounded">
+                                            {key}
+                                          </code>
+                                          <span className="text-xs text-gray-500 dark:text-gray-400 ml-3">
+                                            {value?.description || 'No description'}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="text-center py-6">
+                                    <Info className="h-8 w-8 text-blue-400 mx-auto mb-2" />
+                                    <p className="text-gray-600 dark:text-gray-400 text-sm">
+                                      Azure Pipeline configuration exists but no environment variables detected.
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                            ) : azurePipelineConfigData[repo.id] !== undefined ? (
+                              <div className="text-center py-8">
+                                <FileText className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500 mb-4" />
+                                <h5 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No Azure Pipeline Configuration</h5>
+                                <p className="text-gray-500 dark:text-gray-400 mb-6">
+                                  No azure-pipelines.yml file found in your repository. Click "Create Configuration" to set up PR-Agent automation.
+                                </p>
+                                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 text-left max-w-2xl mx-auto">
+                                  <div className="flex items-start">
+                                    <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3 mt-0.5 flex-shrink-0" />
+                                    <div>
+                                      <h6 className="font-medium text-blue-800 dark:text-blue-200 mb-2">Azure DevOps Pipeline Integration</h6>
+                                      <div className="text-sm text-blue-700 dark:text-blue-300 space-y-2">
+                                        <p>• Configure Azure DevOps pipeline for automatic PR processing</p>
+                                        <p>• Set up PR-Agent environment variables and secrets</p>
+                                        <p>• Enable automated code reviews and improvements</p>
+                                        <p>• Support for both hosted and self-hosted agents</p>
+                                      </div>
                                     </div>
                                   </div>
                                 </div>
+                              </div>
+                            ) : (
+                              <div className="text-center py-8">
+                                <Server className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500 mb-4" />
+                                <h5 className="text-lg font-medium text-gray-900 dark:text-white mb-2">Azure Pipeline Configuration</h5>
+                                <p className="text-gray-500 dark:text-gray-400 mb-4">
+                                  Click "Refresh" to check for Azure Pipeline configuration in your repository.
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Azure DevOps Agent Installation Tab */}
+                        {getRepoActiveTab(repo.id) === 'azure-agent-install' && (
+                          <div className="space-y-6 tab-enter">
+                            {(() => {
+                              const azureInfo = parseAzureDevOpsUrl(repo.url);
+                              const agentPoolsUrl = `${azureInfo.baseUrl}/_settings/agentpools`;
+                              const projectSettingsUrl = `${azureInfo.baseUrl}/${azureInfo.project}/_settings/agentqueues`;
+                              
+                              return (
+                                <>
+                                  <div className="flex items-center justify-between">
+                                    <h4 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
+                                      <Download className="h-5 w-5 mr-2 text-green-600 dark:text-green-400" />
+                                      Azure DevOps Agent Management
+                                    </h4>
+                                    <div className="flex items-center space-x-2">
+                                      <a
+                                        href={agentPoolsUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="flex items-center px-3 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                      >
+                                        <ExternalLink className="h-4 w-4 mr-2" />
+                                        Agent Pools
+                                      </a>
+                                      <a
+                                        href={projectSettingsUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="flex items-center px-3 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                      >
+                                        <Plus className="h-4 w-4 mr-2" />
+                                        Add Agent
+                                      </a>
+                                    </div>
+                                  </div>
+                                  
+                                  {/* Azure DevOps Project Information */}
+                                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                                    <div className="flex items-start">
+                                      <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3 mt-0.5 flex-shrink-0" />
+                                      <div>
+                                        <h6 className="font-medium text-blue-800 dark:text-blue-200 mb-2">Azure DevOps Project Info</h6>
+                                        <div className="text-sm text-blue-700 dark:text-blue-300 space-y-1">
+                                          <p><span className="font-medium">Organization:</span> {azureInfo.organization}</p>
+                                          <p><span className="font-medium">Project:</span> {azureInfo.project}</p>
+                                          <p><span className="font-medium">Repository:</span> {azureInfo.repository}</p>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </>
+                              );
+                            })()}
+
+                            {/* Service Configuration */}
+                            <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-visible">
+                              <div className="bg-gray-50 dark:bg-gray-900/30 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                                <h5 className="font-medium text-gray-900 dark:text-gray-200 text-sm flex items-center">
+                                  <Settings className="h-4 w-4 mr-2" />
+                                  Service Configuration
+                                </h5>
+                              </div>
+                              <div className="p-4 space-y-4">
+                                <div className="relative service-dropdown-container">
+                                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                    Service Name
+                                  </label>
+                                  <div className="relative">
+                                    <input
+                                      type="text"
+                                      value={azureAgentServiceNames[repo.id] || getDefaultAzureAgentServiceName(repo)}
+                                      onChange={(e) => setAzureAgentServiceNames(prev => ({ ...prev, [repo.id]: e.target.value }))}
+                                      className="w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                                      placeholder={getDefaultAzureAgentServiceName(repo)}
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleAzureServiceDropdown(repo.id)}
+                                      className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                                    >
+                                      <ChevronDown className={`h-4 w-4 transition-transform ${azureServiceDropdownOpen[repo.id] ? 'rotate-180' : ''}`} />
+                                    </button>
+                                  </div>
+                                  
+                                  {/* Dropdown */}
+                                  {azureServiceDropdownOpen[repo.id] && (
+                                    <div className="absolute z-50 mt-1 w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md shadow-2xl max-h-60 overflow-y-auto" style={{ minWidth: '100%' }}>
+                                      {loadingAzureServices ? (
+                                        <div className="flex items-center justify-center py-4">
+                                          <RefreshCw className="h-4 w-4 animate-spin mr-2" />
+                                          <span className="text-sm text-gray-600 dark:text-gray-400">Loading services...</span>
+                                        </div>
+                                      ) : availableAzureServices.length > 0 ? (
+                                        <>
+                                          <div className="px-3 py-2 border-b border-gray-200 dark:border-gray-700">
+                                            <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">
+                                              Available Azure Agent Services ({availableAzureServices.length})
+                                            </p>
+                                          </div>
+                                          {availableAzureServices.map((service, index) => (
+                                            <button
+                                              key={index}
+                                              type="button"
+                                              onClick={() => {
+                                                setAzureAgentServiceNames(prev => ({ ...prev, [repo.id]: service.name }));
+                                                setAzureServiceDropdownOpen(prev => ({ ...prev, [repo.id]: false }));
+                                              }}
+                                              className="w-full text-left px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors border-b border-gray-100 dark:border-gray-700 last:border-b-0"
+                                            >
+                                              <div className="flex items-center justify-between">
+                                                <div className="flex-1 min-w-0">
+                                                  <p className="text-sm font-medium text-gray-900 dark:text-white truncate">
+                                                    {service.name}
+                                                  </p>
+                                                  <div className="flex items-center mt-1 space-x-3">
+                                                    <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
+                                                      service.status === 'running' 
+                                                        ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
+                                                        : service.status === 'stopped'
+                                                        ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300'
+                                                        : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
+                                                    }`}>
+                                                      {service.status_display || 'Unknown'}
+                                                    </span>
+                                                    {service.display_name && service.display_name !== service.name && (
+                                                      <span className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                                                        {service.display_name}
+                                                      </span>
+                                                    )}
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            </button>
+                                          ))}
+                                        </>
+                                      ) : (
+                                        <div className="px-3 py-4 text-center">
+                                          <Search className="h-6 w-6 text-gray-400 mx-auto mb-2" />
+                                          <p className="text-sm text-gray-600 dark:text-gray-400">No Azure agent services found</p>
+                                          <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">
+                                            Make sure agent services are installed and running
+                                          </p>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                  
+                                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                    Default format: vstsagent.{'{organization}'}.{'{repository}'}
+                                  </p>
+                                </div>
+                                <div className="flex items-center space-x-3">
+                                  <button
+                                    onClick={() => saveAzureAgentServiceName(repo.id)}
+                                    disabled={savingAzureAgentServiceName.has(repo.id)}
+                                    className="flex items-center px-3 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    <Save className={`h-4 w-4 mr-2 ${savingAzureAgentServiceName.has(repo.id) ? 'animate-spin' : ''}`} />
+                                    {savingAzureAgentServiceName.has(repo.id) ? 'Saving...' : 'Save Service Name'}
+                                  </button>
+                                  <button
+                                    onClick={() => checkAzureAgentService(repo.id)}
+                                    disabled={checkingAzureAgentService.has(repo.id)}
+                                    className="flex items-center px-3 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    <RefreshCw className={`h-4 w-4 mr-2 ${checkingAzureAgentService.has(repo.id) ? 'animate-spin' : ''}`} />
+                                    {checkingAzureAgentService.has(repo.id) ? 'Checking...' : 'Check Service'}
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Service Status */}
+                            {azureAgentServiceStatus[repo.id] && (
+                              <div className={`rounded-lg border p-4 ${
+                                azureAgentServiceStatus[repo.id]?.status === 'running' 
+                                  ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
+                                  : azureAgentServiceStatus[repo.id]?.status === 'stopped'
+                                  ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800'
+                                  : 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800'
+                              }`}>
+                                <div className="flex items-center justify-between mb-3">
+                                  <h5 className={`font-medium text-sm flex items-center ${
+                                    azureAgentServiceStatus[repo.id]?.status === 'running' 
+                                      ? 'text-green-800 dark:text-green-200'
+                                      : azureAgentServiceStatus[repo.id]?.status === 'stopped'
+                                      ? 'text-red-800 dark:text-red-200'
+                                      : 'text-yellow-800 dark:text-yellow-200'
+                                  }`}>
+                                    {azureAgentServiceStatus[repo.id]?.status === 'running' ? (
+                                      <CheckCircle className="h-4 w-4 mr-2" />
+                                    ) : azureAgentServiceStatus[repo.id]?.status === 'stopped' ? (
+                                      <X className="h-4 w-4 mr-2" />
+                                    ) : (
+                                      <AlertCircle className="h-4 w-4 mr-2" />
+                                    )}
+                                    Service Status: {azureAgentServiceStatus[repo.id]?.status_display || 'Unknown'}
+                                  </h5>
+                                  <span className={`text-xs px-2 py-1 rounded-full ${
+                                    azureAgentServiceStatus[repo.id]?.status === 'running' 
+                                      ? 'bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200'
+                                      : azureAgentServiceStatus[repo.id]?.status === 'stopped'
+                                      ? 'bg-red-200 dark:bg-red-800 text-red-800 dark:text-red-200'
+                                      : 'bg-yellow-200 dark:bg-yellow-800 text-yellow-800 dark:text-yellow-200'
+                                  }`}>
+                                    {(azureAgentServiceStatus[repo.id]?.status || 'UNKNOWN').toUpperCase()}
+                                  </span>
+                                </div>
+                                <div className={`text-sm space-y-1 ${
+                                  azureAgentServiceStatus[repo.id]?.status === 'running' 
+                                    ? 'text-green-700 dark:text-green-300'
+                                    : azureAgentServiceStatus[repo.id]?.status === 'stopped'
+                                    ? 'text-red-700 dark:text-red-300'
+                                    : 'text-yellow-700 dark:text-yellow-300'
+                                }`}>
+                                  <p><strong>Service Name:</strong> {azureAgentServiceStatus[repo.id]?.service_name || 'N/A'}</p>
+                                  {azureAgentServiceStatus[repo.id]?.last_checked && (
+                                    <p><strong>Last Checked:</strong> {formatTimestamp(azureAgentServiceStatus[repo.id].last_checked)}</p>
+                                  )}
+                                  {azureAgentServiceStatus[repo.id]?.error && (
+                                    <p><strong>Error:</strong> {azureAgentServiceStatus[repo.id].error}</p>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Installation Steps */}
+                            <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+                              <div className="bg-gray-50 dark:bg-gray-900/30 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                                <h5 className="font-medium text-gray-900 dark:text-gray-200 text-sm flex items-center">
+                                  <Settings className="h-4 w-4 mr-2" />
+                                  Agent Installation Guide
+                                </h5>
+                              </div>
+                              <div className="p-6 space-y-6">
+                                
+                                {/* Step 1: Download Agent */}
+                                <div className="space-y-3">
+                                  <div className="flex items-center">
+                                    <span className="flex items-center justify-center w-8 h-8 bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300 rounded-full text-sm font-medium mr-3">1</span>
+                                    <h6 className="font-medium text-gray-900 dark:text-white">Download Azure DevOps Agent</h6>
+                                  </div>
+                                  <div className="ml-11 space-y-3">
+                                    <p className="text-sm text-gray-600 dark:text-gray-400">Download the Azure DevOps agent for your operating system:</p>
+                                    <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3">
+                                      <p className="text-xs text-blue-700 dark:text-blue-300">
+                                        💡 <strong>Latest Version:</strong> Check the{' '}
+                                        <a 
+                                          href="https://github.com/microsoft/azure-pipelines-agent/releases" 
+                                          target="_blank" 
+                                          rel="noopener noreferrer"
+                                          className="underline hover:text-blue-800 dark:hover:text-blue-200"
+                                        >
+                                          Azure Pipelines Agent releases page
+                                        </a>{' '}
+                                        for the most current version (currently v3.240.1).
+                                      </p>
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                      <a
+                                        href="https://download.agent.dev.azure.com/agent/3.240.1/vsts-agent-win-x64-3.240.1.zip"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="flex items-center p-3 bg-gray-50 dark:bg-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors border border-gray-200 dark:border-gray-600"
+                                      >
+                                        <Download className="h-4 w-4 text-blue-600 dark:text-blue-400 mr-2" />
+                                        <span className="text-sm font-medium text-gray-900 dark:text-white">Windows x64</span>
+                                      </a>
+                                      <a
+                                        href="https://download.agent.dev.azure.com/agent/3.240.1/vsts-agent-linux-x64-3.240.1.tar.gz"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="flex items-center p-3 bg-gray-50 dark:bg-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors border border-gray-200 dark:border-gray-600"
+                                      >
+                                        <Download className="h-4 w-4 text-blue-600 dark:text-blue-400 mr-2" />
+                                        <span className="text-sm font-medium text-gray-900 dark:text-white">Linux x64</span>
+                                      </a>
+                                      <a
+                                        href="https://download.agent.dev.azure.com/agent/3.240.1/vsts-agent-osx-x64-3.240.1.tar.gz"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="flex items-center p-3 bg-gray-50 dark:bg-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors border border-gray-200 dark:border-gray-600"
+                                      >
+                                        <Download className="h-4 w-4 text-blue-600 dark:text-blue-400 mr-2" />
+                                        <span className="text-sm font-medium text-gray-900 dark:text-white">macOS x64</span>
+                                      </a>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Step 2: Extract and Configure */}
+                                <div className="space-y-3">
+                                  <div className="flex items-center">
+                                    <span className="flex items-center justify-center w-8 h-8 bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300 rounded-full text-sm font-medium mr-3">2</span>
+                                    <h6 className="font-medium text-gray-900 dark:text-white">Extract and Configure Agent</h6>
+                                  </div>
+                                  <div className="ml-11 space-y-3">
+                                    <p className="text-sm text-gray-600 dark:text-gray-400">Follow these steps to configure your agent:</p>
+                                    
+                                    {/* Tab-based code snippets */}
+                                    <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+                                      <div className="flex bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                                        <button
+                                          className={`px-4 py-2 text-sm font-medium border-r border-gray-200 dark:border-gray-700 ${
+                                            (repoActiveTabs[`${repo.id}-extract-tab`] || 'windows') === 'windows'
+                                              ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400'
+                                              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+                                          }`}
+                                          onClick={() => setRepoActiveTabs(prev => ({ ...prev, [`${repo.id}-extract-tab`]: 'windows' }))}
+                                        >
+                                          Windows
+                                        </button>
+                                        <button
+                                          className={`px-4 py-2 text-sm font-medium ${
+                                            (repoActiveTabs[`${repo.id}-extract-tab`] || 'windows') === 'linux'
+                                              ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400'
+                                              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+                                          }`}
+                                          onClick={() => setRepoActiveTabs(prev => ({ ...prev, [`${repo.id}-extract-tab`]: 'linux' }))}
+                                        >
+                                          Linux/macOS
+                                        </button>
+                                      </div>
+                                      
+                                      {(repoActiveTabs[`${repo.id}-extract-tab`] || 'windows') === 'windows' ? (
+                                        <div className="bg-gray-900 dark:bg-gray-800 p-4 text-sm font-mono text-green-400">
+                                          <div className="space-y-1">
+                                            <div># Extract the agent</div>
+                                            <div>mkdir myagent</div>
+                                            <div>cd myagent</div>
+                                            <div># Extract the downloaded zip file</div>
+                                            <div>Expand-Archive -Path vsts-agent-win-x64-*.zip -DestinationPath .</div>
+                                            <div className="mt-2"># Configure the agent</div>
+                                            <div>.\config.cmd</div>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <div className="bg-gray-900 dark:bg-gray-800 p-4 text-sm font-mono text-green-400">
+                                          <div className="space-y-1">
+                                            <div># Extract the agent</div>
+                                            <div>mkdir myagent && cd myagent</div>
+                                            <div># Extract the downloaded tar.gz file</div>
+                                            <div>tar zxvf ../vsts-agent-*.tar.gz</div>
+                                            <div className="mt-2"># Configure the agent</div>
+                                            <div>./config.sh</div>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Step 3: Configuration Details */}
+                                <div className="space-y-3">
+                                  <div className="flex items-center">
+                                    <span className="flex items-center justify-center w-8 h-8 bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300 rounded-full text-sm font-medium mr-3">3</span>
+                                    <h6 className="font-medium text-gray-900 dark:text-white">Agent Configuration Parameters</h6>
+                                  </div>
+                                  <div className="ml-11">
+                                    <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+                                      When prompted during configuration, use these values:
+                                    </p>
+                                    <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
+                                      <h6 className="font-medium text-yellow-800 dark:text-yellow-200 mb-3">Required Configuration Values:</h6>
+                                      <div className="text-sm text-yellow-700 dark:text-yellow-300 space-y-2">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                          <div>
+                                            <span className="font-medium">Server URL:</span>
+                                            <div className="font-mono text-xs bg-yellow-100 dark:bg-yellow-800/30 px-2 py-1 rounded mt-1">
+                                              {parseAzureDevOpsUrl(repo.url).baseUrl}
+                                            </div>
+                                          </div>
+                                          <div>
+                                            <span className="font-medium">Authentication:</span>
+                                            <div className="text-xs mt-1">PAT (Personal Access Token)</div>
+                                          </div>
+                                          <div>
+                                            <span className="font-medium">Agent Pool:</span>
+                                            <div className="text-xs mt-1">Default (or create new pool)</div>
+                                          </div>
+                                          <div>
+                                            <span className="font-medium">Agent Name:</span>
+                                            <div className="font-mono text-xs bg-yellow-100 dark:bg-yellow-800/30 px-2 py-1 rounded mt-1">
+                                              {parseAzureDevOpsUrl(repo.url).repository}-agent
+                                            </div>
+                                          </div>
+                                          <div>
+                                            <span className="font-medium">Work Folder:</span>
+                                            <div className="text-xs mt-1">_work (use default)</div>
+                                          </div>
+                                          <div>
+                                            <span className="font-medium">Run as Service:</span>
+                                            <div className="text-xs mt-1">Y (recommended for production)</div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Step 4: Start Agent */}
+                                <div className="space-y-3">
+                                  <div className="flex items-center">
+                                    <span className="flex items-center justify-center w-8 h-8 bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300 rounded-full text-sm font-medium mr-3">4</span>
+                                    <h6 className="font-medium text-gray-900 dark:text-white">Start the Agent</h6>
+                                  </div>
+                                  <div className="ml-11 space-y-3">
+                                    <p className="text-sm text-gray-600 dark:text-gray-400">Select your platform to see the commands:</p>
+                                    
+                                    {/* Platform-based tabs */}
+                                    <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+                                      <div className="flex bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                                        <button
+                                          className={`px-4 py-2 text-sm font-medium border-r border-gray-200 dark:border-gray-700 ${
+                                            (repoActiveTabs[`${repo.id}-platform-tab`] || 'windows') === 'windows'
+                                              ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400'
+                                              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+                                          }`}
+                                          onClick={() => setRepoActiveTabs(prev => ({ ...prev, [`${repo.id}-platform-tab`]: 'windows' }))}
+                                        >
+                                          Windows
+                                        </button>
+                                        <button
+                                          className={`px-4 py-2 text-sm font-medium ${
+                                            (repoActiveTabs[`${repo.id}-platform-tab`] || 'windows') === 'linux'
+                                              ? 'bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400'
+                                              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+                                          }`}
+                                          onClick={() => setRepoActiveTabs(prev => ({ ...prev, [`${repo.id}-platform-tab`]: 'linux' }))}
+                                        >
+                                          Linux/macOS
+                                        </button>
+                                      </div>
+                                      
+                                      {(repoActiveTabs[`${repo.id}-platform-tab`] || 'windows') === 'windows' ? (
+                                        <div className="p-4 space-y-4">
+                                          {/* Interactive Mode */}
+                                          <div>
+                                            <h6 className="font-medium text-gray-900 dark:text-white mb-2">Interactive Mode (Development/Testing)</h6>
+                                            <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">Agent runs in foreground, stops when terminal is closed</p>
+                                            <div className="bg-gray-900 dark:bg-gray-800 rounded-lg p-3 text-sm font-mono text-green-400">
+                                              <div>.\run.cmd</div>
+                                            </div>
+                                          </div>
+                                          
+                                          {/* Service Mode */}
+                                          <div>
+                                            <h6 className="font-medium text-gray-900 dark:text-white mb-2">Service Mode (Production)</h6>
+                                            <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">Agent runs as a system service, starts automatically</p>
+                                            <div className="bg-gray-900 dark:bg-gray-800 rounded-lg p-3 text-sm font-mono text-green-400 space-y-1">
+                                              <div># Run PowerShell as Administrator</div>
+                                              <div>.\svc.cmd install</div>
+                                              <div>.\svc.cmd start</div>
+                                              <div># Check service status</div>
+                                              <div>.\svc.cmd status</div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <div className="p-4 space-y-4">
+                                          {/* Interactive Mode */}
+                                          <div>
+                                            <h6 className="font-medium text-gray-900 dark:text-white mb-2">Interactive Mode (Development/Testing)</h6>
+                                            <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">Agent runs in foreground, stops when terminal is closed</p>
+                                            <div className="bg-gray-900 dark:bg-gray-800 rounded-lg p-3 text-sm font-mono text-green-400">
+                                              <div>./run.sh</div>
+                                            </div>
+                                          </div>
+                                          
+                                          {/* Service Mode */}
+                                          <div>
+                                            <h6 className="font-medium text-gray-900 dark:text-white mb-2">Service Mode (Production)</h6>
+                                            <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">Agent runs as a system service, starts automatically</p>
+                                            <div className="bg-gray-900 dark:bg-gray-800 rounded-lg p-3 text-sm font-mono text-green-400 space-y-1">
+                                              <div># Install as service</div>
+                                              <div>sudo ./svc.sh install</div>
+                                              <div># Start service</div>
+                                              <div>sudo ./svc.sh start</div>
+                                              <div># Check service status</div>
+                                              <div>sudo ./svc.sh status</div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Quick Links */}
+                            <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+                              <div className="bg-gray-50 dark:bg-gray-900/30 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                                <h5 className="font-medium text-gray-900 dark:text-gray-200 text-sm flex items-center">
+                                  <ExternalLink className="h-4 w-4 mr-2" />
+                                  Quick Access Links
+                                </h5>
+                              </div>
+                              <div className="p-4">
+                                {(() => {
+                                  const azureInfo = parseAzureDevOpsUrl(repo.url);
+                                  return (
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                                      <a
+                                        href={`${azureInfo.baseUrl}/_settings/agentpools`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="flex items-center p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors border border-blue-200 dark:border-blue-800"
+                                      >
+                                        <Server className="h-4 w-4 text-blue-600 dark:text-blue-400 mr-2" />
+                                        <span className="text-sm font-medium text-blue-900 dark:text-blue-200">Agent Pools</span>
+                                      </a>
+                                      <a
+                                        href={`${azureInfo.baseUrl}/${azureInfo.project}/_build`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="flex items-center p-3 bg-green-50 dark:bg-green-900/20 rounded-lg hover:bg-green-100 dark:hover:bg-green-900/30 transition-colors border border-green-200 dark:border-green-800"
+                                      >
+                                        <Activity className="h-4 w-4 text-green-600 dark:text-green-400 mr-2" />
+                                        <span className="text-sm font-medium text-green-900 dark:text-green-200">Pipelines</span>
+                                      </a>
+                                      <a
+                                        href={`${azureInfo.baseUrl}/${azureInfo.project}/_settings`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="flex items-center p-3 bg-purple-50 dark:bg-purple-900/20 rounded-lg hover:bg-purple-100 dark:hover:bg-purple-900/30 transition-colors border border-purple-200 dark:border-purple-800"
+                                      >
+                                        <Settings className="h-4 w-4 text-purple-600 dark:text-purple-400 mr-2" />
+                                        <span className="text-sm font-medium text-purple-900 dark:text-purple-200">Project Settings</span>
+                                      </a>
+                                      <a
+                                        href="https://docs.microsoft.com/en-us/azure/devops/pipelines/agents/"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="flex items-center p-3 bg-gray-50 dark:bg-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors border border-gray-200 dark:border-gray-600"
+                                      >
+                                        <FileText className="h-4 w-4 text-gray-600 dark:text-gray-400 mr-2" />
+                                        <span className="text-sm font-medium text-gray-900 dark:text-gray-200">Documentation</span>
+                                      </a>
+                                    </div>
+                                  );
+                                })()}
                               </div>
                             </div>
                           </div>
@@ -3439,6 +4576,16 @@ const RepositoryManager = () => {
           repoData={repositories.find(r => r.id === showGithubActionConfigEditor)}
           onClose={closeGithubActionConfigEditor}
           onSave={handleGithubActionConfigSave}
+        />
+      )}
+
+      {/* Azure Pipeline Config Editor Modal */}
+      {showAzurePipelineConfigEditor && (
+        <AzurePipelineConfigEditor
+          repoId={showAzurePipelineConfigEditor}
+          repoData={repositories.find(r => r.id === showAzurePipelineConfigEditor)}
+          onClose={closeAzurePipelineConfigEditor}
+          onSave={handleAzurePipelineConfigSave}
         />
       )}
 

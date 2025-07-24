@@ -673,12 +673,12 @@ const ConfigEditor = ({ navigationTarget = null }) => {
   const SectionHeader = useCallback(({ title, icon: Icon, children }) => (
     <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
       <div className="px-6 py-4 flex items-center space-x-3">
-        <Icon className="h-5 w-5 text-primary-600 dark:text-primary-400" />
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{title}</h3>
-      </div>
-      <div className="px-6 pb-6 border-t border-gray-200 dark:border-gray-700">
-        {children}
-      </div>
+          <Icon className="h-5 w-5 text-primary-600 dark:text-primary-400" />
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{title}</h3>
+        </div>
+        <div className="px-6 pb-6 border-t border-gray-200 dark:border-gray-700">
+          {children}
+        </div>
     </div>
   ), []);
 
@@ -697,9 +697,9 @@ const ConfigEditor = ({ navigationTarget = null }) => {
             </div>
           </div>
         </div>
-        <div className="flex items-center justify-center py-12">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
-          <span className="ml-3 text-gray-600 dark:text-gray-300">Loading configuration...</span>
+      <div className="flex items-center justify-center py-12">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+        <span className="ml-3 text-gray-600 dark:text-gray-300">Loading configuration...</span>
         </div>
       </div>
     );
@@ -735,13 +735,13 @@ const ConfigEditor = ({ navigationTarget = null }) => {
               </button>
             ) : (
               <>
-                <button
+              <button
                   onClick={cancelEdit}
                   className="flex items-center px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-600 border border-gray-300 dark:border-gray-500 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-500 hover:border-gray-400 dark:hover:border-gray-400 transition-colors duration-200 shadow-sm"
-                >
+              >
                   <X className="h-4 w-4 mr-2" />
                   Cancel
-                </button>
+              </button>
                 <button
                   onClick={saveConfig}
                   disabled={saving || !hasChanges}
@@ -756,24 +756,24 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 </button>
               </>
             )}
+            </div>
           </div>
         </div>
-      </div>
 
       {/* Configuration Info */}
       {!dismissedInfo && (
-        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-4">
-          <div className="flex items-start">
-            <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2 mt-0.5 flex-shrink-0" />
+      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-4">
+        <div className="flex items-start">
+          <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2 mt-0.5 flex-shrink-0" />
             <div className="flex-1 text-blue-800 dark:text-blue-200 text-sm">
-              <p className="font-medium mb-1">Configuration Hierarchy (Dynaconf)</p>
-              <p>You are modifying the base configuration. Note that:</p>
-              <ul className="list-disc list-inside mt-2 space-y-1 text-xs opacity-90">
-                <li>Repository-specific <code className="bg-blue-100 dark:bg-blue-900/40 px-1 rounded">.pr_agent.toml</code> files can override these settings</li>
-                <li>Environment variables take precedence over both base config and repository files</li>
-                <li>Changes here affect the default behavior for all repositories</li>
-              </ul>
-            </div>
+            <p className="font-medium mb-1">Configuration Hierarchy (Dynaconf)</p>
+            <p>You are modifying the base configuration. Note that:</p>
+            <ul className="list-disc list-inside mt-2 space-y-1 text-xs opacity-90">
+              <li>Repository-specific <code className="bg-blue-100 dark:bg-blue-900/40 px-1 rounded">.pr_agent.toml</code> files can override these settings</li>
+              <li>Environment variables take precedence over both base config and repository files</li>
+              <li>Changes here affect the default behavior for all repositories</li>
+            </ul>
+          </div>
             <button
               onClick={() => {
                 setDismissedInfo(true);
@@ -783,8 +783,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
             >
               <X className="h-4 w-4" />
             </button>
-          </div>
         </div>
+      </div>
       )}
 
       {/* Error Messages */}
@@ -908,168 +908,168 @@ const ConfigEditor = ({ navigationTarget = null }) => {
 
         {/* Main Content Area */}
         <div className="flex-1 min-w-0">
-          <div className="space-y-6">
+      <div className="space-y-6">
         {/* AI Models Tab */}
         {activeTab === 'models' && (
           <div className="space-y-8 animate-in slide-in-from-right-4 fade-in duration-300">
-            {/* AI Models Section */}
+        {/* AI Models Section */}
             <SectionHeader title="AI Models & API Keys" icon={Brain}>
-              <div className="space-y-6 pt-4">
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  <ModelSelector
-                    label="Default Model"
-                    value={config?.model}
-                    onChange={(value) => updateConfig('model', value)}
-                    models={availableModels}
-                    description="Primary model for most operations"
+          <div className="space-y-6 pt-4">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <ModelSelector
+                label="Default Model"
+                value={config?.model}
+                onChange={(value) => updateConfig('model', value)}
+                models={availableModels}
+                description="Primary model for most operations"
                     editing={editing}
-                  />
-                  
-                  <ModelSelector
-                    label="Reasoning Model"
-                    value={config?.model_reasoning}
-                    onChange={(value) => updateConfig('model_reasoning', value)}
-                    models={{ reasoning: availableModels.reasoning }}
-                    description="Dedicated model for complex reasoning tasks"
+              />
+              
+              <ModelSelector
+                label="Reasoning Model"
+                value={config?.model_reasoning}
+                onChange={(value) => updateConfig('model_reasoning', value)}
+                models={{ reasoning: availableModels.reasoning }}
+                description="Dedicated model for complex reasoning tasks"
                     editing={editing}
-                  />
-                  
-                  <ModelSelector
-                    label="Simple/Budget Model"
-                    value={config?.model_weak}
-                    onChange={(value) => updateConfig('model_weak', value)}
-                    models={{ budget: availableModels.budget }}
-                    description="Lightweight model for simple tasks"
+              />
+              
+              <ModelSelector
+                label="Simple/Budget Model"
+                value={config?.model_weak}
+                onChange={(value) => updateConfig('model_weak', value)}
+                models={{ budget: availableModels.budget }}
+                description="Lightweight model for simple tasks"
                     editing={editing}
+              />
+            </div>
+
+            {/* API Keys */}
+            <div className="border-t border-gray-200 dark:border-gray-700 pt-6">
+              <h4 className="text-md font-medium text-gray-900 dark:text-white mb-4 flex items-center">
+                <Key className="h-4 w-4 mr-2" />
+                API Keys
+              </h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">OpenAI API Key</label>
+                  <input
+                    type="password"
+                    value={config.api_keys?.openai || ''}
+                    onChange={(e) => updateConfig('api_keys.openai', e.target.value)}
+                    placeholder="sk-..."
+                        disabled={!editing}
+                        className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                 </div>
-
-                {/* API Keys */}
-                <div className="border-t border-gray-200 dark:border-gray-700 pt-6">
-                  <h4 className="text-md font-medium text-gray-900 dark:text-white mb-4 flex items-center">
-                    <Key className="h-4 w-4 mr-2" />
-                    API Keys
-                  </h4>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">OpenAI API Key</label>
-                      <input
-                        type="password"
-                        value={config.api_keys?.openai || ''}
-                        onChange={(e) => updateConfig('api_keys.openai', e.target.value)}
-                        placeholder="sk-..."
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Anthropic API Key</label>
+                  <input
+                    type="password"
+                    value={config.api_keys?.anthropic || ''}
+                    onChange={(e) => updateConfig('api_keys.anthropic', e.target.value)}
+                    placeholder="sk-ant-..."
                         disabled={!editing}
                         className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Anthropic API Key</label>
-                      <input
-                        type="password"
-                        value={config.api_keys?.anthropic || ''}
-                        onChange={(e) => updateConfig('api_keys.anthropic', e.target.value)}
-                        placeholder="sk-ant-..."
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Google API Key</label>
+                  <input
+                    type="password"
+                    value={config.api_keys?.google || ''}
+                    onChange={(e) => updateConfig('api_keys.google', e.target.value)}
+                    placeholder="AIza..."
                         disabled={!editing}
                         className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Google API Key</label>
-                      <input
-                        type="password"
-                        value={config.api_keys?.google || ''}
-                        onChange={(e) => updateConfig('api_keys.google', e.target.value)}
-                        placeholder="AIza..."
-                        disabled={!editing}
-                        className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                      />
-                    </div>
-                  </div>
+                  />
                 </div>
               </div>
-            </SectionHeader>
+            </div>
+          </div>
+        </SectionHeader>
 
-            {/* Reasoning & Performance Section */}
+        {/* Reasoning & Performance Section */}
             <SectionHeader title="Reasoning & Performance" icon={Zap}>
-              <div className="space-y-6 pt-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Reasoning Effort
-                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal">Higher effort = better quality, slower response</span>
-                    </label>
-                    <select
-                      value={config.reasoning_effort || 'high'}
-                      onChange={(e) => updateConfig('reasoning_effort', e.target.value)}
+          <div className="space-y-6 pt-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Reasoning Effort
+                  <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal">Higher effort = better quality, slower response</span>
+                </label>
+                <select
+                  value={config.reasoning_effort || 'high'}
+                  onChange={(e) => updateConfig('reasoning_effort', e.target.value)}
                       disabled={!editing}
                       className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <option value="low">Low - Fast responses</option>
-                      <option value="medium">Medium - Balanced</option>
-                      <option value="high">High - Best quality</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Max Model Tokens
-                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal">Maximum tokens per API call</span>
-                    </label>
-                    <input
-                      type="number"
-                      value={config.max_model_tokens || 94000}
-                      onChange={(e) => updateConfig('max_model_tokens', parseInt(e.target.value))}
-                      min="1000"
-                      max="2000000"
-                      disabled={!editing}
-                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    />
-                    {errors.max_model_tokens && (
-                      <p className="text-sm text-red-600 dark:text-red-400 mt-1">{errors.max_model_tokens}</p>
-                    )}
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Temperature
-                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal">0 = deterministic, 2 = very creative</span>
-                    </label>
-                    <input
-                      type="number"
-                      value={config.temperature || 0.2}
-                      onChange={(e) => updateConfig('temperature', parseFloat(e.target.value))}
-                      min="0"
-                      max="2"
-                      step="0.1"
-                      disabled={!editing}
-                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    />
-                    {errors.temperature && (
-                      <p className="text-sm text-red-600 dark:text-red-400 mt-1">{errors.temperature}</p>
-                    )}
-                  </div>
-                </div>
+                >
+                  <option value="low">Low - Fast responses</option>
+                  <option value="medium">Medium - Balanced</option>
+                  <option value="high">High - Best quality</option>
+                </select>
               </div>
-            </SectionHeader>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Max Model Tokens
+                  <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal">Maximum tokens per API call</span>
+                </label>
+                <input
+                  type="number"
+                  value={config.max_model_tokens || 94000}
+                  onChange={(e) => updateConfig('max_model_tokens', parseInt(e.target.value))}
+                  min="1000"
+                  max="2000000"
+                      disabled={!editing}
+                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+                {errors.max_model_tokens && (
+                  <p className="text-sm text-red-600 dark:text-red-400 mt-1">{errors.max_model_tokens}</p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Temperature
+                  <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal">0 = deterministic, 2 = very creative</span>
+                </label>
+                <input
+                  type="number"
+                  value={config.temperature || 0.2}
+                  onChange={(e) => updateConfig('temperature', parseFloat(e.target.value))}
+                  min="0"
+                  max="2"
+                  step="0.1"
+                      disabled={!editing}
+                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+                {errors.temperature && (
+                  <p className="text-sm text-red-600 dark:text-red-400 mt-1">{errors.temperature}</p>
+                )}
+              </div>
+            </div>
+          </div>
+        </SectionHeader>
           </div>
         )}
 
         {/* Code Context Tab */}
         {activeTab === 'context' && (
           <div className="space-y-8 animate-in slide-in-from-right-4 fade-in duration-300">
-            <div id="context-service-section">
+        <div id="context-service-section">
               <SectionHeader title="Code Context Service" icon={Database}>
-                <div className="space-y-6 pt-4">
+            <div className="space-y-6 pt-4">
                   <div className={`flex items-center space-x-3 p-2 rounded-md transition-all duration-500 ${
                     animatingCheckbox === 'context-enabled' 
                       ? 'bg-blue-50 dark:bg-blue-900/20 ring-2 ring-blue-200 dark:ring-blue-800' 
                       : ''
                   }`}>
-                    <input
-                      type="checkbox"
-                      id="context-enabled"
-                      checked={config.csharp_code_context_service?.enabled || false}
-                      onChange={(e) => updateConfig('csharp_code_context_service.enabled', e.target.checked)}
+                <input
+                  type="checkbox"
+                  id="context-enabled"
+                  checked={config.csharp_code_context_service?.enabled || false}
+                  onChange={(e) => updateConfig('csharp_code_context_service.enabled', e.target.checked)}
                       disabled={!editing}
                       className={`${getCheckboxClasses(config.csharp_code_context_service?.enabled || false, !editing)} ${
                         animatingCheckbox === 'context-enabled' 
@@ -1082,77 +1082,77 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                         ? 'text-blue-700 dark:text-blue-300 font-semibold'
                         : 'text-gray-700 dark:text-gray-300'
                     }`}>
-                      Enable Code Context Service
-                    </label>
-                    <Info className="h-4 w-4 text-gray-400 dark:text-gray-500" title="Provides additional code context for better suggestions" />
-                  </div>
+                  Enable Code Context Service
+                </label>
+                <Info className="h-4 w-4 text-gray-400 dark:text-gray-500" title="Provides additional code context for better suggestions" />
+              </div>
 
-                  {config.csharp_code_context_service?.enabled && (
-                    <div className="space-y-6 pl-7">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                          Service URL
-                          <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal">Base URL for the context service</span>
-                        </label>
-                        <input
-                          type="url"
-                          value={config.csharp_code_context_service?.url || ''}
-                          onChange={(e) => updateConfig('csharp_code_context_service.url', e.target.value)}
-                          placeholder="https://localhost:7138"
+              {config.csharp_code_context_service?.enabled && (
+                <div className="space-y-6 pl-7">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Service URL
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal">Base URL for the context service</span>
+                    </label>
+                    <input
+                      type="url"
+                      value={config.csharp_code_context_service?.url || ''}
+                      onChange={(e) => updateConfig('csharp_code_context_service.url', e.target.value)}
+                      placeholder="https://localhost:7138"
                           disabled={!editing}
                           className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                        />
-                        {errors['csharp_code_context_service.url'] && (
-                          <p className="text-sm text-red-600 dark:text-red-400 mt-1">{errors['csharp_code_context_service.url']}</p>
-                        )}
-                      </div>
-                      
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Analysis Depth</label>
-                          <select
-                            value={config.csharp_code_context_service?.default_depth || 1}
-                            onChange={(e) => updateConfig('csharp_code_context_service.default_depth', parseInt(e.target.value))}
+                    />
+                    {errors['csharp_code_context_service.url'] && (
+                      <p className="text-sm text-red-600 dark:text-red-400 mt-1">{errors['csharp_code_context_service.url']}</p>
+                    )}
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Analysis Depth</label>
+                      <select
+                        value={config.csharp_code_context_service?.default_depth || 1}
+                        onChange={(e) => updateConfig('csharp_code_context_service.default_depth', parseInt(e.target.value))}
                             disabled={!editing}
                             className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {[1, 2, 3, 4, 5].map(depth => (
-                              <option key={depth} value={depth}>Level {depth}</option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Analysis Mode</label>
-                          <select
-                            value={config.csharp_code_context_service?.default_mode || 'Minified'}
-                            onChange={(e) => updateConfig('csharp_code_context_service.default_mode', e.target.value)}
-                            disabled={!editing}
-                            className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            <option value="Full">Full - Complete analysis</option>
-                            <option value="Minified">Minified - Optimized analysis</option>
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Timeout (seconds)</label>
-                          <input
-                            type="number"
-                            value={config.csharp_code_context_service?.timeout || 180}
-                            onChange={(e) => updateConfig('csharp_code_context_service.timeout', parseInt(e.target.value))}
-                            min="30"
-                            max="600"
-                            disabled={!editing}
-                            className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                          />
-                        </div>
-                      </div>
+                      >
+                        {[1, 2, 3, 4, 5].map(depth => (
+                          <option key={depth} value={depth}>Level {depth}</option>
+                        ))}
+                      </select>
                     </div>
-                  )}
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Analysis Mode</label>
+                      <select
+                        value={config.csharp_code_context_service?.default_mode || 'Minified'}
+                        onChange={(e) => updateConfig('csharp_code_context_service.default_mode', e.target.value)}
+                            disabled={!editing}
+                            className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <option value="Full">Full - Complete analysis</option>
+                        <option value="Minified">Minified - Optimized analysis</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Timeout (seconds)</label>
+                      <input
+                        type="number"
+                        value={config.csharp_code_context_service?.timeout || 180}
+                        onChange={(e) => updateConfig('csharp_code_context_service.timeout', parseInt(e.target.value))}
+                        min="30"
+                        max="600"
+                            disabled={!editing}
+                            className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                      />
+                    </div>
+                  </div>
                 </div>
-              </SectionHeader>
+              )}
             </div>
+          </SectionHeader>
+        </div>
           </div>
         )}
 
@@ -1263,8 +1263,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
 
                 <div className="space-y-4">
                   <div className="flex items-center space-x-3">
-                    <input
-                      type="checkbox"
+                  <input
+                    type="checkbox"
                       id="publish-labels"
                       checked={config.pr_description?.publish_labels || false}
                       onChange={(e) => updateConfig('pr_description.publish_labels', e.target.checked)}
@@ -1294,7 +1294,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                         Replaces the existing PR title with an AI-generated one that summarizes the changes. Use carefully as it overwrites manual titles.
                       </span>
                     </label>
-                  </div>
+                </div>
 
                   <div className="flex items-center space-x-3">
                     <input
@@ -1665,9 +1665,9 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                        </ul>
                      </div>
                    </div>
-                 </div>
-               </div>
-             </SectionHeader>
+            </div>
+          </div>
+        </SectionHeader>
            </div>
          )}
 
@@ -1675,15 +1675,15 @@ const ConfigEditor = ({ navigationTarget = null }) => {
         {activeTab === 'advanced' && (
           <div className="space-y-8 animate-in slide-in-from-right-4 fade-in duration-300">
             <SectionHeader title="Advanced Settings" icon={Settings}>
-              <div className="space-y-6 pt-4">
-                <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-md p-4">
-                  <div className="flex items-center">
-                    <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400 mr-2" />
-                    <span className="text-yellow-800 dark:text-yellow-200 text-sm">
-                      Advanced settings should only be modified by experienced users. Incorrect values may cause issues.
-                    </span>
-                  </div>
-                </div>
+          <div className="space-y-6 pt-4">
+            <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-md p-4">
+              <div className="flex items-center">
+                <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400 mr-2" />
+                <span className="text-yellow-800 dark:text-yellow-200 text-sm">
+                  Advanced settings should only be modified by experienced users. Incorrect values may cause issues.
+                </span>
+              </div>
+            </div>
 
                 {/* PR-Agent Install Path Configuration */}
                 <div className="border-t border-gray-200 dark:border-gray-700 pt-6">
@@ -1839,66 +1839,66 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Verbosity Level</label>
-                    <select
-                      value={config.verbosity_level || 2}
-                      onChange={(e) => updateConfig('verbosity_level', parseInt(e.target.value))}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Verbosity Level</label>
+                <select
+                  value={config.verbosity_level || 2}
+                  onChange={(e) => updateConfig('verbosity_level', parseInt(e.target.value))}
                       disabled={!editing}
                       className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <option value={0}>0 - Minimal logging</option>
-                      <option value={1}>1 - Standard logging</option>
-                      <option value={2}>2 - Detailed logging</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">AI Timeout (seconds)</label>
-                    <input
-                      type="number"
-                      value={config.ai_timeout || 180}
-                      onChange={(e) => updateConfig('ai_timeout', parseInt(e.target.value))}
-                      min="30"
-                      max="600"
-                      disabled={!editing}
-                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <div className="flex items-center space-x-3">
-                    <input
-                      type="checkbox"
-                      id="publish-output"
-                      checked={config.publish_output || false}
-                      onChange={(e) => updateConfig('publish_output', e.target.checked)}
-                      disabled={!editing}
-                      className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
-                    />
-                    <label htmlFor="publish-output" className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                      Publish Output
-                    </label>
-                  </div>
-
-                  <div className="flex items-center space-x-3">
-                    <input
-                      type="checkbox"
-                      id="enable-auto-approval"
-                      checked={config.enable_auto_approval || false}
-                      onChange={(e) => updateConfig('enable_auto_approval', e.target.checked)}
-                      disabled={!editing}
-                      className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
-                    />
-                    <label htmlFor="enable-auto-approval" className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                      Enable Auto Approval (Premium)
-                    </label>
-                  </div>
-                </div>
+                >
+                  <option value={0}>0 - Minimal logging</option>
+                  <option value={1}>1 - Standard logging</option>
+                  <option value={2}>2 - Detailed logging</option>
+                </select>
               </div>
-            </SectionHeader>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">AI Timeout (seconds)</label>
+                <input
+                  type="number"
+                  value={config.ai_timeout || 180}
+                  onChange={(e) => updateConfig('ai_timeout', parseInt(e.target.value))}
+                  min="30"
+                  max="600"
+                      disabled={!editing}
+                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center space-x-3">
+                <input
+                  type="checkbox"
+                  id="publish-output"
+                  checked={config.publish_output || false}
+                  onChange={(e) => updateConfig('publish_output', e.target.checked)}
+                      disabled={!editing}
+                      className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+                <label htmlFor="publish-output" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Publish Output
+                </label>
+              </div>
+
+              <div className="flex items-center space-x-3">
+                <input
+                  type="checkbox"
+                  id="enable-auto-approval"
+                  checked={config.enable_auto_approval || false}
+                  onChange={(e) => updateConfig('enable_auto_approval', e.target.checked)}
+                      disabled={!editing}
+                      className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+                <label htmlFor="enable-auto-approval" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Enable Auto Approval (Premium)
+                </label>
+              </div>
+            </div>
+          </div>
+        </SectionHeader>
           </div>
         )}
 

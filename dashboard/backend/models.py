@@ -128,6 +128,14 @@ class RepositoryDB(Base):
     runner_service_last_checked = Column(DateTime, nullable=True)
     runner_service_details = Column(JSON, nullable=True)  # Additional service details
     
+    # Azure agent service monitoring
+    azure_agent_service_name = Column(String, nullable=True)  # Azure agent Windows service name
+    azure_agent_service_status = Column(String, nullable=True)  # "running", "stopped", "not_found", "error"
+    azure_agent_service_last_checked = Column(DateTime, nullable=True)
+    azure_agent_service_details = Column(JSON, nullable=True)  # Additional Azure agent service details
+    azure_agent_status = Column(String, nullable=True)  # "running", "stopped", "error", "unknown"
+    azure_agent_error = Column(String, nullable=True)  # Azure agent error message
+    
     # Repository configuration detection
     has_pr_agent_config = Column(Boolean, default=False)  # .pr_agent.toml exists
     has_workflow_config = Column(Boolean, default=False)  # GitHub Actions workflow with PR-Agent env vars exists
@@ -157,6 +165,12 @@ class RepositoryDB(Base):
     github_action_config_pr_number = Column(Integer, nullable=True)  # Pending PR number
     github_action_config_pr_branch = Column(String, nullable=True)  # Branch name for pending PR
     github_action_config_pr_status = Column(String, nullable=True)  # "pending", "merged", "closed"
+    
+    # Azure Pipeline config tracking
+    azure_pipeline_config_pr_url = Column(String, nullable=True)  # Pending PR URL
+    azure_pipeline_config_pr_number = Column(Integer, nullable=True)  # Pending PR number
+    azure_pipeline_config_pr_branch = Column(String, nullable=True)  # Branch name for pending PR
+    azure_pipeline_config_pr_status = Column(String, nullable=True)  # "pending", "merged", "closed"
     
     # Monitoring settings
     monitor_prs = Column(Boolean, default=True)
@@ -584,6 +598,14 @@ class Repository(BaseModel):
     runner_service_last_checked: Optional[str] = None
     runner_service_details: Optional[Dict[str, Any]] = Field(default=None, description="Additional service details")
     
+    # Azure agent service monitoring
+    azure_agent_service_name: Optional[str] = Field(default=None, description="Azure agent Windows service name")
+    azure_agent_service_status: Optional[str] = Field(default=None, description="Azure agent Windows service status")
+    azure_agent_service_last_checked: Optional[str] = None
+    azure_agent_service_details: Optional[Dict[str, Any]] = Field(default=None, description="Additional Azure agent service details")
+    azure_agent_status: Optional[str] = Field(default=None, description="Azure agent health status")
+    azure_agent_error: Optional[str] = None
+    
     # Repository configuration detection
     has_pr_agent_config: bool = Field(default=False, description="Has .pr_agent.toml file")
     has_workflow_config: bool = Field(default=False, description="Has GitHub Actions workflow with PR-Agent configuration")
@@ -600,7 +622,6 @@ class Repository(BaseModel):
     best_practices_pr_status: Optional[str] = Field(default=None, description="Pending PR status: pending, merged, closed")
     
     # PR-Agent config tracking
-    has_pr_agent_config: bool = Field(default=False, description="Has .pr_agent.toml file")
     pr_agent_config_content: Optional[str] = Field(default=None, description="Cached PR-Agent config content")
     pr_agent_config_last_fetched: Optional[str] = None
     pr_agent_config_pr_url: Optional[str] = Field(default=None, description="Pending PR-Agent config PR URL")
@@ -613,6 +634,12 @@ class Repository(BaseModel):
     github_action_config_pr_number: Optional[int] = Field(default=None, description="Pending GitHub Action config PR number")
     github_action_config_pr_branch: Optional[str] = Field(default=None, description="Pending GitHub Action config PR branch")
     github_action_config_pr_status: Optional[str] = Field(default=None, description="Pending GitHub Action config PR status: pending, merged, closed")
+    
+    # Azure Pipeline config tracking
+    azure_pipeline_config_pr_url: Optional[str] = Field(default=None, description="Pending Azure Pipeline config PR URL")
+    azure_pipeline_config_pr_number: Optional[int] = Field(default=None, description="Pending Azure Pipeline config PR number")
+    azure_pipeline_config_pr_branch: Optional[str] = Field(default=None, description="Pending Azure Pipeline config PR branch")
+    azure_pipeline_config_pr_status: Optional[str] = Field(default=None, description="Pending Azure Pipeline config PR status: pending, merged, closed")
     
     # Monitoring settings
     monitor_prs: bool = Field(default=True, description="Monitor pull requests")
