@@ -630,6 +630,63 @@ class AzureDevopsProvider(GitProvider):
     def get_comment_url(self, comment) -> str:
         return self.pr_url + "?discussionId=" + str(comment.thread_id)
 
+    def get_pr_file_content(self, file_path: str, branch: str) -> str:
+        """
+        Retrieves the content of a file from the specified branch in Azure DevOps.
+        
+        Args:
+            file_path: Path to the file in the repository
+            branch: Branch name to retrieve the file from
+            
+        Returns:
+            File content as string, or empty string if file not found or error occurs
+        """
+        try:
+            # Handle common branch references
+            version_descriptor = None
+            if branch == "HEAD" or not branch:
+                # Use the source branch of the current PR
+                pr_info = self.azure_devops_client.get_pull_request_by_id(
+                    project=self.workspace_slug, pull_request_id=self.pr_num
+                )
+                branch_ref = pr_info.source_ref_name
+            else:
+                # Construct the branch reference (Azure DevOps expects refs/heads/branch_name format)
+                if not branch.startswith("refs/"):
+                    branch_ref = f"refs/heads/{branch}"
+                else:
+                    branch_ref = branch
+            
+            # Create version descriptor for the branch
+            version_descriptor = GitVersionDescriptor(
+                version_type="branch",
+                version=branch_ref
+            )
+            
+            # Get file content from Azure DevOps
+            contents = self.azure_devops_client.get_item_content(
+                repository_id=self.repo_slug,
+                project=self.workspace_slug,
+                download=False,
+                include_content_metadata=False,
+                include_content=True,
+                path=file_path,
+                version_descriptor=version_descriptor
+            )
+            
+            # Convert the response to string
+            if contents:
+                # contents is typically a generator/iterator
+                content_bytes = b''.join(contents)
+                return content_bytes.decode('utf-8')
+            else:
+                return ""
+                
+        except Exception as e:
+            if get_settings().config.verbosity_level >= 2:
+                get_logger().debug(f"Could not load {file_path} from branch {branch}: {e}")
+            return ""
+
     def get_latest_commit_url(self) -> str:
         commits = self.azure_devops_client.get_pull_request_commits(self.repo_slug, self.pr_num, self.workspace_slug)
         last = commits[0]

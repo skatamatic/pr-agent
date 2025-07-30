@@ -45,19 +45,19 @@ class DashboardApplication:
             # Setup lifespan first
             self._setup_background_tasks_lifespan()
             
-        self.app = FastAPI(
-            title=settings.app_name,
-            description="API for monitoring PR Agent operations and logs",
-            version="1.0.0",
-                debug=settings.debug,
-                lifespan=self.lifespan_handler
-        )
-        
-        # Initialize services (Dependency Injection)
-        self.database_manager = DatabaseManager()
-            self.config_service = ConfigService(self.database_manager)
-        self.notification_service = NotificationService(self.database_manager)
+            self.app = FastAPI(
+                title=settings.app_name,
+                description="API for monitoring PR Agent operations and logs",
+                version="1.0.0",
+                    debug=settings.debug,
+                    lifespan=self.lifespan_handler
+            )
             
+            # Initialize services (Dependency Injection)
+            self.database_manager = DatabaseManager()
+            self.config_service = ConfigService(self.database_manager)
+            self.notification_service = NotificationService(self.database_manager)
+                
             # Pass config_service to health service as third parameter
             self.websocket_manager = WebSocketManager()
             
@@ -69,12 +69,12 @@ class DashboardApplication:
             )
             
             self.metrics_service = MetricsService(self.websocket_manager)
-        self.operation_service = OperationService()
-        self.log_service = LogService()
-        self.repository_service = RepositoryService()
+            self.operation_service = OperationService()
+            self.log_service = LogService()
+            self.repository_service = RepositoryService()
             # Use RobustCachedJobService with notification support
             self.cached_job_service = get_robust_cached_job_service(self.notification_service)
-        self.retention_service = RetentionService(self.database_manager)
+            self.retention_service = RetentionService(self.database_manager)
             self.auth_service = AuthService()
             self.github_action_config_service = GitHubActionConfigService()
             
@@ -83,12 +83,12 @@ class DashboardApplication:
             self.azure_pipeline_config_service = AzurePipelineConfigService()
             
             self.security = HTTPBearer(auto_error=False)
-        
-        # Setup application
-        self._setup_middleware()
-            self._initialize_auth()
-        self._setup_routes()
             
+            # Setup application
+            self._setup_middleware()
+            self._initialize_auth()
+            self._setup_routes()
+                
         except Exception as e:
             logger.error(f"Failed to initialize dashboard application: {e}")
             # Create minimal app to prevent complete failure
@@ -970,10 +970,10 @@ class DashboardApplication:
                 
                 # Broadcast FULL log data to WebSocket clients
                 for log_broadcast in broadcast_logs:
-                await self.websocket_manager.broadcast({
-                        "type": "log",
-                        "data": log_broadcast
-                })
+                    await self.websocket_manager.broadcast({
+                            "type": "log",
+                            "data": log_broadcast
+                    })
                 
                 return {"status": "received", "count": len(received_log_ids)}
                 
@@ -3716,10 +3716,10 @@ This file can override any setting from the global PR-Agent configuration, inclu
                     # Check if connection is still active before sending ping
                     if websocket.client_state.value == 1:  # CONNECTED state
                         try:
-                    await websocket.send_json({
-                        "type": "ping", 
-                        "timestamp": datetime.utcnow().isoformat()
-                    })
+                            await websocket.send_json({
+                                "type": "ping", 
+                                "timestamp": datetime.utcnow().isoformat()
+                            })
                         except Exception as ping_error:
                             logger.debug(f"Failed to send ping, connection likely closed: {ping_error}")
                             break
@@ -4373,7 +4373,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
             startup_logging_task = None
             
             try:
-            cleanup_task = asyncio.create_task(self._cleanup_old_data())
+                cleanup_task = asyncio.create_task(self._cleanup_old_data())
             except Exception as e:
                 logger.error(f"Failed to start cleanup task: {e}")
                 
@@ -4383,7 +4383,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 logger.error(f"Failed to start backup scheduler: {e}")
                 
             try:
-            health_task = asyncio.create_task(self._monitor_system_health())
+                health_task = asyncio.create_task(self._monitor_system_health())
             except Exception as e:
                 logger.error(f"Failed to start system health monitoring: {e}")
                 
@@ -4394,7 +4394,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
             
             # Start health service background monitoring
             try:
-            await self.health_service.start_background_monitoring()
+                await self.health_service.start_background_monitoring()
             except Exception as e:
                 logger.error(f"Failed to start health monitoring: {e}")
             
@@ -4420,7 +4420,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
             
             # Gracefully stop health service monitoring first
             try:
-            await self.health_service.stop_background_monitoring()
+                await self.health_service.stop_background_monitoring()
                 logger.info("Health service monitoring stopped")
             except Exception as e:
                 logger.error(f"Failed to stop health monitoring: {e}")

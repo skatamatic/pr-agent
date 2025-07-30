@@ -60,7 +60,7 @@ stages:
     # ----------------------------------------------------------------
     # 2. Define the dotted env‑vars (AUTO_* flags) that YAML can't hold
     # ----------------------------------------------------------------
-    - pwsh: |
+    - powershell: |
         Write-Host '##vso[task.setvariable variable=AZURE_DEVOPS_CONFIG.AUTO_IMPROVE]true'
         Write-Host '##vso[task.setvariable variable=AZURE_DEVOPS_CONFIG.AUTO_REVIEW]true'
         Write-Host '##vso[task.setvariable variable=AZURE_DEVOPS_CONFIG.AUTO_DESCRIBE]true'
@@ -70,8 +70,10 @@ stages:
     # ----------------------------------------------------------------
     # 3. Launch the agent
     # ----------------------------------------------------------------
-    - pwsh: |
-        py "c:/pr_agent/pr-agent/servers/azuredevops_pipeline_runner.py"
+    - powershell: |
+        py -m pip install --upgrade pip
+        py -m pip install -r "C:/pr_agent/pr-agent/requirements.txt"
+        py "C:/pr_agent/pr-agent/pr_agent/servers/azuredevops_pipeline_runner.py"
       workingDirectory: $(System.DefaultWorkingDirectory)
       displayName: 'Execute PR‑Agent'
       env:
@@ -89,6 +91,8 @@ stages:
         # REQUIRED: AI Model API Keys (configure these in Pipeline Variables)
         OPENAI_KEY: $(OPENAI_KEY)
         ANTHROPIC_KEY: $(ANTHROPIC_KEY)
+        OPENAI__KEY: $(OPENAI_KEY)
+        ANTHROPIC__KEY: $(ANTHROPIC_KEY)
         
         # OPTIONAL: OpenAI Organization
         OPENAI_ORG: $(OPENAI_ORG)
@@ -99,11 +103,12 @@ stages:
         CSHARP_CODE_CONTEXT_SERVICE__PASSWORD: $(CSHARP_CODE_CONTEXT_SERVICE__PASSWORD)
         
         # CONFIGURATION: Auto-run settings (configure these in Pipeline Variables)
-        AZURE_DEVOPS_CONFIG_AUTO_DESCRIBE: $(AZURE_DEVOPS_CONFIG_AUTO_DESCRIBE)
-        AZURE_DEVOPS_CONFIG_AUTO_REVIEW: $(AZURE_DEVOPS_CONFIG_AUTO_REVIEW)
-        AZURE_DEVOPS_CONFIG_AUTO_IMPROVE: $(AZURE_DEVOPS_CONFIG_AUTO_IMPROVE)
-        AZURE_DEVOPS_CONFIG_ENABLE_OUTPUT: $(AZURE_DEVOPS_CONFIG_ENABLE_OUTPUT)
-        AZURE_DEVOPS_CONFIG_PR_ACTIONS: $(AZURE_DEVOPS_CONFIG_PR_ACTIONS)
+        AZURE_DEVOPS_CONFIG.AUTO_DESCRIBE: $(AZURE_DEVOPS_CONFIG.AUTO_DESCRIBE)
+        AZURE_DEVOPS_CONFIG.AUTO_REVIEW: $(AZURE_DEVOPS_CONFIG.AUTO_REVIEW)
+        AZURE_DEVOPS_CONFIG.AUTO_IMPROVE: $(AZURE_DEVOPS_CONFIG.AUTO_IMPROVE)
+        AZURE_DEVOPS_CONFIG.ENABLE_OUTPUT: $(AZURE_DEVOPS_CONFIG.ENABLE_OUTPUT)
+        AZURE_DEVOPS_CONFIG.PR_ACTIONS: $(AZURE_DEVOPS_CONFIG.PR_ACTIONS)
         
-        # SYSTEM: UTF8 encoding for proper character handling
+        # SYSTEM: UTF8 encoding and Python path configuration
         PYTHONUTF8: 1
+        PYTHONPATH: C:/pr_agent/pr-agent

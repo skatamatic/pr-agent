@@ -582,7 +582,7 @@ class NotificationService:
             for key, value in event_data.items():
                 if key not in ['timestamp'] and value is not None:
                     # Smart key formatting
-                display_key = key.replace('_', ' ').title()
+                    display_key = key.replace('_', ' ').title()
                     icon_map = {
                         'Job Id': '🆔', 'Operation Id': '🆔', 'Repository': '📁', 
                         'Status': '📊', 'Error Details': '❌', 'Message': '💬',
