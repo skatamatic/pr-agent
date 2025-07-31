@@ -338,7 +338,6 @@ async def run_action():
                                     
                                     finally:
                                         # Clear global job tracking 
-                                        global _current_job_id
                                         _current_job_id = None
                                         get_logger().debug(f"Cleared global job tracking for {job_id}")
                                 
@@ -391,7 +390,6 @@ if __name__ == '__main__':
             await run_action()
         finally:
             # CRITICAL: Ensure all dashboard operations complete before exit
-            global _current_job_id
             _current_job_id = None  # Clear current job tracking
             
             if DASHBOARD_AVAILABLE:

@@ -191,6 +191,14 @@ class SystemSettingsService:
         return str(pr_agent_root)
     
     def get_effective_pr_agent_path(self) -> str:
-        """Get the effective PR-agent path (custom or default)"""
-        custom_path = self.get_pr_agent_install_path()
-        return custom_path if custom_path else self.get_default_pr_agent_path() 
+        """Get the effective PR-agent path (settings.toml or default)"""
+        # Check settings.toml for pr_agent_path
+        try:
+            from config import settings
+            if hasattr(settings, 'pr_agent_path') and settings.pr_agent_path:
+                return str(settings.pr_agent_path)
+        except Exception as e:
+            print(f"Warning: Could not read pr_agent_path from settings.toml: {e}")
+        
+        # Fall back to default path
+        return self.get_default_pr_agent_path() 
