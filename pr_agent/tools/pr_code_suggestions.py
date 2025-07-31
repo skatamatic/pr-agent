@@ -458,15 +458,8 @@ class PRCodeSuggestions:
                     # Cap the result at reasonable bounds (allow negative values for time wasted)
                     estimated_hours = max(-16.0, min(16.0, float(estimated_hours)))
                 
-                # Extract token usage from estimation result if available
-                token_usage = estimation_result.get('token_usage') if estimation_result else None
-                log_ai_artifact(
-                    get_logger().info,
-                    f"[DevTime] - AI time estimation with insights completed: {estimated_hours} hours",
-                    model=model,
-                    token_usage=token_usage,
-                    full_estimation_result=estimation_result
-                )
+                get_logger().info(f"[DevTime] - AI time estimation with insights completed: {estimated_hours} hours", 
+                                 artifacts={'full_estimation_result': estimation_result})
                 
                 return estimated_hours, estimation_result
                 
@@ -904,9 +897,10 @@ class PRCodeSuggestions:
             raise
         
         # Log full prompts at DEBUG level
-        from pr_agent.algo.utils import log_ai_artifact
-        log_ai_artifact(get_logger().debug, f"AI System Prompt ({len(system_prompt)} chars):", model=model, system_prompt=system_prompt)
-        log_ai_artifact(get_logger().debug, f"AI User Prompt ({len(user_prompt)} chars):", model=model, user_prompt=user_prompt)
+        get_logger().debug(f"AI System Prompt ({len(system_prompt)} chars):", 
+                          artifacts={'system_prompt': system_prompt})
+        get_logger().debug(f"AI User Prompt ({len(user_prompt)} chars):", 
+                          artifacts={'user_prompt': user_prompt})
         
         # Track AI metrics for dashboard
         from pr_agent.algo.token_handler import TokenUsageTracker
@@ -926,15 +920,12 @@ class PRCodeSuggestions:
             self._track_ai_metrics(model, token_usage)
             
             # Log raw AI response at DEBUG level
-            from pr_agent.algo.utils import log_ai_artifact
-            log_ai_artifact(
-                get_logger().debug,
-                f"AI Raw Response ({len(response)} chars):",
-                model=model,
-                token_usage=token_usage,
-                response=response,
-                finish_reason=finish_reason
-            )
+            get_logger().debug(f"AI Raw Response ({len(response)} chars):", 
+                              artifacts={
+                                  'response': response,
+                                  'finish_reason': finish_reason,
+                                  'token_usage': token_usage
+                              })
             
             # Get accurate token counts - prioritize AI handler token_usage over token_tracker
             input_tokens = token_usage.get('input_tokens', 0) if token_usage else 0
@@ -1166,15 +1157,8 @@ class PRCodeSuggestions:
                 model=model
             )
             
-            # Extract token usage from estimation result if available
-            token_usage = estimation_result.get('token_usage') if estimation_result else None
-            log_ai_artifact(
-                get_logger().debug,
-                "[DevTime] - Raw AI estimation result:",
-                model=model,
-                token_usage=token_usage,
-                estimation_result=estimation_result
-            )
+            get_logger().debug("[DevTime] - Raw AI estimation result:", 
+                              artifacts={'estimation_result': estimation_result})
             
             # Track metrics if requested (for single operation tracking)
             if track_metrics and DASHBOARD_INTEGRATION_AVAILABLE:
@@ -1242,38 +1226,27 @@ class PRCodeSuggestions:
                 if capped_hours != estimated_hours:
                     get_logger().warning(f"AI estimation ({estimated_hours}h) was outside bounds, capped to {capped_hours}h")
                 
-                log_ai_artifact(
-                    get_logger().info,
-                    f"[DevTime] - AI time estimation completed successfully: {capped_hours} hours",
-                    model=model,
-                    token_usage=token_usage,
-                    estimated_hours=capped_hours,
-                    confidence_level=confidence,
-                    original_estimate=estimated_hours,
-                    was_capped=capped_hours != estimated_hours,
-                    estimation_breakdown=estimation_result.get('reasoning', 'No breakdown available')
-                )
+                get_logger().info(f"[DevTime] - AI time estimation completed successfully: {capped_hours} hours", 
+                                 artifacts={
+                                     'estimated_hours': capped_hours,
+                                     'confidence_level': confidence,
+                                     'original_estimate': estimated_hours,
+                                     'was_capped': capped_hours != estimated_hours,
+                                     'estimation_breakdown': estimation_result.get('reasoning', 'No breakdown available')
+                                 })
                 
-                log_ai_artifact(
-                    get_logger().debug,
-                    "[DevTime] - Complete AI estimation details:",
-                    model=model,
-                    token_usage=token_usage,
-                    full_estimation_result=estimation_result
-                )
+                get_logger().debug("[DevTime] - Complete AI estimation details:", 
+                                  artifacts={'full_estimation_result': estimation_result})
                 
                 return capped_hours
                 
             except Exception as e:
-                log_ai_artifact(
-                    get_logger().error,
-                    "❌ Failed to process AI estimation result",
-                    model=model,
-                    token_usage=token_usage,
-                    error=str(e),
-                    error_type=type(e).__name__,
-                    raw_result=estimation_result
-                )
+                get_logger().error("❌ Failed to process AI estimation result", 
+                                  artifacts={
+                                      'error': str(e),
+                                      'error_type': type(e).__name__,
+                                      'raw_result': estimation_result
+                                  })
                 heuristic_result = self._estimate_suggestions_dev_hours_saved(files_count, input_tokens + output_tokens, model)
                 get_logger().info(f"Fallback to heuristic: {heuristic_result} hours")
                 return heuristic_result
@@ -2639,8 +2612,10 @@ class PRCodeSuggestions:
             get_logger().warning(f"[Reflecting] - Could not estimate reflection prompt tokens: {e}")
         
         # Log prompts at DEBUG level only
-        log_ai_artifact(get_logger().debug, "[Reflecting] - Reflection System Prompt:", model=model, system_prompt=system_prompt_reflect)
-        log_ai_artifact(get_logger().debug, "[Reflecting] - Reflection User Prompt:", model=model, user_prompt=user_prompt_reflect)
+        get_logger().debug("[Reflecting] - Reflection System Prompt:", 
+                          artifacts={'system_prompt': system_prompt_reflect})
+        get_logger().debug("[Reflecting] - Reflection User Prompt:", 
+                          artifacts={'user_prompt': user_prompt_reflect})
 
         # Track AI metrics for self-reflection
         from pr_agent.algo.token_handler import TokenUsageTracker
@@ -2660,14 +2635,8 @@ class PRCodeSuggestions:
                 self._track_ai_metrics(model, token_usage)
                 
                 # Log raw reflection response at DEBUG level only
-                log_ai_artifact(
-                    get_logger().debug,
-                    "[Reflecting] - Reflection response received:",
-                    model=model,
-                    token_usage=token_usage,
-                    response=response_reflect,
-                    finish_reason=finish_reason_reflect
-                )
+                get_logger().debug("[Reflecting] - Reflection response received:", 
+                                  artifacts={'response': response_reflect, 'finish_reason': finish_reason_reflect})
                 
                 get_logger().info("[Reflecting] - AI reflection call completed successfully")
                 

@@ -365,20 +365,17 @@ class LiteLLMAIHandler(BaseAiHandler):
                 kwargs["extra_headers"] = litellm_extra_headers
 
             # Enhanced AI interaction logging - always log prompts at INFO level for debugging
-            from pr_agent.algo.utils import log_ai_artifact
-            log_ai_artifact(
-                get_logger().info,
-                f"[AI] - AI Model Call: {model}",
-                model=model,
-                temperature=kwargs.get("temperature", "not_set"),
-                system_prompt_chars=len(system),
-                user_prompt_chars=len(user),
-                combined_prompt=model in self.user_message_only_models or get_settings().config.custom_reasoning_model
-            )
+            get_logger().info(f"[AI] - AI Model Call: {model}", artifacts={
+                "model": model,
+                "temperature": kwargs.get("temperature", "not_set"),
+                "system_prompt_chars": len(system),
+                "user_prompt_chars": len(user),
+                "combined_prompt": model in self.user_message_only_models or get_settings().config.custom_reasoning_model
+            })
             
             # Log full prompts for debugging purposes
-            log_ai_artifact(get_logger().info, f"[AI] - System Prompt ({len(system)} chars)", model=model, system_prompt=system)
-            log_ai_artifact(get_logger().info, f"[AI] - User Prompt ({len(user)} chars)", model=model, user_prompt=user)
+            get_logger().info(f"[AI] - System Prompt ({len(system)} chars)", artifacts={"system_prompt": system})
+            get_logger().info(f"[AI] - User Prompt ({len(user)} chars)", artifacts={"user_prompt": user})
 
             response = await acompletion(**kwargs)
         except openai.RateLimitError as e:
@@ -411,17 +408,20 @@ class LiteLLMAIHandler(BaseAiHandler):
                 }
             
             # Enhanced AI response logging - always log at INFO level for debugging
-            log_ai_artifact(
-                get_logger().info,
-                f"[AI] - AI Response ({len(resp)} chars)",
-                model=model,
-                token_usage=token_usage,
-                ai_response=resp,
-                finish_reason=finish_reason,
-                response_chars=len(resp)
-            )
+            get_logger().info(f"[AI] - AI Response ({len(resp)} chars)", artifacts={
+                "ai_response": resp,
+                "finish_reason": finish_reason,
+                "response_chars": len(resp)
+            })
             
-            if not token_usage:
+            if token_usage:
+                get_logger().info(f"[AI] - Token Usage", artifacts={
+                    "model": model,
+                    "input_tokens": token_usage.get('input_tokens', 0),
+                    "output_tokens": token_usage.get('output_tokens', 0),
+                    "total_tokens": token_usage.get('input_tokens', 0) + token_usage.get('output_tokens', 0)
+                })
+            else:
                 get_logger().warning(f"[AI] - No token usage information available from AI model: {model}")
 
             # Log the full response structure for debugging
