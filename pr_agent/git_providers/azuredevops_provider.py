@@ -1,4 +1,6 @@
+import difflib
 import os
+import re
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
@@ -58,6 +60,24 @@ class AzureDevopsProvider(GitProvider):
         post_parameters_list = []
         for suggestion in code_suggestions:
             body = suggestion['body']
+            original_suggestion = suggestion.get('original_suggestion', None)  # needed for diff code
+            
+            # Convert ```suggestion blocks to ```diff blocks for Azure DevOps compatibility
+            if original_suggestion:
+                try:
+                    existing_code = original_suggestion['existing_code'].rstrip() + "\n"
+                    improved_code = original_suggestion['improved_code'].rstrip() + "\n"
+                    diff = difflib.unified_diff(existing_code.split('\n'),
+                                                improved_code.split('\n'), n=999)
+                    patch_orig = "\n".join(diff)
+                    patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
+                    diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
+                    # replace ```suggestion ... ``` with diff_code, using regex:
+                    body = re.sub(r'```suggestion.*?```', diff_code, body, flags=re.DOTALL)
+                except Exception as e:
+                    get_logger().exception(f"Azure failed to get diff code for publishing, error: {e}")
+                    continue
+            
             relevant_file = suggestion['relevant_file']
             relevant_lines_start = suggestion['relevant_lines_start']
             relevant_lines_end = suggestion['relevant_lines_end']
