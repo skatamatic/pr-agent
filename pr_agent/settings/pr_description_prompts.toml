@@ -36,7 +36,7 @@ class PRType(str, Enum):
 class FileDescription(BaseModel):
     filename: str = Field(description="The full file path of the relevant file")
 {%- if include_file_summary_changes %}
-    changes_summary: str = Field(description="concise summary of the changes in the relevant file, in bullet points (1-4 bullet points).")
+    changes_summary: str = Field(description="concise summary of the changes in the relevant file, using clear prose or minimal markdown formatting (1-3 sentences explaining what changed and why).")
 {%- endif %}
     changes_title: str = Field(description="one-line summary (5-10 words) capturing the main theme of changes in the file")
     label: str = Field(description="a single semantic label that represents a type of code changes that occurred in the File. Possible values (partial list): 'bug fix', 'tests', 'enhancement', 'documentation', 'error handling', 'configuration changes', 'dependencies', 'formatting', 'miscellaneous', ...")
@@ -44,7 +44,7 @@ class FileDescription(BaseModel):
 
 class PRDescription(BaseModel):
     type: List[PRType] = Field(description="one or more types that describe the PR content. Return the label member value (e.g. 'Bug fix', not 'bug_fix')")
-    description: str = Field(description="summarize the PR changes in up to four bullet points, each up to 8 words. For large PRs, add sub-bullets if needed. Order bullets by importance, with each bullet highlighting a key change group.")
+    description: str = Field(description="Provide a comprehensive, high-level overview of the PR changes using well-formatted Markdown. Structure the content with clear headings, paragraphs, and minimal formatting to explain what was changed and why. Focus on the big picture impact and key architectural/functional changes. Use headings (##, ###) to organize different aspects like 'Overview', 'Key Changes', 'Impact', etc. Keep it concise but thorough, ensuring it renders properly on both GitHub and Azure DevOps. Avoid excessive emojis - use sparingly if at all.")
     title: str = Field(description="a concise and descriptive title that captures the PR's main theme")
 {%- if enable_pr_diagram %}
     changes_diagram: str = Field(description="a horizontal diagram that represents the main PR changes, in the format of a valid mermaid LR flowchart. The diagram should be concise and easy to read. Leave empty if no diagram is relevant. To create robust Mermaid diagrams, follow this two-step process: (1) Declare the nodes: nodeID["node description"]. (2) Then define the links: nodeID1 -- "link text" --> nodeID2 ")
@@ -54,6 +54,23 @@ class PRDescription(BaseModel):
 {%- endif %}
 =====
 
+Example description format:
+```
+## Overview
+Brief summary of what this PR accomplishes and why it was needed.
+
+## Key Changes
+### Component A
+Description of major changes to this component and their purpose.
+
+### Component B  
+Description of changes here and how they relate to the overall goal.
+
+## Impact
+- Explanation of how this affects users/system behavior
+- Any breaking changes or migration considerations
+- Performance or architectural implications
+```
 
 Example output:
 

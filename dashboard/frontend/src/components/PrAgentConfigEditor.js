@@ -75,16 +75,24 @@ const PrAgentConfigEditor = ({
     ]
   };
 
-
+  // Create a unified model list for all dropdowns - user can choose any model for any purpose
+  const allAvailableModels = {
+    all: [...new Set([
+      ...availableModels.premium,
+      ...availableModels.standard,
+      ...availableModels.budget,
+      ...availableModels.reasoning
+    ]).values()].sort()
+  };
 
   const configSections = {
     models: {
       title: 'AI Models',
       icon: Brain,
       fields: [
-        { key: 'config.model', label: 'Primary Model', type: 'select', options: availableModels, description: 'Main AI model for most operations' },
-        { key: 'config.model_reasoning', label: 'Reasoning Model', type: 'select', options: { reasoning: availableModels.reasoning }, description: 'AI model for complex reasoning tasks' },
-        { key: 'config.model_weak', label: 'Weak Model', type: 'select', options: { budget: availableModels.budget }, description: 'Lightweight model for simple tasks' },
+        { key: 'config.model', label: 'Primary Model', type: 'select', options: allAvailableModels, description: 'Main AI model for most operations' },
+        { key: 'config.model_reasoning', label: 'Reasoning Model', type: 'select', options: allAvailableModels, description: 'AI model for complex reasoning tasks' },
+        { key: 'config.model_weak', label: 'Weak Model', type: 'select', options: allAvailableModels, description: 'Lightweight model for simple tasks (used for PR descriptions)' },
         { key: 'config.temperature', label: 'Temperature', type: 'number', min: 0, max: 2, step: 0.1, description: 'Creativity level (0 = focused, 2 = creative)' },
         { key: 'config.max_model_tokens', label: 'Max Model Tokens', type: 'number', min: 1000, max: 200000, description: 'Maximum tokens per request' },
         { key: 'config.reasoning_effort', label: 'Reasoning Effort', type: 'select', options: { effort: ['low', 'medium', 'high'] }, description: 'Reasoning intensity for complex tasks' }

@@ -92,6 +92,16 @@ const ConfigEditor = ({ navigationTarget = null }) => {
     ]
   };
 
+  // Create a unified model list for all dropdowns - user can choose any model for any purpose
+  const allAvailableModels = {
+    all: [...new Set([
+      ...availableModels.premium,
+      ...availableModels.standard,
+      ...availableModels.budget,
+      ...availableModels.reasoning
+    ]).values()].sort()
+  };
+
 
 
   // Check if there are any changes - only after initial load is complete and both configs are loaded
@@ -181,8 +191,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           extra_instructions: configData.pr_description?.extra_instructions || '',
           publish_labels: configData.pr_description?.publish_labels || false,
           generate_ai_title: configData.pr_description?.generate_ai_title || false,
-          enable_large_pr_handling: configData.pr_description?.enable_large_pr_handling || true,
-          model: configData.pr_description?.model || ''
+          enable_large_pr_handling: configData.pr_description?.enable_large_pr_handling || true
+          // Note: PR descriptions use ModelType.WEAK (model_weak setting), no tool-specific model override
         },
         
         // PR Code Suggestions settings
@@ -920,7 +930,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 label="Default Model"
                 value={config?.model}
                 onChange={(value) => updateConfig('model', value)}
-                models={availableModels}
+                models={allAvailableModels}
                 description="Primary model for most operations"
                     editing={editing}
               />
@@ -929,7 +939,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 label="Reasoning Model"
                 value={config?.model_reasoning}
                 onChange={(value) => updateConfig('model_reasoning', value)}
-                models={{ reasoning: availableModels.reasoning }}
+                models={allAvailableModels}
                 description="Dedicated model for complex reasoning tasks"
                     editing={editing}
               />
@@ -938,8 +948,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 label="Simple/Budget Model"
                 value={config?.model_weak}
                 onChange={(value) => updateConfig('model_weak', value)}
-                models={{ budget: availableModels.budget }}
-                description="Lightweight model for simple tasks"
+                models={allAvailableModels}
+                description="Lightweight model for simple tasks (used for PR descriptions)"
                     editing={editing}
               />
             </div>
@@ -1208,14 +1218,9 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                       className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <option value="">Use default model</option>
-                      <option value="gpt-4-turbo">GPT-4 Turbo</option>
-                      <option value="gpt-4o">GPT-4o</option>
-                      <option value="gpt-4o-mini">GPT-4o Mini</option>
-                      <option value="anthropic/claude-3-opus">Claude 3 Opus</option>
-                      <option value="anthropic/claude-3-sonnet">Claude 3 Sonnet</option>
-                      <option value="anthropic/claude-3-haiku">Claude 3 Haiku</option>
-                      <option value="anthropic/claude-3-5-sonnet">Claude 3.5 Sonnet</option>
-                      <option value="anthropic/claude-3-5-haiku">Claude 3.5 Haiku</option>
+                      {allAvailableModels.all.map(model => (
+                        <option key={model} value={model}>{model}</option>
+                      ))}
                     </select>
                     <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                       Optional: Override default model for better review quality
@@ -1314,33 +1319,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                    AI Model for Descriptions
-                    <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                      Specific AI model to use for generating PR descriptions. Leave empty to use the default model configured in General Settings.
-                    </span>
-                  </label>
-                  <select
-                    value={config.pr_description?.model || ''}
-                    onChange={(e) => updateConfig('pr_description.model', e.target.value)}
-                    disabled={!editing}
-                    className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <option value="">Use default model</option>
-                    <option value="gpt-4-turbo">GPT-4 Turbo</option>
-                    <option value="gpt-4o">GPT-4o</option>
-                    <option value="gpt-4o-mini">GPT-4o Mini</option>
-                    <option value="anthropic/claude-3-opus">Claude 3 Opus</option>
-                    <option value="anthropic/claude-3-sonnet">Claude 3 Sonnet</option>
-                    <option value="anthropic/claude-3-haiku">Claude 3 Haiku</option>
-                    <option value="anthropic/claude-3-5-sonnet">Claude 3.5 Sonnet</option>
-                    <option value="anthropic/claude-3-5-haiku">Claude 3.5 Haiku</option>
-                  </select>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    Optional: Override default model for descriptions
-                  </p>
-                </div>
+                {/* PR Descriptions use ModelType.WEAK (model_weak setting), so no tool-specific model override */}
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
@@ -1498,14 +1477,9 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                     className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <option value="">Use default model</option>
-                    <option value="gpt-4-turbo">GPT-4 Turbo</option>
-                    <option value="gpt-4o">GPT-4o</option>
-                    <option value="gpt-4o-mini">GPT-4o Mini</option>
-                    <option value="anthropic/claude-3-opus">Claude 3 Opus</option>
-                    <option value="anthropic/claude-3-sonnet">Claude 3 Sonnet</option>
-                    <option value="anthropic/claude-3-haiku">Claude 3 Haiku</option>
-                    <option value="anthropic/claude-3-5-sonnet">Claude 3.5 Sonnet</option>
-                    <option value="anthropic/claude-3-5-haiku">Claude 3.5 Haiku</option>
+                    {allAvailableModels.all.map(model => (
+                      <option key={model} value={model}>{model}</option>
+                    ))}
                   </select>
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     Optional: Override default model for code suggestions
