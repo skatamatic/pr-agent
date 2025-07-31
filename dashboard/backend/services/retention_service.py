@@ -703,8 +703,9 @@ class RetentionService:
         
         if strategy in ["time", "hybrid"] and time_field:
             # Time-based cleanup (only if timestamp column exists)
-            cutoff_date = datetime.utcnow() - timedelta(days=rules["retention_days"])
-            cutoff_str = cutoff_date.isoformat()
+            from timezone_utils import get_cutoff_datetime, format_datetime_for_db
+            cutoff_date = get_cutoff_datetime(days=rules["retention_days"])
+            cutoff_str = format_datetime_for_db(cutoff_date)
             
             if dry_run:
                 cursor.execute(

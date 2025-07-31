@@ -1,229 +1,168 @@
 """
-Timezone utilities for ensuring all timestamps are stored in UTC and displayed properly
+Timezone utility functions for consistent datetime handling across the dashboard.
+Prevents offset-naive vs offset-aware datetime comparison errors.
 """
-from datetime import datetime, timezone
-from typing import Optional, Any, Dict
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Union
 import logging
 
 logger = logging.getLogger(__name__)
 
-def ensure_utc_timestamp(dt_input: Any) -> Optional[datetime]:
+def utcnow_aware() -> datetime:
     """
-    Convert various timestamp formats to UTC datetime object.
+    Get current UTC time as timezone-aware datetime.
     
-    Args:
-        dt_input: Can be datetime object, ISO string, or None
-        
     Returns:
-        UTC datetime object or None if input is invalid
+        datetime: Current UTC time with timezone info
     """
-    if dt_input is None:
-        return None
-        
-    try:
-        # If it's already a datetime object
-        if isinstance(dt_input, datetime):
-            # If it's naive (no timezone info), assume it's already UTC
-            if dt_input.tzinfo is None:
-                # Database stores UTC time as naive, just add UTC timezone marker
-                return dt_input.replace(tzinfo=timezone.utc)
-            # If it has timezone info, convert to UTC
-            return dt_input.astimezone(timezone.utc)
-            
-        # If it's a string, parse it
-        if isinstance(dt_input, str):
-            # Handle common ISO formats
-            if dt_input.endswith('Z'):
-                # Already UTC
-                return datetime.fromisoformat(dt_input.replace('Z', '+00:00'))
-            elif '+' in dt_input or '-' in dt_input.split('T')[-1]:
-                # Has timezone info
-                return datetime.fromisoformat(dt_input).astimezone(timezone.utc)
-            else:
-                # Naive string - assume it's already UTC time
-                logger.debug(f"Naive timestamp string detected, treating as UTC: {dt_input}")
-                return datetime.fromisoformat(dt_input).replace(tzinfo=timezone.utc)
-                
-    except Exception as e:
-        logger.error(f"Failed to convert timestamp {dt_input}: {e}")
-        return None
-        
-def utc_now() -> datetime:
-    """Get current UTC time as timezone-aware datetime"""
     return datetime.now(timezone.utc)
 
-def utc_now_iso() -> str:
-    """Get current UTC time as ISO string"""
-    return utc_now().isoformat()
-
-def to_utc_iso(dt_input: Any) -> Optional[str]:
-    """Convert timestamp to UTC ISO string"""
-    utc_dt = ensure_utc_timestamp(dt_input)
-    return utc_dt.isoformat() if utc_dt else None
-
-def validate_database_timestamps(db_session) -> Dict[str, Any]:
+def ensure_timezone_aware(dt: Optional[datetime]) -> Optional[datetime]:
     """
-    Validate that database timestamps are properly stored as UTC.
-    Returns a report of any issues found.
-    """
-    from models import JobDB, OperationDB, LogEntryDB, RepositoryDB
-    
-    report = {
-        'status': 'success',
-        'issues_found': 0,
-        'tables_checked': 0,
-        'recommendations': []
-    }
-    
-    try:
-        # Check Jobs table
-        report['tables_checked'] += 1
-        jobs_count = db_session.query(JobDB).count()
-        if jobs_count > 0:
-            # Sample some recent jobs to check for timezone issues
-            recent_jobs = db_session.query(JobDB).order_by(JobDB.started_at.desc()).limit(10).all()
-            for job in recent_jobs:
-                if job.started_at and job.started_at.tzinfo is None:
-                    report['issues_found'] += 1
-                    report['recommendations'].append("Jobs table contains naive timestamps")
-                    break
-        
-        # Check Operations table
-        report['tables_checked'] += 1
-        ops_count = db_session.query(OperationDB).count()
-        if ops_count > 0:
-            recent_ops = db_session.query(OperationDB).order_by(OperationDB.started_at.desc()).limit(10).all()
-            for op in recent_ops:
-                if op.started_at and op.started_at.tzinfo is None:
-                    report['issues_found'] += 1
-                    report['recommendations'].append("Operations table contains naive timestamps")
-                    break
-        
-        # Check Logs table
-        report['tables_checked'] += 1
-        logs_count = db_session.query(LogEntryDB).count()
-        if logs_count > 0:
-            recent_logs = db_session.query(LogEntryDB).order_by(LogEntryDB.timestamp.desc()).limit(10).all()
-            for log in recent_logs:
-                if log.timestamp and log.timestamp.tzinfo is None:
-                    report['issues_found'] += 1
-                    report['recommendations'].append("Logs table contains naive timestamps")
-                    break
-        
-        if report['issues_found'] == 0:
-            report['status'] = 'success'
-            report['message'] = f"All {report['tables_checked']} tables have proper UTC timestamps"
-        else:
-            report['status'] = 'warning'
-            report['message'] = f"Found {report['issues_found']} timezone issues in database"
-            report['recommendations'].append("Consider running timezone migration if timestamps are consistently off")
-            
-    except Exception as e:
-        report['status'] = 'error'
-        report['message'] = f"Failed to validate timestamps: {e}"
-        logger.error(f"Timestamp validation failed: {e}")
-        
-    return report
-
-def migrate_naive_timestamps_to_utc(db_session, dry_run: bool = True) -> Dict[str, Any]:
-    """
-    Migration utility to convert naive timestamps to UTC.
-    
-    WARNING: This assumes naive timestamps were intended to be UTC.
-    If they were local time, this could cause incorrect conversions.
+    Convert naive datetime to timezone-aware (assuming UTC) or return already aware datetime.
     
     Args:
-        db_session: Database session
-        dry_run: If True, only report what would be changed without making changes
+        dt: Datetime to convert (can be None, naive, or already aware)
         
     Returns:
-        Migration report
+        datetime: Timezone-aware datetime or None if input was None
     """
-    from models import JobDB, OperationDB, LogEntryDB
+    if dt is None:
+        return None
     
-    report = {
-        'status': 'success',
-        'dry_run': dry_run,
-        'tables_processed': 0,
-        'records_updated': 0,
-        'details': {}
-    }
+    if dt.tzinfo is None:
+        # Naive datetime - assume it's UTC
+        return dt.replace(tzinfo=timezone.utc)
+    else:
+        # Already timezone-aware
+        return dt
+
+def ensure_timezone_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """
+    Convert timezone-aware datetime to naive UTC datetime, or return already naive datetime.
+    
+    Args:
+        dt: Datetime to convert (can be None, naive, or aware)
+        
+    Returns:
+        datetime: Timezone-naive UTC datetime or None if input was None
+    """
+    if dt is None:
+        return None
+    
+    if dt.tzinfo is not None:
+        # Timezone-aware - convert to UTC and make naive
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    else:
+        # Already naive - assume it's UTC
+        return dt
+
+def safe_datetime_compare(dt1: Optional[datetime], dt2: Optional[datetime]) -> bool:
+    """
+    Safely compare two datetimes, handling timezone-aware vs naive mismatches.
+    
+    Args:
+        dt1: First datetime
+        dt2: Second datetime
+        
+    Returns:
+        bool: True if dt1 < dt2 (accounting for timezone differences)
+    """
+    if dt1 is None or dt2 is None:
+        return False
+    
+    # Ensure both are timezone-aware for comparison
+    dt1_aware = ensure_timezone_aware(dt1)
+    dt2_aware = ensure_timezone_aware(dt2)
+    
+    return dt1_aware < dt2_aware
+
+def parse_datetime_safe(dt_str: str) -> Optional[datetime]:
+    """
+    Parse datetime string safely, handling various formats including timezone info.
+    
+    Args:
+        dt_str: Datetime string to parse
+        
+    Returns:
+        datetime: Parsed timezone-aware datetime or None if parsing failed
+    """
+    if not dt_str:
+        return None
     
     try:
-        # Process Jobs table
-        jobs = db_session.query(JobDB).all()
-        jobs_updated = 0
-        for job in jobs:
-            updated = False
-            if job.started_at and job.started_at.tzinfo is None:
-                if not dry_run:
-                    job.started_at = job.started_at.replace(tzinfo=timezone.utc)
-                updated = True
-            if job.completed_at and job.completed_at.tzinfo is None:
-                if not dry_run:
-                    job.completed_at = job.completed_at.replace(tzinfo=timezone.utc)
-                updated = True
-            if job.last_updated and job.last_updated.tzinfo is None:
-                if not dry_run:
-                    job.last_updated = job.last_updated.replace(tzinfo=timezone.utc)
-                updated = True
-            if updated:
-                jobs_updated += 1
+        # Handle 'Z' suffix (Zulu time = UTC)
+        if dt_str.endswith('Z'):
+            dt_str = dt_str.replace('Z', '+00:00')
         
-        report['details']['jobs'] = f"{jobs_updated} jobs {'would be' if dry_run else 'were'} updated"
-        report['tables_processed'] += 1
-        report['records_updated'] += jobs_updated
+        # Try parsing with timezone info
+        dt = datetime.fromisoformat(dt_str)
+        return ensure_timezone_aware(dt)
         
-        # Process Operations table
-        operations = db_session.query(OperationDB).all()
-        ops_updated = 0
-        for op in operations:
-            updated = False
-            if op.started_at and op.started_at.tzinfo is None:
-                if not dry_run:
-                    op.started_at = op.started_at.replace(tzinfo=timezone.utc)
-                updated = True
-            if op.completed_at and op.completed_at.tzinfo is None:
-                if not dry_run:
-                    op.completed_at = op.completed_at.replace(tzinfo=timezone.utc)
-                updated = True
-            if op.last_updated and op.last_updated.tzinfo is None:
-                if not dry_run:
-                    op.last_updated = op.last_updated.replace(tzinfo=timezone.utc)
-                updated = True
-            if updated:
-                ops_updated += 1
-        
-        report['details']['operations'] = f"{ops_updated} operations {'would be' if dry_run else 'were'} updated"
-        report['tables_processed'] += 1
-        report['records_updated'] += ops_updated
-        
-        # Process Logs table
-        logs = db_session.query(LogEntryDB).all()
-        logs_updated = 0
-        for log in logs:
-            if log.timestamp and log.timestamp.tzinfo is None:
-                if not dry_run:
-                    log.timestamp = log.timestamp.replace(tzinfo=timezone.utc)
-                logs_updated += 1
-        
-        report['details']['logs'] = f"{logs_updated} logs {'would be' if dry_run else 'were'} updated"
-        report['tables_processed'] += 1
-        report['records_updated'] += logs_updated
-        
-        if not dry_run and report['records_updated'] > 0:
-            db_session.commit()
-            report['message'] = f"Successfully updated {report['records_updated']} records across {report['tables_processed']} tables"
-        elif dry_run:
-            report['message'] = f"Dry run: Would update {report['records_updated']} records across {report['tables_processed']} tables"
-        else:
-            report['message'] = "No timezone issues found"
-            
     except Exception as e:
-        if not dry_run:
-            db_session.rollback()
-        report['status'] = 'error'
-        report['message'] = f"Migration failed: {e}"
-        logger.error(f"Timezone migration failed: {e}")
+        logger.debug(f"Failed to parse datetime string '{dt_str}': {e}")
+        return None
+
+def get_cutoff_datetime(days: int, hours: int = 0, minutes: int = 0) -> datetime:
+    """
+    Get a timezone-aware cutoff datetime for cleanup operations.
+    
+    Args:
+        days: Number of days ago
+        hours: Additional hours ago (default: 0)
+        minutes: Additional minutes ago (default: 0)
         
-    return report 
+    Returns:
+        datetime: Timezone-aware cutoff datetime
+    """
+    delta = timedelta(days=days, hours=hours, minutes=minutes)
+    return utcnow_aware() - delta
+
+def format_datetime_for_db(dt: datetime) -> str:
+    """
+    Format datetime for database storage (ISO format with timezone).
+    
+    Args:
+        dt: Datetime to format
+        
+    Returns:
+        str: ISO formatted datetime string with timezone
+    """
+    aware_dt = ensure_timezone_aware(dt)
+    return aware_dt.isoformat()
+
+def get_minutes_since(dt: Optional[datetime]) -> Optional[int]:
+    """
+    Get the number of minutes since the given datetime.
+    
+    Args:
+        dt: Datetime to compare against current time
+        
+    Returns:
+        int: Minutes since the datetime, or None if dt is None
+    """
+    if dt is None:
+        return None
+    
+    now = utcnow_aware()
+    dt_aware = ensure_timezone_aware(dt)
+    
+    delta = now - dt_aware
+    return int(delta.total_seconds() / 60)
+
+def to_utc_iso(dt: Optional[datetime]) -> Optional[str]:
+    """
+    Convert datetime to UTC ISO string format for JSON serialization.
+    Handles None values gracefully.
+    
+    Args:
+        dt: Datetime to convert (can be None, naive, or aware)
+        
+    Returns:
+        str: ISO formatted UTC datetime string, or None if input was None
+    """
+    if dt is None:
+        return None
+    
+    aware_dt = ensure_timezone_aware(dt)
+    return aware_dt.isoformat() 

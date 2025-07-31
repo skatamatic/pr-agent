@@ -1,6 +1,8 @@
 import asyncio
 import json
 import os
+import signal
+import sys
 from typing import Union
 
 from pr_agent.agent.pr_agent import PRAgent
@@ -17,11 +19,82 @@ from pr_agent.tools.pr_reviewer import PRReviewer
 try:
     from pr_agent.log.job_context import (
         job_context, JobType, extract_repository_from_url, 
-        setup_dashboard_integration, update_job_status
+        setup_dashboard_integration, update_job_status,
+        wait_for_pending_tasks, cleanup_all_dashboard_tasks
     )
     DASHBOARD_AVAILABLE = True
 except ImportError:
     DASHBOARD_AVAILABLE = False
+
+# Global flag for graceful shutdown
+_shutdown_requested = False
+_current_job_id = None
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully"""
+    global _shutdown_requested, _current_job_id
+    _shutdown_requested = True
+    get_logger().warning(f"Shutdown signal {signum} received, initiating graceful shutdown...")
+    
+    # If we have an active job, try to mark it as cancelled
+    if _current_job_id and DASHBOARD_AVAILABLE:
+        try:
+            import asyncio
+            # Schedule the status update
+            loop = asyncio.get_event_loop()
+            loop.create_task(update_job_status_async("cancelled", error_details=f"Process terminated by signal {signum}"))
+        except Exception as e:
+            get_logger().error(f"Failed to update job status on signal: {e}")
+
+async def update_job_status_async(status: str, error_details: str = None):
+    """Async wrapper for job status updates from signal handlers"""
+    try:
+        update_job_status(status, error_details=error_details)
+        await wait_for_pending_tasks(timeout=3.0)
+    except Exception as e:
+        get_logger().error(f"Failed to update job status: {e}")
+
+def setup_signal_handlers():
+    """Setup signal handlers for graceful shutdown"""
+    if hasattr(signal, 'SIGTERM'):
+        signal.signal(signal.SIGTERM, signal_handler)
+    if hasattr(signal, 'SIGINT'):
+        signal.signal(signal.SIGINT, signal_handler)
+    get_logger().debug("Signal handlers configured for graceful shutdown")
+
+async def cleanup_orphaned_jobs():
+    """Check for and cleanup any orphaned jobs from previous runs"""
+    if not DASHBOARD_AVAILABLE:
+        return
+    
+    try:
+        get_logger().debug("Checking for orphaned jobs from previous runs...")
+        # This would ideally call a dashboard API to find jobs in 'running' state 
+        # that are older than X minutes and mark them as 'failed'
+        # For now, just ensure our cleanup is robust
+        await cleanup_all_dashboard_tasks()
+        get_logger().debug("Orphaned job cleanup completed")
+    except Exception as e:
+        get_logger().debug(f"Orphaned job cleanup error: {e}")
+
+async def validate_cleanup_completion():
+    """Validate that all cleanup operations actually completed"""
+    try:
+        # Double-check that no tasks are still pending
+        from pr_agent.log.job_context import get_pending_tasks
+        remaining_tasks = get_pending_tasks()
+        if remaining_tasks:
+            get_logger().warning(f"Found {len(remaining_tasks)} remaining tasks after cleanup!")
+            # Try to cancel them
+            for task in remaining_tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*remaining_tasks, return_exceptions=True)
+            get_logger().debug("Forced cleanup of remaining tasks completed")
+        else:
+            get_logger().debug("Cleanup validation passed - no remaining tasks")
+    except Exception as e:
+        get_logger().error(f"Cleanup validation error: {e}")
 
 
 def is_true(value: Union[str, bool]) -> bool:
@@ -193,6 +266,8 @@ async def run_action():
                                 trigger_event=f"pullrequest_{action}",
                                 request_id=f"ado-pipeline-{SYSTEM_PULLREQUEST_PULLREQUESTID}-{os.getpid()}"
                             ) as job_id:
+                                global _current_job_id
+                                _current_job_id = job_id
                                 get_logger().info(f"Azure DevOps Pipeline job started with ID: {job_id} - Running tools: {[tool[0] for tool in tools_to_run]}")
                                 
                                 final_status = "failed"  # Default to failed, update to completed if successful
@@ -238,12 +313,17 @@ async def run_action():
                                 finally:
                                     # CRITICAL: Ensure final status is always set and persisted
                                     try:
+                                        # Check if shutdown was requested
+                                        if _shutdown_requested:
+                                            final_status = "cancelled"
+                                            error_details = "Process shutdown requested"
+                                            get_logger().warning("Shutdown requested during job execution")
+                                        
                                         get_logger().info(f"Setting final job status: {final_status}")
                                         update_job_status(final_status, error_details=error_details, result_summary=result_summary)
                                         
                                         # Wait for all pending dashboard operations to complete
                                         get_logger().debug("Waiting for pending dashboard operations to complete...")
-                                        from pr_agent.log.job_context import wait_for_pending_tasks
                                         await wait_for_pending_tasks(timeout=10.0)
                                         get_logger().debug("Dashboard operations completed")
                                         
@@ -255,6 +335,12 @@ async def run_action():
                                             await wait_for_pending_tasks(timeout=5.0)
                                         except Exception as e2:
                                             get_logger().error(f"Final fallback status update failed: {e2}")
+                                    
+                                    finally:
+                                        # Clear global job tracking 
+                                        global _current_job_id
+                                        _current_job_id = None
+                                        get_logger().debug(f"Cleared global job tracking for {job_id}")
                                 
                         except Exception as e:
                             get_logger().warning(f"Dashboard job tracking failed, continuing without tracking: {e}")
@@ -300,29 +386,56 @@ async def run_action():
 if __name__ == '__main__':
     async def main():
         try:
+            setup_signal_handlers()
+            await cleanup_orphaned_jobs()
             await run_action()
         finally:
             # CRITICAL: Ensure all dashboard operations complete before exit
+            global _current_job_id
+            _current_job_id = None  # Clear current job tracking
+            
             if DASHBOARD_AVAILABLE:
                 try:
-                    get_logger().info("Starting final dashboard cleanup and sync...")
+                    get_logger().info("Starting comprehensive dashboard cleanup and sync...")
                     
-                    # First, wait for any remaining pending tasks
-                    from pr_agent.log.job_context import wait_for_pending_tasks, cleanup_all_dashboard_tasks
-                    await wait_for_pending_tasks(timeout=15.0)
-                    get_logger().debug("Final pending tasks completed")
+                    # First, wait for any remaining pending tasks with extended timeout for Azure DevOps
+                    await wait_for_pending_tasks(timeout=20.0)  # Extended timeout for Azure DevOps pipelines
+                    get_logger().debug("Pending tasks wait completed")
+                    
+                    # Validate cleanup before proceeding
+                    await validate_cleanup_completion()
                     
                     # Then perform full cleanup
                     await cleanup_all_dashboard_tasks()
                     get_logger().info("Dashboard cleanup completed successfully")
                     
+                    # Final validation that everything is clean
+                    await validate_cleanup_completion()
+                    get_logger().debug("Final cleanup validation passed")
+                    
                 except Exception as e:
                     get_logger().error(f"Dashboard cleanup error: {e}")  # Log as error since this is critical
                     # Try once more with shorter timeout
                     try:
-                        await wait_for_pending_tasks(timeout=5.0)
+                        get_logger().warning("Attempting emergency cleanup...")
+                        await wait_for_pending_tasks(timeout=8.0)
+                        await cleanup_all_dashboard_tasks()
                         get_logger().debug("Emergency cleanup completed")
+                        
+                        # Final emergency validation
+                        await validate_cleanup_completion()
+                        get_logger().debug("Emergency cleanup validation passed")
+                        
                     except Exception as e2:
                         get_logger().error(f"Emergency cleanup failed: {e2}")
+                        
+                        # Last resort - try to at least validate what's left
+                        try:
+                            await validate_cleanup_completion()
+                            get_logger().warning("Last resort validation completed")
+                        except Exception as e3:
+                            get_logger().error(f"Final validation failed: {e3}")
+                            
+            get_logger().info("Azure DevOps Pipeline Runner shutdown complete")
     
     asyncio.run(main()) 

@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 from models import OperationDB, LogEntryDB, APIResponse
-from timezone_utils import to_utc_iso
+from timezone_utils import utcnow_aware, format_datetime_for_db, to_utc_iso
 
 
 class OperationService:

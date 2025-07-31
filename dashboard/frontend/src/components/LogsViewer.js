@@ -513,6 +513,11 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     setDateRange({ start: '', end: '' });
     setSearchTerm('');
     setCurrentPage(1);
+    
+    // Also clear external job/operation filters
+    if (onClearFilter) {
+      onClearFilter();
+    }
   };
 
   const renderArtifactValue = (value) => {
@@ -961,16 +966,16 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                   <th className="w-24 px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Level
                   </th>
-                  <th className="w-40 px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  <th className="w-52 px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Timestamp
                   </th>
-                  <th className="w-32 px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  <th className="w-28 px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Step
                   </th>
                   <th className="flex-1 px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Message
                   </th>
-                  <th className="w-72 px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  <th className="w-40 px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Source
                   </th>
                   <th className="w-12 px-4 py-3 text-right"></th>
@@ -1012,29 +1017,31 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                             )}
                           </div>
                         </td>
-                        <td className="w-40 px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                        <td className="w-52 px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                           <div className="flex items-center">
                             <Clock className="h-3 w-3 mr-1" />
                             {formatTimestamp(log.timestamp)}
                           </div>
                         </td>
-                        <td className="w-32 px-4 py-4 whitespace-nowrap text-sm">
-                          {(() => {
-                            const step = extractStepFromLog(log) || "System";
-                            const stepInfo = getStepInfo(step);
-                            return (
-                              <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium border ${stepInfo.color}`}>
-                                {stepInfo.text}
-                              </span>
-                            );
-                          })()}
+                        <td className="w-28 px-4 py-4 whitespace-nowrap text-sm">
+                          <div className="flex items-center">
+                            {(() => {
+                              const step = extractStepFromLog(log) || "System";
+                              const stepInfo = getStepInfo(step);
+                              return (
+                                <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium border ${stepInfo.color}`}>
+                                  {stepInfo.text}
+                                </span>
+                              );
+                            })()}
+                          </div>
                         </td>
                         <td className="flex-1 px-4 py-4 text-xs text-gray-900 dark:text-white">
                           <div className="line-clamp-2 break-words" title={log.message}>
                             {log.message}
                           </div>
                         </td>
-                        <td className="w-72 px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                        <td className="w-40 px-4 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                           <div className="truncate">
                             {log.module && <div className="font-medium truncate" title={log.module}>{log.module}</div>}
                             {log.function && <div className="text-xs text-gray-400 dark:text-gray-500 truncate" title={log.function}>{log.function}()</div>}

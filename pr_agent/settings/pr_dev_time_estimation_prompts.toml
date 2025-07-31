@@ -19,6 +19,9 @@ Industry benchmarks for reference:
 - Simple code review: ~400-1000 lines of code per day
 
 Be conservative and as realistic as possible in your estimations.  For very trivial changes it is very possible that we saved no time.  If there are too many nitpicks or outright bad/erronous suggestions we may actually have costed time!
+
+CRITICAL CALCULATION REQUIREMENT: In your final_assessment, the "total_developer_hours_saved" must be calculated based on your detailed analysis above. Do not default to 0.0 unless your analysis genuinely concludes no time was saved. The calculation should reflect the net time impact from your time_impact_analysis section, considering factors like human_reviewer_time_reduction_hours minus author_time_to_process_feedback_hours and context_switching_overhead_hours.
+
 Provide a detailed analysis with specific reasoning for your time estimate."""
 
 user="""Please analyze the following code diff and AI-generated review to estimate developer time savings:
@@ -40,7 +43,9 @@ user="""Please analyze the following code diff and AI-generated review to estima
 - Lines Deleted: {{ lines_deleted }}
 - Review Type: {{ review_type }}
 
-Please provide your assessment following this exact JSON structure:
+Please provide your assessment following this exact JSON structure.
+
+CRITICAL: Calculate the "total_developer_hours_saved" in the final_assessment by carefully considering all time impacts from your analysis. This should typically be based on the net benefit from your time_impact_analysis section. Do NOT default to 0.0 unless you have genuine reasons why no time was saved. If your analysis shows time reduction in any area, this should be reflected in the final number.
 
 ```json
 {
@@ -99,6 +104,9 @@ Industry context for PR review guides:
 - Typical time savings: 15-40% of initial issue identification time, not total review time
 
 Be conservative and as realistic as possible in your estimations.  For very trivial changes it is very possible that we saved no time.  If there are too many nitpicks or outright bad/erronous suggestions we may actually have costed time!
+
+CRITICAL CALCULATION REQUIREMENT: In your final_assessment, the "total_developer_hours_saved" must be calculated based on your detailed analysis above. Do not default to 0.0 unless your analysis genuinely concludes no time was saved. The calculation should reflect the net time impact from your time_impact_analysis section.
+
 Be conservative in your estimates - this is a supplementary tool that provides guidance, not detailed solutions."""
 
 user="""Please analyze the following code diff and AI-generated PR review guide to estimate developer time savings:
@@ -120,7 +128,9 @@ user="""Please analyze the following code diff and AI-generated PR review guide 
 - Lines Deleted: {{ lines_deleted }}
 - Review Type: High-level review guide (supplementary tool)
 
-Please provide your assessment following this exact JSON structure:
+Please provide your assessment following this exact JSON structure.
+
+CRITICAL: Calculate the "total_developer_hours_saved" in the final_assessment by carefully considering all time impacts from your analysis. This should typically be based on the net benefit from your time_impact_analysis section. Do NOT default to 0.0 unless you have genuine reasons why no time was saved.
 
 ```json
 {
@@ -176,8 +186,9 @@ Industry benchmarks for PR description writing:
 - Complex changes (9+ files, 300+ lines): 30 minutes for manual description
 - Architectural changes: 45-60 minutes for comprehensive description
 
-Provide a detailed analysis with specific reasoning for your time estimate.  
-total_developer_hours_saved should roughly equate to the sum of the time_impact_analysis values with perhaps some wiggle room if you can justify it.
+CRITICAL CALCULATION REQUIREMENT: In your final_assessment, the "total_developer_hours_saved" must be calculated based on your detailed analysis above. Do not default to 0.0 unless your analysis genuinely concludes no time was saved. The calculation should roughly equate to the sum of the workflow_impact_analysis values with perhaps some wiggle room if you can justify it.
+
+Provide a detailed analysis with specific reasoning for your time estimate.
 Be conservative with estimates - this is just a brief time saver that fills out PR descriptions.  It is not a comprehensive review of the code and is not intended to be an extreme time saver."""
 
 user="""Please analyze the following code diff and AI-generated PR description to estimate developer time savings:
@@ -199,7 +210,9 @@ user="""Please analyze the following code diff and AI-generated PR description t
 - Lines Deleted: {{ lines_deleted }}
 - Description Type: {{ description_type }}
 
-Please provide your assessment following this exact JSON structure:
+Please provide your assessment following this exact JSON structure.
+
+CRITICAL: Calculate the "total_developer_hours_saved" in the final_assessment by carefully considering all time impacts from your analysis. This should typically be based on the net benefit from your workflow_impact_analysis section. Do NOT default to 0.0 unless you have genuine reasons why no time was saved.
 
 ```json
 {

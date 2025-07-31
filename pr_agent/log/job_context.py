@@ -157,13 +157,16 @@ def extract_repository_from_url(url: Optional[str]) -> Optional[str]:
             parts = url.split('/')
             if len(parts) >= 5:
                 return f"{parts[3]}/{parts[4]}"
-        elif 'dev.azure.com' in url:
+        elif 'dev.azure.com' in url or 'azure.com' in url:
             parts = url.split('/')
-            if len(parts) >= 7 and '_git' in parts:
-                org = parts[3]
-                project = parts[4]
-                repo = parts[6]
-                return f"{org}/{project}/{repo}"
+            # Handle Azure DevOps URL format: https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{pr_id}
+            if '_git' in parts:
+                git_index = parts.index('_git')
+                if git_index >= 2 and git_index + 1 < len(parts):
+                    project = parts[git_index - 1]
+                    repo = parts[git_index + 1]
+                    # Return cleaner format like GitHub: project/repo
+                    return f"{project}/{repo}"
         
         # Fallback: try to extract meaningful parts
         parts = [p for p in url.split('/') if p and p not in ['http:', 'https:', 'www']]

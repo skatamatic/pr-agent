@@ -415,7 +415,7 @@ class RobustCachedJobService:
         return job
         
     async def get_operations(self, limit: int = 100, status: str = None,
-                           repo: str = None) -> List[Dict[str, Any]]:
+                           repo: str = None, job_id: str = None) -> List[Dict[str, Any]]:
         """Get operations with robust cache-through pattern"""
         filters = {}
         if repo:
@@ -423,6 +423,7 @@ class RobustCachedJobService:
             
         return await self.cache.get_operations(
             limit=limit,
+            job_id=job_id,
             status=status,
             **filters
         )

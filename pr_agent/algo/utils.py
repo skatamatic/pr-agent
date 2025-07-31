@@ -1450,3 +1450,48 @@ def get_pr_agent_config_content(git_provider, branch="main") -> str:
     except Exception as e:
         get_logger().debug(f"Could not load .pr_agent.toml from repository root: {e}")
         return ""
+
+
+def create_ai_artifact(model: str = None, token_usage: dict = None, **additional_data) -> dict:
+    """
+    Create a standardized AI artifact dictionary that includes model and token information.
+    
+    Args:
+        model: The AI model used (e.g., "anthropic/claude-sonnet-4-20250514")
+        token_usage: Dictionary with 'input_tokens' and 'output_tokens' keys
+        **additional_data: Any additional data to include in the artifact
+        
+    Returns:
+        dict: Standardized artifact dictionary with AI metadata
+    """
+    artifact = {}
+    
+    # Add model information if available
+    if model:
+        artifact['ai_model'] = model
+    
+    # Add token usage information if available
+    if token_usage:
+        artifact['input_tokens'] = token_usage.get('input_tokens', 0)
+        artifact['output_tokens'] = token_usage.get('output_tokens', 0)
+        artifact['total_tokens'] = artifact['input_tokens'] + artifact['output_tokens']
+    
+    # Add any additional data
+    artifact.update(additional_data)
+    
+    return artifact
+
+
+def log_ai_artifact(logger_method, message: str, model: str = None, token_usage: dict = None, **additional_data):
+    """
+    Log an AI-related message with standardized artifact information.
+    
+    Args:
+        logger_method: The logger method to use (e.g., get_logger().info)
+        message: The log message
+        model: The AI model used
+        token_usage: Dictionary with token usage information
+        **additional_data: Any additional data to include in the artifact
+    """
+    artifact = create_ai_artifact(model=model, token_usage=token_usage, **additional_data)
+    logger_method(message, artifacts=artifact)

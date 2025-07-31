@@ -1292,15 +1292,17 @@ class RobustCacheService:
                 
     async def _cleanup_expired_entries(self):
         """Clean up expired entries from all caches"""
-        cutoff = datetime.utcnow() - self.cache_ttl
+        from timezone_utils import get_cutoff_datetime
+        cutoff = get_cutoff_datetime(days=0, hours=0, minutes=int(self.cache_ttl.total_seconds() / 60))
         
         for cache_name in ['jobs_cache', 'operations_cache', 'logs_cache', 'metrics_cache']:
             cache = getattr(self, cache_name)
             expired_keys = []
             
             async with cache._lock:
+                from timezone_utils import safe_datetime_compare
                 for key, entry in cache.entries.items():
-                    if entry.created_at < cutoff:
+                    if safe_datetime_compare(entry.created_at, cutoff):
                         expired_keys.append(key)
                         
             for key in expired_keys:

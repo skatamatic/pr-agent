@@ -1045,10 +1045,11 @@ class DashboardApplication:
                 
                 # Check for stuck operations
                 from datetime import timedelta
-                stuck_cutoff = datetime.utcnow() - timedelta(minutes=30)
+                from timezone_utils import get_cutoff_datetime, format_datetime_for_db
+                stuck_cutoff = get_cutoff_datetime(days=0, hours=0, minutes=30)
                 stuck_ops = db.query(OperationDB).filter(
                     OperationDB.status.in_(["processing", "fetching_context", "preparing"]),
-                    OperationDB.started_at < stuck_cutoff
+                    OperationDB.started_at < format_datetime_for_db(stuck_cutoff)
                 ).count()
                 
                 if stuck_ops > 0:
@@ -1083,10 +1084,11 @@ class DashboardApplication:
             """Get system performance metrics"""
             try:
                 from datetime import timedelta
+                from timezone_utils import get_cutoff_datetime, format_datetime_for_db
                 
                 # Get performance data for last 24 hours
-                day_ago = datetime.utcnow() - timedelta(hours=24)
-                recent_ops = db.query(OperationDB).filter(OperationDB.started_at >= day_ago).all()
+                day_ago = get_cutoff_datetime(days=1)
+                recent_ops = db.query(OperationDB).filter(OperationDB.started_at >= format_datetime_for_db(day_ago)).all()
                 
                 # Calculate performance metrics
                 total_ops = len(recent_ops)
@@ -3867,7 +3869,8 @@ This file can override any setting from the global PR-Agent configuration, inclu
             """Check for jobs that would be considered stale by the timeout monitor"""
             try:
                 from datetime import datetime, timedelta
-                cutoff_time = datetime.utcnow() - timedelta(hours=1)
+                from timezone_utils import get_cutoff_datetime
+                cutoff_time = get_cutoff_datetime(days=0, hours=1)
                 
                 running_jobs = await self.cached_job_service.get_jobs(
                     status="running", 
@@ -3884,15 +3887,16 @@ This file can override any setting from the global PR-Agent configuration, inclu
                         
                     last_activity = await self._get_job_last_activity(job_id, job_data)
                     
+                    from timezone_utils import get_minutes_since, safe_datetime_compare
                     job_info = {
                         'job_id': job_id,
                         'repository': job_data.get('repository', 'Unknown'),
                         'job_type': job_data.get('job_type', 'Unknown'),
                         'last_activity': last_activity.isoformat() if last_activity else None,
-                        'minutes_since_activity': int((datetime.utcnow() - last_activity).total_seconds() / 60) if last_activity else None
+                        'minutes_since_activity': get_minutes_since(last_activity)
                     }
                     
-                    if last_activity and last_activity < cutoff_time:
+                    if last_activity and safe_datetime_compare(last_activity, cutoff_time):
                         stale_jobs.append(job_info)
                     else:
                         active_jobs.append(job_info)
@@ -3915,7 +3919,8 @@ This file can override any setting from the global PR-Agent configuration, inclu
             """Manually trigger the job timeout check for testing"""
             try:
                 from datetime import datetime, timedelta
-                cutoff_time = datetime.utcnow() - timedelta(hours=1)
+                from timezone_utils import get_cutoff_datetime
+                cutoff_time = get_cutoff_datetime(days=0, hours=1)
                 
                 running_jobs = await self.cached_job_service.get_jobs(
                     status="running", 
@@ -3931,13 +3936,14 @@ This file can override any setting from the global PR-Agent configuration, inclu
                         
                     last_activity = await self._get_job_last_activity(job_id, job_data)
                     
-                    if last_activity and last_activity < cutoff_time:
+                    from timezone_utils import safe_datetime_compare, get_minutes_since
+                    if last_activity and safe_datetime_compare(last_activity, cutoff_time):
                         stale_jobs.append({
                             'job_id': job_id,
                             'last_activity': last_activity,
                             'repository': job_data.get('repository', 'Unknown'),
                             'job_type': job_data.get('job_type', 'Unknown'),
-                            'stale_duration_minutes': int((datetime.utcnow() - last_activity).total_seconds() / 60)
+                            'stale_duration_minutes': get_minutes_since(last_activity)
                         })
                 
                 # Mark stale jobs as failed (same logic as the background task)
@@ -4057,14 +4063,15 @@ This file can override any setting from the global PR-Agent configuration, inclu
                     logger.debug("Checking job timeout monitoring service")
                     running_jobs_data = await self.cached_job_service.get_jobs(status="running", limit=1000)
                     from datetime import timedelta
-                    cutoff_time = datetime.utcnow() - timedelta(hours=1)
+                    from timezone_utils import get_cutoff_datetime, safe_datetime_compare
+                    cutoff_time = get_cutoff_datetime(days=0, hours=1)
                     
                     stale_count = 0
                     for job_data in running_jobs_data:
                         job_id = job_data.get('job_id')
                         if job_id:
                             last_activity = await self._get_job_last_activity(job_id, job_data)
-                            if last_activity and last_activity < cutoff_time:
+                            if last_activity and safe_datetime_compare(last_activity, cutoff_time):
                                 stale_count += 1
                     
                     db_stats = self.retention_service.get_database_stats()
@@ -4129,7 +4136,8 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 logger.error(f"Failed to get scheduled jobs status: {e}")
                 import traceback
                 traceback.print_exc()
-                return APIResponse(data={"error": str(e), "services": {}, "timestamp": datetime.utcnow().isoformat()}, message="Failed to get scheduled jobs status")
+                from timezone_utils import utcnow_aware
+                return APIResponse(data={"error": str(e), "services": {}, "timestamp": utcnow_aware().isoformat()}, message="Failed to get scheduled jobs status")
 
         @self.app.get("/api/dev/scheduled-jobs/simple-status")
         async def get_simple_scheduled_jobs_status():
@@ -4235,7 +4243,8 @@ This file can override any setting from the global PR-Agent configuration, inclu
                     
                 elif service_name == "job_timeout_monitoring":
                     # Force job timeout check (reuse existing endpoint logic)
-                    cutoff_time = datetime.utcnow() - timedelta(hours=1)
+                    from timezone_utils import get_cutoff_datetime, safe_datetime_compare
+                    cutoff_time = get_cutoff_datetime(days=0, hours=1)
                     
                     running_jobs = await self.cached_job_service.get_jobs(status="running", limit=1000)
                     stale_jobs = []
@@ -4244,23 +4253,26 @@ This file can override any setting from the global PR-Agent configuration, inclu
                         job_id = job_data.get('job_id')
                         if job_id:
                             last_activity = await self._get_job_last_activity(job_id, job_data)
-                            if last_activity and last_activity < cutoff_time:
+                            if last_activity and safe_datetime_compare(last_activity, cutoff_time):
                                 stale_jobs.append(job_id)
                     
                     # Mark stale jobs as failed
                     failed_count = 0
                     for job_id in stale_jobs:
                         try:
+                            from models import JobStatus
                             await self.cached_job_service.update_job_status(
-                                job_id, "failed", 
+                                job_id, JobStatus.FAILED, 
                                 error_details="Job timed out - No activity received for over 1 hour (manual trigger)"
                             )
                             failed_count += 1
-                        except Exception:
-                            pass
+                            logger.info(f"Manually marked stale job {job_id} as failed")
+                        except Exception as e:
+                            logger.error(f"Failed to mark job {job_id} as failed during manual timeout check: {e}")
                     
                     # Update last job timeout check timestamp
-                    self.database_manager.set_system_setting("last_job_timeout_check_time", datetime.utcnow().isoformat())
+                    from timezone_utils import utcnow_aware
+                    self.database_manager.set_system_setting("last_job_timeout_check_time", utcnow_aware().isoformat())
                     
                     result.update({
                         "triggered": True,
@@ -4814,11 +4826,11 @@ This file can override any setting from the global PR-Agent configuration, inclu
         try:
             import requests
             from datetime import datetime
-            from timezone_utils import to_utc_iso
+            from timezone_utils import utcnow_aware, format_datetime_for_db
             
             # Create a system log entry
             log_data = {
-                'timestamp': to_utc_iso(datetime.utcnow()),
+                'timestamp': format_datetime_for_db(utcnow_aware()),
                 'level': level,
                 'message': f"[SYSTEM] {message}",
                 'source': 'dashboard_backend',
@@ -4874,11 +4886,17 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 should_cleanup = True
                 if last_cleanup:
                     try:
-                        last_cleanup_dt = datetime.fromisoformat(last_cleanup.replace('Z', '+00:00'))
-                        next_cleanup_dt = last_cleanup_dt + timedelta(hours=schedule_hours)
-                        should_cleanup = datetime.utcnow() >= next_cleanup_dt.replace(tzinfo=None)
+                        from timezone_utils import parse_datetime_safe, utcnow_aware
+                        last_cleanup_dt = parse_datetime_safe(last_cleanup)
+                        if last_cleanup_dt:
+                            next_cleanup_dt = last_cleanup_dt + timedelta(hours=schedule_hours)
+                            should_cleanup = utcnow_aware() >= next_cleanup_dt
+                        else:
+                            logger.warning(f"Could not parse last cleanup time: {last_cleanup}")
+                            should_cleanup = True  # If we can't parse, do cleanup to be safe
                     except Exception as e:
                         logger.warning(f"Could not parse last cleanup time: {e}")
+                        should_cleanup = True  # If we can't parse, do cleanup to be safe
                 
                 if should_cleanup:
                     logger.info("Starting scheduled database cleanup...")
@@ -5018,7 +5036,8 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 
                 # Get current time and calculate 1 hour ago threshold
                 from datetime import datetime, timedelta
-                cutoff_time = datetime.utcnow() - timedelta(hours=1)
+                from timezone_utils import get_cutoff_datetime
+                cutoff_time = get_cutoff_datetime(days=0, hours=1)
                 
                 # Check for stale running jobs using the cache service
                 try:
@@ -5037,13 +5056,14 @@ This file can override any setting from the global PR-Agent configuration, inclu
                         # Get the most recent activity timestamp for this job
                         last_activity = await self._get_job_last_activity(job_id, job_data)
                         
-                        if last_activity and last_activity < cutoff_time:
+                        from timezone_utils import safe_datetime_compare, get_minutes_since
+                        if last_activity and safe_datetime_compare(last_activity, cutoff_time):
                             stale_jobs.append({
                                 'job_id': job_id,
                                 'last_activity': last_activity,
                                 'repository': job_data.get('repository', 'Unknown'),
                                 'job_type': job_data.get('job_type', 'Unknown'),
-                                'stale_duration_minutes': int((datetime.utcnow() - last_activity).total_seconds() / 60)
+                                'stale_duration_minutes': get_minutes_since(last_activity)
                             })
                     
                     # Mark stale jobs as failed
@@ -5053,9 +5073,10 @@ This file can override any setting from the global PR-Agent configuration, inclu
                         for stale_job in stale_jobs:
                             try:
                                 # Mark job as failed
+                                from models import JobStatus
                                 await self.cached_job_service.update_job_status(
                                     stale_job['job_id'], 
-                                    "failed", 
+                                    JobStatus.FAILED, 
                                     error_details="Job timed out - No activity received for over 1 hour"
                                 )
                                 
@@ -5114,6 +5135,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
         """Get the most recent activity timestamp for a job considering job updates, operations, and logs"""
         try:
             from datetime import datetime
+            from timezone_utils import parse_datetime_safe, ensure_timezone_aware, safe_datetime_compare
             
             # Start with job's own last_updated timestamp
             job_last_updated = job_data.get('last_updated')
@@ -5121,9 +5143,9 @@ This file can override any setting from the global PR-Agent configuration, inclu
             
             if job_last_updated:
                 if isinstance(job_last_updated, str):
-                    last_activity = datetime.fromisoformat(job_last_updated.replace('Z', '+00:00'))
+                    last_activity = parse_datetime_safe(job_last_updated)
                 elif isinstance(job_last_updated, datetime):
-                    last_activity = job_last_updated
+                    last_activity = ensure_timezone_aware(job_last_updated)
             
             # Check latest operation activity
             try:
@@ -5132,13 +5154,13 @@ This file can override any setting from the global PR-Agent configuration, inclu
                     op_last_updated = operation.get('last_updated')
                     if op_last_updated:
                         if isinstance(op_last_updated, str):
-                            op_timestamp = datetime.fromisoformat(op_last_updated.replace('Z', '+00:00'))
+                            op_timestamp = parse_datetime_safe(op_last_updated)
                         elif isinstance(op_last_updated, datetime):
-                            op_timestamp = op_last_updated
+                            op_timestamp = ensure_timezone_aware(op_last_updated)
                         else:
                             continue
                             
-                        if last_activity is None or op_timestamp > last_activity:
+                        if op_timestamp and (last_activity is None or safe_datetime_compare(last_activity, op_timestamp)):
                             last_activity = op_timestamp
             except Exception as e:
                 logger.debug(f"Error checking operation activity for job {job_id}: {e}")
@@ -5150,13 +5172,13 @@ This file can override any setting from the global PR-Agent configuration, inclu
                     log_timestamp = log.get('timestamp')
                     if log_timestamp:
                         if isinstance(log_timestamp, str):
-                            log_dt = datetime.fromisoformat(log_timestamp.replace('Z', '+00:00'))
+                            log_dt = parse_datetime_safe(log_timestamp)
                         elif isinstance(log_timestamp, datetime):
-                            log_dt = log_timestamp
+                            log_dt = ensure_timezone_aware(log_timestamp)
                         else:
                             continue
                             
-                        if last_activity is None or log_dt > last_activity:
+                        if log_dt and (last_activity is None or safe_datetime_compare(last_activity, log_dt)):
                             last_activity = log_dt
             except Exception as e:
                 logger.debug(f"Error checking log activity for job {job_id}: {e}")
@@ -5166,9 +5188,9 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 job_started_at = job_data.get('started_at')
                 if job_started_at:
                     if isinstance(job_started_at, str):
-                        last_activity = datetime.fromisoformat(job_started_at.replace('Z', '+00:00'))
+                        last_activity = parse_datetime_safe(job_started_at)
                     elif isinstance(job_started_at, datetime):
-                        last_activity = job_started_at
+                        last_activity = ensure_timezone_aware(job_started_at)
             
             return last_activity
             
