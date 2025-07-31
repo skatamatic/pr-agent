@@ -157,21 +157,32 @@ def extract_repository_from_url(url: Optional[str]) -> Optional[str]:
             parts = url.split('/')
             if len(parts) >= 5:
                 return f"{parts[3]}/{parts[4]}"
-        elif 'dev.azure.com' in url or 'azure.com' in url:
+        elif 'dev.azure.com' in url or 'azure.com' in url or 'visualstudio.com' in url:
             parts = url.split('/')
-            # Handle Azure DevOps URL format: https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{pr_id}
+            # Handle Azure DevOps URL formats:
+            # Modern: https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{pr_id}
+            # Legacy: https://{org}.visualstudio.com/{project}/_git/{repo}/pullrequest/{pr_id}
             if logger:
-                logger.debug(f"Azure DevOps URL parsing - URL: {url}, Parts: {parts}")
+                logger.debug(f"Azure DevOps URL parsing - URL: {url}")
+                logger.debug(f"Azure DevOps URL parsing - Parts: {parts}")
             if '_git' in parts:
                 git_index = parts.index('_git')
+                if logger:
+                    logger.debug(f"Azure DevOps URL parsing - _git found at index: {git_index}")
                 if git_index >= 2 and git_index + 1 < len(parts):
                     project = parts[git_index - 1]
                     repo = parts[git_index + 1]
                     result = f"{project}/{repo}"
                     if logger:
-                        logger.debug(f"Azure DevOps URL parsing - git_index: {git_index}, project: {project}, repo: {repo}, result: {result}")
+                        logger.debug(f"Azure DevOps URL parsing - project: '{project}', repo: '{repo}', result: '{result}'")
                     # Return cleaner format like GitHub: project/repo
                     return result
+                else:
+                    if logger:
+                        logger.warning(f"Azure DevOps URL parsing - Invalid git_index bounds: git_index={git_index}, parts_length={len(parts)}")
+            else:
+                if logger:
+                    logger.warning(f"Azure DevOps URL parsing - _git not found in URL parts: {parts}")
         
         # Fallback: try to extract meaningful parts
         parts = [p for p in url.split('/') if p and p not in ['http:', 'https:', 'www']]
