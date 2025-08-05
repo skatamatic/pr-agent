@@ -41,6 +41,11 @@ api.interceptors.response.use(
       localStorage.removeItem('auth_token');
       delete api.defaults.headers.common['Authorization'];
       // Redirect to login will be handled by the auth context
+    } else if (error.response?.status === 203) {
+      // 203 Non-Authoritative Information - treat as success for Azure DevOps APIs
+      // This often occurs with cached responses from proxies/CDNs
+      console.warn('Received 203 Non-Authoritative Information, treating as success:', error.response);
+      return Promise.resolve(error.response);
     }
     return Promise.reject(error);
   }

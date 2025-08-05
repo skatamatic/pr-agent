@@ -1760,7 +1760,7 @@ const RepositoryManager = () => {
       }
       
       const response = await api.listAzureAgentServices(firstRepo.id);
-      setAvailableAzureServices(response.data.services || []);
+      setAvailableAzureServices(response.data.data?.services || []);
       
     } catch (error) {
       console.error('Error fetching available Azure services:', error);
