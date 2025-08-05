@@ -375,13 +375,12 @@ class AzureDevopsProvider(GitProvider):
             base_sha = self.pr.last_merge_target_commit
             head_sha = self.pr.last_merge_source_commit
 
-            # Get PR iterations - limit to avoid massive responses
+            # Get PR iterations
             try:
                 iterations = self.azure_devops_client.get_pull_request_iterations(
                     repository_id=self.repo_slug,
                     pull_request_id=self.pr_num,
-                    project=self.workspace_slug,
-                    top=1  # Only get the most recent iteration to avoid huge responses
+                    project=self.workspace_slug
                 )
             except Exception as e:
                 get_logger().warning(f"Failed to get PR iterations, falling back to basic method: {e}")
@@ -397,8 +396,7 @@ class AzureDevopsProvider(GitProvider):
                         repository_id=self.repo_slug,
                         pull_request_id=self.pr_num,
                         iteration_id=iteration_id,
-                        project=self.workspace_slug,
-                        top=100  # Limit number of changes to prevent massive responses
+                        project=self.workspace_slug
                     )
                 except Exception as e:
                     get_logger().warning(f"Failed to get PR iteration changes: {e}")
