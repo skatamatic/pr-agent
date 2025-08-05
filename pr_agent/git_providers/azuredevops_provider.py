@@ -150,9 +150,32 @@ class AzureDevopsProvider(GitProvider):
             # Check if suggestion is commit-eligible - only convert non-commit-eligible suggestions to diff format
             is_commit_eligible = original_suggestion.get('commit_eligible', True) if original_suggestion else True
             
+            # For commit-eligible suggestions, clean up potential duplication in the suggestion block
+            # Azure DevOps doesn't handle suggestion blocks as intelligently as GitHub
+            if is_commit_eligible and original_suggestion and original_suggestion.get('existing_code') and original_suggestion.get('improved_code'):
+                try:
+                    existing_code = original_suggestion['existing_code'].strip()
+                    improved_code = original_suggestion['improved_code'].strip()
+                    
+                    # Check if improved_code contains the existing_code appended at the end
+                    if existing_code and improved_code.endswith(existing_code):
+                        # Remove the duplicated existing code from the end
+                        cleaned_improved_code = improved_code[:-len(existing_code)].rstrip()
+                        if cleaned_improved_code:  # Only replace if we have content left
+                            # Replace the improved code in the suggestion block
+                            body = re.sub(
+                                r'(```suggestion\n)(.*?)(\n```)', 
+                                rf'\1{cleaned_improved_code}\3', 
+                                body, 
+                                flags=re.DOTALL
+                            )
+                            get_logger().info(f"Cleaned duplicated code from commit-eligible suggestion")
+                except Exception as e:
+                    get_logger().warning(f"Failed to clean suggestion duplication: {e}")
+            
             # Only convert ```suggestion blocks to ```diff blocks for NON-commit-eligible suggestions
             # Commit-eligible suggestions need to stay as ```suggestion for Azure DevOps to show commit button
-            if not is_commit_eligible and original_suggestion and original_suggestion.get('existing_code') and original_suggestion.get('improved_code'):
+            elif not is_commit_eligible and original_suggestion and original_suggestion.get('existing_code') and original_suggestion.get('improved_code'):
                 try:
                     existing_code = original_suggestion['existing_code'].rstrip() + "\n"
                     improved_code = original_suggestion['improved_code'].rstrip() + "\n"
