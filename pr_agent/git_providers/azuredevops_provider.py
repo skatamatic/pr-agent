@@ -138,135 +138,69 @@ class AzureDevopsProvider(GitProvider):
         """
         Publishes code suggestions as comments on the PR.
         """
-        get_logger().info(f"🔍 AZURE DEBUG: Starting to publish {len(code_suggestions)} code suggestions")
-        
         post_parameters_list = []
         for idx, suggestion in enumerate(code_suggestions):
-            get_logger().info(f"🔍 AZURE DEBUG: Processing suggestion #{idx + 1}")
-            
             if not suggestion:  # Skip None suggestions
-                get_logger().warning(f"🔍 AZURE DEBUG: Skipping None suggestion #{idx + 1}")
+                get_logger().warning(f"Skipping None suggestion #{idx + 1}")
                 continue
-                
-            # Deep debug analysis of the suggestion structure
-            self._debug_suggestion_structure(suggestion, idx)
-            
-            # Log the full suggestion structure
-            get_logger().info(f"🔍 AZURE DEBUG: Suggestion #{idx + 1} keys: {list(suggestion.keys())}")
             
             body = suggestion['body']
-            get_logger().info(f"🔍 AZURE DEBUG: Original body length: {len(body)} chars")
-            get_logger().info(f"🔍 AZURE DEBUG: Original body preview: {repr(body[:200])}...")
+            original_suggestion = suggestion.get('original_suggestion', None)
             
-            original_suggestion = suggestion.get('original_suggestion', None)  # needed for diff code
-            get_logger().info(f"🔍 AZURE DEBUG: Has original_suggestion: {original_suggestion is not None}")
+            # Check if suggestion is commit-eligible - only convert non-commit-eligible suggestions to diff format
+            is_commit_eligible = original_suggestion.get('commit_eligible', True) if original_suggestion else True
             
-            if original_suggestion:
-                get_logger().info(f"🔍 AZURE DEBUG: Original suggestion keys: {list(original_suggestion.keys())}")
-                if 'existing_code' in original_suggestion:
-                    get_logger().info(f"🔍 AZURE DEBUG: Existing code: {repr(original_suggestion['existing_code'])}")
-                if 'improved_code' in original_suggestion:
-                    get_logger().info(f"🔍 AZURE DEBUG: Improved code: {repr(original_suggestion['improved_code'])}")
-            
-            # Convert ```suggestion blocks to ```diff blocks for Azure DevOps compatibility
-            if original_suggestion and original_suggestion.get('existing_code') and original_suggestion.get('improved_code'):
-                get_logger().info(f"🔍 AZURE DEBUG: Converting suggestion to diff format...")
+            # Only convert ```suggestion blocks to ```diff blocks for NON-commit-eligible suggestions
+            # Commit-eligible suggestions need to stay as ```suggestion for Azure DevOps to show commit button
+            if not is_commit_eligible and original_suggestion and original_suggestion.get('existing_code') and original_suggestion.get('improved_code'):
                 try:
                     existing_code = original_suggestion['existing_code'].rstrip() + "\n"
                     improved_code = original_suggestion['improved_code'].rstrip() + "\n"
                     
-                    get_logger().info(f"🔍 AZURE DEBUG: Processed existing_code: {repr(existing_code)}")
-                    get_logger().info(f"🔍 AZURE DEBUG: Processed improved_code: {repr(improved_code)}")
-                    
                     diff = difflib.unified_diff(existing_code.split('\n'),
                                                 improved_code.split('\n'), n=999)
                     patch_orig = "\n".join(diff)
-                    get_logger().info(f"🔍 AZURE DEBUG: Generated diff patch_orig: {repr(patch_orig)}")
-                    
                     patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
-                    get_logger().info(f"🔍 AZURE DEBUG: Processed diff patch: {repr(patch)}")
-                    
                     diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
-                    get_logger().info(f"🔍 AZURE DEBUG: Final diff_code: {repr(diff_code)}")
-                    
-                    # Log body before regex replacement
-                    get_logger().info(f"🔍 AZURE DEBUG: Body before regex replacement: {repr(body)}")
                     
                     # replace ```suggestion ... ``` with diff_code, using regex:
                     body = re.sub(r'```suggestion.*?```', diff_code, body, flags=re.DOTALL)
                     
-                    # Log body after regex replacement
-                    get_logger().info(f"🔍 AZURE DEBUG: Body after regex replacement: {repr(body)}")
-                    get_logger().info(f"🔍 AZURE DEBUG: Body length after replacement: {len(body)} chars")
-                    
                 except Exception as e:
-                    get_logger().exception(f"🔍 AZURE DEBUG: Failed to get diff code for publishing, error: {e}")
-                    get_logger().info(f"🔍 AZURE DEBUG: Continuing with original body due to diff conversion error")
-            else:
-                get_logger().info(f"🔍 AZURE DEBUG: Skipping diff conversion - no existing/improved code in original_suggestion")
+                    get_logger().exception(f"Failed to convert suggestion to diff format, error: {e}")
             
             relevant_file = suggestion['relevant_file']
             relevant_lines_start = suggestion['relevant_lines_start']
             relevant_lines_end = suggestion['relevant_lines_end']
-            
-            get_logger().info(f"🔍 AZURE DEBUG: File: {relevant_file}, Lines: {relevant_lines_start}-{relevant_lines_end}")
 
             if not relevant_lines_start or relevant_lines_start == -1:
                 get_logger().warning(
-                    f"🔍 AZURE DEBUG: Failed to publish code suggestion, relevant_lines_start is {relevant_lines_start}")
+                    f"Failed to publish code suggestion, relevant_lines_start is {relevant_lines_start}")
                 continue
 
             if relevant_lines_end < relevant_lines_start:
-                get_logger().warning(f"🔍 AZURE DEBUG: Failed to publish code suggestion, "
+                get_logger().warning(f"Failed to publish code suggestion, "
                                        f"relevant_lines_end is {relevant_lines_end} and "
                                        f"relevant_lines_start is {relevant_lines_start}")
                 continue
-
-            # Log final processed body that will be sent to Azure DevOps
-            get_logger().info(f"🔍 AZURE DEBUG: Final body to be published:")
-            get_logger().info(f"🔍 AZURE DEBUG: =================================")
-            get_logger().info(f"🔍 AZURE DEBUG: {body}")
-            get_logger().info(f"🔍 AZURE DEBUG: =================================")
-            get_logger().info(f"🔍 AZURE DEBUG: Final body length: {len(body)} chars")
-            
-            # Check for potential duplication patterns
-            if "```diff" in body:
-                get_logger().info(f"🔍 AZURE DEBUG: Body contains diff blocks")
-                diff_blocks = body.count("```diff")
-                get_logger().info(f"🔍 AZURE DEBUG: Number of diff blocks found: {diff_blocks}")
-            
-            if "```suggestion" in body:
-                get_logger().info(f"🔍 AZURE DEBUG: Body still contains suggestion blocks")
-                suggestion_blocks = body.count("```suggestion")
-                get_logger().info(f"🔍 AZURE DEBUG: Number of suggestion blocks found: {suggestion_blocks}")
 
             thread_context = CommentThreadContext(
                 file_path=relevant_file,
                 right_file_start=CommentPosition(offset=1, line=relevant_lines_start),
                 right_file_end=CommentPosition(offset=1, line=relevant_lines_end))
             
-            get_logger().info(f"🔍 AZURE DEBUG: Creating thread context for file {relevant_file} lines {relevant_lines_start}-{relevant_lines_end}")
-            
             comment = Comment(content=body, comment_type=1)
-            get_logger().info(f"🔍 AZURE DEBUG: Created comment with content length: {len(comment.content)} chars")
-            
             thread = CommentThread(comments=[comment], thread_context=thread_context)
-            get_logger().info(f"🔍 AZURE DEBUG: Created comment thread with {len(thread.comments)} comments")
             
             try:
-                get_logger().info(f"🔍 AZURE DEBUG: Calling Azure DevOps API to create thread...")
                 self.azure_devops_client.create_thread(
                     comment_thread=thread,
                     project=self.workspace_slug,
                     repository_id=self.repo_slug,
                     pull_request_id=self.pr_num
                 )
-                get_logger().info(f"🔍 AZURE DEBUG: Successfully published suggestion #{idx + 1} to Azure DevOps")
             except Exception as e:
-                get_logger().error(f"🔍 AZURE DEBUG: Azure failed to publish code suggestion #{idx + 1}, error: {e}")
-                get_logger().error(f"🔍 AZURE DEBUG: Failed suggestion data: {suggestion}")
-                
-        get_logger().info(f"🔍 AZURE DEBUG: Finished publishing all code suggestions")
+                get_logger().error(f"Azure failed to publish code suggestion #{idx + 1}, error: {e}")
         return True
 
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str, is_temporary: bool = False) -> Comment:
