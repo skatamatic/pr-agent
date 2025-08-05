@@ -196,15 +196,20 @@ class RunnerHealthService:
             
             session = await self._get_session()
             
-            # Test PAT by getting project info
-            url = f"https://dev.azure.com/{organization}/_apis/projects/{project}?api-version=6.0"
-            auth_header = base64.b64encode(f":{repo.azure_pat}".encode()).decode()
+            # Test PAT by getting project info - using current stable API version
+            url = f"https://dev.azure.com/{organization}/_apis/projects/{project}?api-version=7.1-preview.4"
+            auth_header = base64.b64encode(f":{repo.azure_pat}".encode('utf-8')).decode('ascii')
             headers = {
                 "Authorization": f"Basic {auth_header}",
-                "Accept": "application/json"
+                "Accept": "application/json",
+                "User-Agent": "PR-Agent-Dashboard/1.0"
             }
             
+            logger.info(f"Testing Azure PAT for {organization}/{project} with URL: {url}")
+            
             async with session.get(url, headers=headers) as response:
+                logger.info(f"Azure PAT validation response: {response.status} {response.reason}")
+                
                 if response.status == 401:
                     return {
                         "valid": False,
@@ -223,10 +228,17 @@ class RunnerHealthService:
                         "error": f"Azure DevOps project {organization}/{project} not found",
                         "status": "error"
                     }
+                elif response.status == 203:
+                    # Non-Authoritative Information - treat as success with warning
+                    logger.warning(f"Azure DevOps API returned 203 (Non-Authoritative Information) for {organization}/{project}")
+                    # 203 typically means the response is from a cache or proxy, continue processing
+                    pass
                 elif response.status != 200:
+                    response_text = await response.text()
+                    logger.error(f"Azure DevOps API error {response.status}: {response_text}")
                     return {
                         "valid": False,
-                        "error": f"Azure DevOps API error: {response.status}",
+                        "error": f"Azure DevOps API error: {response.status} - {response.reason}",
                         "status": "error"
                     }
                 
@@ -475,14 +487,20 @@ class RunnerHealthService:
             
             session = await self._get_session()
             
-            # Get agent pools first
-            url = f"https://dev.azure.com/{organization}/_apis/distributedtask/pools?api-version=7.0"
+            # Get agent pools using updated API version and proper auth
+            url = f"https://dev.azure.com/{organization}/_apis/distributedtask/pools?api-version=7.1-preview.1"
+            auth_header = base64.b64encode(f":{repo.azure_pat}".encode('utf-8')).decode('ascii')
             headers = {
-                "Authorization": f"Basic {repo.azure_pat}",
-                "Content-Type": "application/json"
+                "Authorization": f"Basic {auth_header}",
+                "Accept": "application/json",
+                "User-Agent": "PR-Agent-Dashboard/1.0"
             }
             
+            logger.info(f"Checking Azure agent pools for {organization} with URL: {url}")
+            
             async with session.get(url, headers=headers) as response:
+                logger.info(f"Azure agent pools response: {response.status} {response.reason}")
+                
                 if response.status == 401:
                     return {
                         "status": "misconfigured", 
@@ -495,7 +513,14 @@ class RunnerHealthService:
                         "error": "Azure DevOps PAT lacks required permissions",
                         "last_seen": None
                     }
+                elif response.status == 203:
+                    # Non-Authoritative Information - treat as success with warning
+                    logger.warning(f"Azure DevOps agent pools API returned 203 (Non-Authoritative Information) for {organization}")
+                    # 203 typically means the response is from a cache or proxy, continue processing
+                    pass
                 elif response.status != 200:
+                    response_text = await response.text()
+                    logger.error(f"Azure agent pools API error {response.status}: {response_text}")
                     return {
                         "status": "error",
                         "error": f"Azure DevOps API error: {response.status}",
@@ -686,37 +711,68 @@ class RunnerHealthService:
     async def get_repository_health_summary(self, db: Session) -> Dict[str, Any]:
         """Get a summary of repository health status"""
         try:
-            # Only consider active repositories that have runner services configured
+            # Consider active repositories that have either GitHub runner services OR Azure agent services configured
+            from sqlalchemy import or_, and_
             repositories = db.query(RepositoryDB).filter(
                 RepositoryDB.is_active == True,
-                RepositoryDB.runner_service_name.isnot(None),
-                RepositoryDB.runner_service_name != ""
+                or_(
+                    # GitHub runner service configured
+                    and_(
+                        RepositoryDB.runner_service_name.isnot(None),
+                        RepositoryDB.runner_service_name != ""
+                    ),
+                    # Azure agent service configured  
+                    and_(
+                        RepositoryDB.azure_agent_service_name.isnot(None),
+                        RepositoryDB.azure_agent_service_name != ""
+                    )
+                )
             ).all()
             
             total = len(repositories)
-            healthy = len([r for r in repositories if r.runner_status == "running"])
+            # Count healthy repos - consider both GitHub runners and Azure agents
+            healthy = 0
+            for r in repositories:
+                github_healthy = r.runner_status == "running" if r.runner_service_name else None
+                azure_healthy = r.azure_agent_status == "running" if r.azure_agent_service_name else None
+                
+                # Repo is healthy if at least one service is running (or if no services are configured)
+                if github_healthy or azure_healthy:
+                    healthy += 1
+                elif github_healthy is None and azure_healthy is None:
+                    # No services configured, consider healthy
+                    healthy += 1
+            
             unhealthy = total - healthy
             
-            # Get error details - only for repos with configured runner services
+            # Get error details - for repos with configured runner/agent services
             error_repos = []
             for repo in repositories:
-                if repo.runner_status != "running":
+                github_healthy = repo.runner_status == "running" if repo.runner_service_name else None
+                azure_healthy = repo.azure_agent_status == "running" if repo.azure_agent_service_name else None
+                
+                # Add to errors if any configured service is not running
+                if github_healthy is False or azure_healthy is False:
+                    service_name = repo.runner_service_name or repo.azure_agent_service_name
+                    status = repo.runner_status or repo.azure_agent_status or "unknown"
+                    error = repo.runner_error or repo.azure_agent_error
+                    
                     error_repos.append({
                         "name": repo.name,
-                        "status": repo.runner_status or "unknown",
-                        "error": repo.runner_error,
-                        "service_name": repo.runner_service_name
+                        "status": status,
+                        "error": error,
+                        "service_name": service_name
                     })
             
-            # If no repositories have runner services configured, that's not an error
+            # If no repositories have runner/agent services configured, that's not an error
             if total == 0:
                 return {
                     "total_repos": 0,
                     "healthy_repos": 0,
                     "unhealthy_repos": 0,
                     "error_repos": [],
-                    "overall_status": "running",  # No runner services = no problems
-                    "message": "No repositories have runner services configured",
+                    "overall_status": "running",  # No runner/agent services = no problems
+                    "message": "No repositories have runner or agent services configured",
                     "last_updated": datetime.utcnow().isoformat()
                 }
             

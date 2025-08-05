@@ -14,6 +14,7 @@ from ..algo.utils import (PRDescriptionHeader, clip_tokens,
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import GitProvider
+import json
 
 AZURE_DEVOPS_AVAILABLE = True
 ADO_APP_CLIENT_DEFAULT_ID = "499b84ac-1321-427f-aa17-267ca6975798/.default"
@@ -27,11 +28,91 @@ try:
     # noinspection PyUnresolvedReferences
     from azure.identity import DefaultAzureCredential
     from msrest.authentication import BasicAuthentication
-except ImportError:
+    # Only log if we have a logger available
+    try:
+        get_logger().info("Azure DevOps SDK imports successful")
+    except:
+        pass  # Logger might not be available during import
+except ImportError as e:
     AZURE_DEVOPS_AVAILABLE = False
+    # Only log if we have a logger available
+    try:
+        get_logger().error(f"Azure DevOps provider disabled due to missing dependencies: {e}")
+        get_logger().error("Install azure-devops package: pip install azure-devops")
+    except:
+        print(f"Azure DevOps provider disabled due to missing dependencies: {e}")
+        print("Install azure-devops package: pip install azure-devops")
 
 
 class AzureDevopsProvider(GitProvider):
+    
+    def _debug_suggestion_structure(self, suggestion: dict, idx: int):
+        """Helper method to deeply debug suggestion structures"""
+        get_logger().info(f"🔍 AZURE DEBUG: ====== DEEP SUGGESTION ANALYSIS #{idx + 1} ======")
+        
+        try:
+            # Pretty print the full suggestion structure
+            suggestion_json = json.dumps(suggestion, indent=2, default=str)
+            get_logger().info(f"🔍 AZURE DEBUG: Full suggestion structure:")
+            get_logger().info(f"🔍 AZURE DEBUG: {suggestion_json}")
+        except Exception as e:
+            get_logger().warning(f"🔍 AZURE DEBUG: Could not serialize suggestion to JSON: {e}")
+        
+        # Check for potential sources of duplication
+        body = suggestion.get('body', '')
+        if body:
+            # Look for repeated lines or patterns
+            lines = body.split('\n')
+            get_logger().info(f"🔍 AZURE DEBUG: Body has {len(lines)} lines")
+            
+            # Check for line duplication
+            seen_lines = {}
+            duplicates = []
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped and len(stripped) > 5:  # Ignore very short lines
+                    if stripped in seen_lines:
+                        duplicates.append((i, line, seen_lines[stripped]))
+                    else:
+                        seen_lines[stripped] = i
+            
+            if duplicates:
+                get_logger().warning(f"🔍 AZURE DEBUG: Found {len(duplicates)} potential duplicate lines in body:")
+                for line_num, line_content, first_occurrence in duplicates:
+                    get_logger().warning(f"🔍 AZURE DEBUG: Line {line_num} (first at {first_occurrence}): {repr(line_content)}")
+            else:
+                get_logger().info(f"🔍 AZURE DEBUG: No obvious line duplicates found in body")
+                
+            # Check specific patterns that might indicate duplication
+            if '```suggestion' in body and '```diff' in body:
+                get_logger().warning(f"🔍 AZURE DEBUG: Body contains BOTH suggestion and diff blocks - potential conversion issue!")
+            
+            # Look for repeated code blocks
+            code_blocks = []
+            in_code_block = False
+            current_block = []
+            block_type = None
+            
+            for line in lines:
+                if line.strip().startswith('```'):
+                    if not in_code_block:
+                        in_code_block = True
+                        block_type = line.strip()
+                        current_block = [line]
+                    else:
+                        current_block.append(line)
+                        code_blocks.append((block_type, '\n'.join(current_block)))
+                        in_code_block = False
+                        current_block = []
+                        block_type = None
+                elif in_code_block:
+                    current_block.append(line)
+            
+            get_logger().info(f"🔍 AZURE DEBUG: Found {len(code_blocks)} code blocks")
+            for i, (block_type, block_content) in enumerate(code_blocks):
+                get_logger().info(f"🔍 AZURE DEBUG: Code block {i + 1} ({block_type}): {len(block_content)} chars")
+                
+        get_logger().info(f"🔍 AZURE DEBUG: ====== END DEEP ANALYSIS #{idx + 1} ======")
 
     def __init__(
             self, pr_url: Optional[str] = None, incremental: Optional[bool] = False
@@ -57,57 +138,135 @@ class AzureDevopsProvider(GitProvider):
         """
         Publishes code suggestions as comments on the PR.
         """
+        get_logger().info(f"🔍 AZURE DEBUG: Starting to publish {len(code_suggestions)} code suggestions")
+        
         post_parameters_list = []
-        for suggestion in code_suggestions:
+        for idx, suggestion in enumerate(code_suggestions):
+            get_logger().info(f"🔍 AZURE DEBUG: Processing suggestion #{idx + 1}")
+            
+            if not suggestion:  # Skip None suggestions
+                get_logger().warning(f"🔍 AZURE DEBUG: Skipping None suggestion #{idx + 1}")
+                continue
+                
+            # Deep debug analysis of the suggestion structure
+            self._debug_suggestion_structure(suggestion, idx)
+            
+            # Log the full suggestion structure
+            get_logger().info(f"🔍 AZURE DEBUG: Suggestion #{idx + 1} keys: {list(suggestion.keys())}")
+            
             body = suggestion['body']
+            get_logger().info(f"🔍 AZURE DEBUG: Original body length: {len(body)} chars")
+            get_logger().info(f"🔍 AZURE DEBUG: Original body preview: {repr(body[:200])}...")
+            
             original_suggestion = suggestion.get('original_suggestion', None)  # needed for diff code
+            get_logger().info(f"🔍 AZURE DEBUG: Has original_suggestion: {original_suggestion is not None}")
+            
+            if original_suggestion:
+                get_logger().info(f"🔍 AZURE DEBUG: Original suggestion keys: {list(original_suggestion.keys())}")
+                if 'existing_code' in original_suggestion:
+                    get_logger().info(f"🔍 AZURE DEBUG: Existing code: {repr(original_suggestion['existing_code'])}")
+                if 'improved_code' in original_suggestion:
+                    get_logger().info(f"🔍 AZURE DEBUG: Improved code: {repr(original_suggestion['improved_code'])}")
             
             # Convert ```suggestion blocks to ```diff blocks for Azure DevOps compatibility
-            if original_suggestion:
+            if original_suggestion and original_suggestion.get('existing_code') and original_suggestion.get('improved_code'):
+                get_logger().info(f"🔍 AZURE DEBUG: Converting suggestion to diff format...")
                 try:
                     existing_code = original_suggestion['existing_code'].rstrip() + "\n"
                     improved_code = original_suggestion['improved_code'].rstrip() + "\n"
+                    
+                    get_logger().info(f"🔍 AZURE DEBUG: Processed existing_code: {repr(existing_code)}")
+                    get_logger().info(f"🔍 AZURE DEBUG: Processed improved_code: {repr(improved_code)}")
+                    
                     diff = difflib.unified_diff(existing_code.split('\n'),
                                                 improved_code.split('\n'), n=999)
                     patch_orig = "\n".join(diff)
+                    get_logger().info(f"🔍 AZURE DEBUG: Generated diff patch_orig: {repr(patch_orig)}")
+                    
                     patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
+                    get_logger().info(f"🔍 AZURE DEBUG: Processed diff patch: {repr(patch)}")
+                    
                     diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
+                    get_logger().info(f"🔍 AZURE DEBUG: Final diff_code: {repr(diff_code)}")
+                    
+                    # Log body before regex replacement
+                    get_logger().info(f"🔍 AZURE DEBUG: Body before regex replacement: {repr(body)}")
+                    
                     # replace ```suggestion ... ``` with diff_code, using regex:
                     body = re.sub(r'```suggestion.*?```', diff_code, body, flags=re.DOTALL)
+                    
+                    # Log body after regex replacement
+                    get_logger().info(f"🔍 AZURE DEBUG: Body after regex replacement: {repr(body)}")
+                    get_logger().info(f"🔍 AZURE DEBUG: Body length after replacement: {len(body)} chars")
+                    
                 except Exception as e:
-                    get_logger().exception(f"Azure failed to get diff code for publishing, error: {e}")
-                    continue
+                    get_logger().exception(f"🔍 AZURE DEBUG: Failed to get diff code for publishing, error: {e}")
+                    get_logger().info(f"🔍 AZURE DEBUG: Continuing with original body due to diff conversion error")
+            else:
+                get_logger().info(f"🔍 AZURE DEBUG: Skipping diff conversion - no existing/improved code in original_suggestion")
             
             relevant_file = suggestion['relevant_file']
             relevant_lines_start = suggestion['relevant_lines_start']
             relevant_lines_end = suggestion['relevant_lines_end']
+            
+            get_logger().info(f"🔍 AZURE DEBUG: File: {relevant_file}, Lines: {relevant_lines_start}-{relevant_lines_end}")
 
             if not relevant_lines_start or relevant_lines_start == -1:
                 get_logger().warning(
-                    f"Failed to publish code suggestion, relevant_lines_start is {relevant_lines_start}")
+                    f"🔍 AZURE DEBUG: Failed to publish code suggestion, relevant_lines_start is {relevant_lines_start}")
                 continue
 
             if relevant_lines_end < relevant_lines_start:
-                get_logger().warning(f"Failed to publish code suggestion, "
+                get_logger().warning(f"🔍 AZURE DEBUG: Failed to publish code suggestion, "
                                        f"relevant_lines_end is {relevant_lines_end} and "
                                        f"relevant_lines_start is {relevant_lines_start}")
                 continue
+
+            # Log final processed body that will be sent to Azure DevOps
+            get_logger().info(f"🔍 AZURE DEBUG: Final body to be published:")
+            get_logger().info(f"🔍 AZURE DEBUG: =================================")
+            get_logger().info(f"🔍 AZURE DEBUG: {body}")
+            get_logger().info(f"🔍 AZURE DEBUG: =================================")
+            get_logger().info(f"🔍 AZURE DEBUG: Final body length: {len(body)} chars")
+            
+            # Check for potential duplication patterns
+            if "```diff" in body:
+                get_logger().info(f"🔍 AZURE DEBUG: Body contains diff blocks")
+                diff_blocks = body.count("```diff")
+                get_logger().info(f"🔍 AZURE DEBUG: Number of diff blocks found: {diff_blocks}")
+            
+            if "```suggestion" in body:
+                get_logger().info(f"🔍 AZURE DEBUG: Body still contains suggestion blocks")
+                suggestion_blocks = body.count("```suggestion")
+                get_logger().info(f"🔍 AZURE DEBUG: Number of suggestion blocks found: {suggestion_blocks}")
 
             thread_context = CommentThreadContext(
                 file_path=relevant_file,
                 right_file_start=CommentPosition(offset=1, line=relevant_lines_start),
                 right_file_end=CommentPosition(offset=1, line=relevant_lines_end))
+            
+            get_logger().info(f"🔍 AZURE DEBUG: Creating thread context for file {relevant_file} lines {relevant_lines_start}-{relevant_lines_end}")
+            
             comment = Comment(content=body, comment_type=1)
+            get_logger().info(f"🔍 AZURE DEBUG: Created comment with content length: {len(comment.content)} chars")
+            
             thread = CommentThread(comments=[comment], thread_context=thread_context)
+            get_logger().info(f"🔍 AZURE DEBUG: Created comment thread with {len(thread.comments)} comments")
+            
             try:
+                get_logger().info(f"🔍 AZURE DEBUG: Calling Azure DevOps API to create thread...")
                 self.azure_devops_client.create_thread(
                     comment_thread=thread,
                     project=self.workspace_slug,
                     repository_id=self.repo_slug,
                     pull_request_id=self.pr_num
                 )
+                get_logger().info(f"🔍 AZURE DEBUG: Successfully published suggestion #{idx + 1} to Azure DevOps")
             except Exception as e:
-                get_logger().error(f"Azure failed to publish code suggestion, error: {e}", suggestion=suggestion)
+                get_logger().error(f"🔍 AZURE DEBUG: Azure failed to publish code suggestion #{idx + 1}, error: {e}")
+                get_logger().error(f"🔍 AZURE DEBUG: Failed suggestion data: {suggestion}")
+                
+        get_logger().info(f"🔍 AZURE DEBUG: Finished publishing all code suggestions")
         return True
 
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str, is_temporary: bool = False) -> Comment:
@@ -216,23 +375,34 @@ class AzureDevopsProvider(GitProvider):
             base_sha = self.pr.last_merge_target_commit
             head_sha = self.pr.last_merge_source_commit
 
-            # Get PR iterations
-            iterations = self.azure_devops_client.get_pull_request_iterations(
-                repository_id=self.repo_slug,
-                pull_request_id=self.pr_num,
-                project=self.workspace_slug
-            )
+            # Get PR iterations - limit to avoid massive responses
+            try:
+                iterations = self.azure_devops_client.get_pull_request_iterations(
+                    repository_id=self.repo_slug,
+                    pull_request_id=self.pr_num,
+                    project=self.workspace_slug,
+                    top=1  # Only get the most recent iteration to avoid huge responses
+                )
+            except Exception as e:
+                get_logger().warning(f"Failed to get PR iterations, falling back to basic method: {e}")
+                iterations = None
+            
             changes = None
             if iterations:
                 iteration_id = iterations[-1].id  # Get the last iteration (most recent changes)
 
-                # Get changes for the iteration
-                changes = self.azure_devops_client.get_pull_request_iteration_changes(
-                    repository_id=self.repo_slug,
-                    pull_request_id=self.pr_num,
-                    iteration_id=iteration_id,
-                    project=self.workspace_slug
-                )
+                # Get changes for the iteration  
+                try:
+                    changes = self.azure_devops_client.get_pull_request_iteration_changes(
+                        repository_id=self.repo_slug,
+                        pull_request_id=self.pr_num,
+                        iteration_id=iteration_id,
+                        project=self.workspace_slug,
+                        top=100  # Limit number of changes to prevent massive responses
+                    )
+                except Exception as e:
+                    get_logger().warning(f"Failed to get PR iteration changes: {e}")
+                    changes = None
             diff_files = []
             diffs = []
             diff_types = {}
@@ -507,11 +677,20 @@ class AzureDevopsProvider(GitProvider):
         return extension_percentages
 
     def get_pr_branch(self):
-        pr_info = self.azure_devops_client.get_pull_request_by_id(
-            project=self.workspace_slug, pull_request_id=self.pr_num
-        )
-        source_branch = pr_info.source_ref_name.split("/")[-1]
-        return source_branch
+        try:
+            pr_info = self.azure_devops_client.get_pull_request_by_id(
+                project=self.workspace_slug, pull_request_id=self.pr_num
+            )
+            if pr_info and pr_info.source_ref_name:
+                # Azure DevOps branch refs are like "refs/heads/feature-branch"
+                source_branch = pr_info.source_ref_name.split("/")[-1]
+                return source_branch
+            else:
+                get_logger().warning("PR info or source_ref_name is None")
+                return "main"  # fallback
+        except Exception as e:
+            get_logger().error(f"Failed to get PR branch: {e}")
+            return "main"  # fallback
 
     def get_user_id(self):
         return 0

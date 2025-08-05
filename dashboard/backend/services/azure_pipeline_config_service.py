@@ -87,7 +87,7 @@ class AzurePipelineConfigService:
             }
             
             # Get file content via Azure DevOps REST API
-            url = f"https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{repository}/items?path={path}&api-version=7.0"
+            url = f"https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{repository}/items?path={path}&api-version=7.1-preview.1"
             
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers) as response:
@@ -127,7 +127,7 @@ class AzurePipelineConfigService:
             }
             
             # Get build definitions (pipelines) for the project
-            url = f"https://dev.azure.com/{organization}/{project}/_apis/build/definitions?api-version=7.0"
+            url = f"https://dev.azure.com/{organization}/{project}/_apis/build/definitions?api-version=7.1-preview.7"
             
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers) as response:

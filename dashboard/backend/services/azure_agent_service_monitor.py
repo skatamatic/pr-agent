@@ -77,22 +77,31 @@ class AzureAgentServiceMonitor:
                 
                 # Azure DevOps agent specific matching patterns
                 else:
-                    # Extract key components from search name for fuzzy matching
-                    search_parts = search_name_lower.replace('.', ' ').replace('-', ' ').replace('_', ' ').split()
-                    service_parts = (service_name_lower + ' ' + service_display).replace('.', ' ').replace('-', ' ').replace('_', ' ').split()
+                    # Handle wildcard patterns (e.g., "vstsagent.org.*")
+                    if search_name_lower.endswith('*'):
+                        pattern_prefix = search_name_lower[:-1]
+                        if service_name_lower.startswith(pattern_prefix):
+                            match_score = 90
+                            self.logger.info(f"Wildcard pattern match: {service_name_lower} matches {pattern_prefix}*")
                     
-                    # Count matching parts
-                    matching_parts = 0
-                    for part in search_parts:
-                        if len(part) > 2:  # Ignore very short parts
-                            for service_part in service_parts:
-                                if part in service_part or service_part in part:
-                                    matching_parts += 1
-                                    break
-                    
-                    if matching_parts > 0:
-                        match_score = min(60, matching_parts * 15)  # Score based on matching parts
-                        self.logger.info(f"Fuzzy match found: {matching_parts} parts matched, score: {match_score}")
+                    if match_score == 0:
+                        # Extract key components from search name for fuzzy matching
+                        search_parts = search_name_lower.replace('.', ' ').replace('-', ' ').replace('_', ' ').split()
+                        service_parts = (service_name_lower + ' ' + service_display).replace('.', ' ').replace('-', ' ').replace('_', ' ').split()
+                        
+                        # Count matching parts
+                        matching_parts = 0
+                        for part in search_parts:
+                            if len(part) > 2:  # Ignore very short parts
+                                for service_part in service_parts:
+                                    if part in service_part or service_part in part:
+                                        matching_parts += 1
+                                        self.logger.info(f"Part match: '{part}' found in '{service_part}'")
+                                        break
+                        
+                        if matching_parts > 0:
+                            match_score = min(60, matching_parts * 15)  # Score based on matching parts
+                            self.logger.info(f"Fuzzy match found: {matching_parts} parts matched, score: {match_score}")
                 
                 if match_score > 0:
                     self.logger.info(f"Adding potential match: {service.get('name')} (score: {match_score})")
@@ -157,12 +166,12 @@ class AzureAgentServiceMonitor:
             self.logger.info("Listing Azure DevOps agent services")
             
             # PowerShell command to get Azure DevOps agent services
-            # Azure DevOps agents typically have "Azure" or "VSTS" in their names
+            # Azure DevOps agents typically have "Azure", "VSTS", or "vstsagent" in their names
             cmd = [
                 'powershell.exe', 
                 '-NoProfile', 
                 '-Command',
-                'Get-Service | Where-Object { $_.Name -like "*Azure*" -or $_.DisplayName -like "*Azure*" -or $_.Name -like "*VSTS*" -or $_.DisplayName -like "*VSTS*" -or $_.Name -like "*vstsagent*" -or $_.DisplayName -like "*Agent*" } | ConvertTo-Json'
+                'Get-Service | Where-Object { $_.Name -like "*Azure*" -or $_.DisplayName -like "*Azure*" -or $_.Name -like "*VSTS*" -or $_.DisplayName -like "*VSTS*" -or $_.Name -like "*vstsagent*" -or $_.DisplayName -like "*Agent*" -or $_.Name -like "vstsagent.*" } | ConvertTo-Json'
             ]
             
             self.logger.info(f"PowerShell command: {' '.join(cmd)}")
@@ -204,12 +213,16 @@ class AzureAgentServiceMonitor:
                     display_name = service.get('DisplayName', '').lower()
                     
                     # Check if it's likely an Azure DevOps agent service
+                    # Be more inclusive to catch all Azure DevOps agents
                     is_azure_agent = (
                         'azure' in name or 'azure' in display_name or
                         'vsts' in name or 'vsts' in display_name or
                         'vstsagent' in name or 'vstsagent' in display_name or
-                        ('agent' in display_name and ('devops' in display_name or 'azure' in display_name))
+                        name.startswith('vstsagent.') or  # Direct match for vstsagent services
+                        ('agent' in display_name and ('devops' in display_name or 'azure' in display_name or 'build' in display_name))
                     )
+                    
+                    self.logger.info(f"Service '{name}' ({'matched' if is_azure_agent else 'filtered out'}): display='{display_name}'")
                     
                     if is_azure_agent:
                         # Handle both string and numeric status codes
@@ -255,6 +268,8 @@ class AzureAgentServiceMonitor:
                         self.logger.info(f"Added Azure agent service: {service_info}")
                 
                 self.logger.info(f"Found {len(services)} Azure DevOps agent services")
+                # Debug: Log the final services data structure
+                self.logger.info(f"FINAL SERVICES DATA: {json.dumps(services, indent=2)}")
                 return services
                 
             except json.JSONDecodeError as e:
@@ -296,9 +311,44 @@ class AzureAgentServiceMonitor:
             organization: Azure DevOps organization name
             
         Returns:
-            Default service name
+            Default service name pattern
         """
+        # Azure DevOps agent services follow the pattern: vstsagent.{org}.{agent_name}.{machine_name}
+        # Since agent_name and machine_name are dynamic, we provide a realistic example
         if organization:
-            return f"vstsagent.{organization}.{repo_name}"
+            # Use a more realistic default that will fuzzy match better
+            return f"vstsagent.{organization}.PRAgent_SelfHosted.DESKTOP-U1OGO2O"
         else:
-            return f"vstsagent.{repo_name}" 
+            return f"vstsagent.unknown.PRAgent_SelfHosted.DESKTOP-U1OGO2O"
+
+    def suggest_service_names(self, repo_name: str, organization: str = None) -> List[str]:
+        """
+        Suggest likely Azure DevOps agent service names based on common patterns
+        
+        Args:
+            repo_name: Repository name
+            organization: Azure DevOps organization name
+            
+        Returns:
+            List of suggested service name patterns
+        """
+        suggestions = []
+        
+        if organization:
+            # Common patterns for Azure DevOps agents
+            suggestions.extend([
+                f"vstsagent.{organization}.{repo_name}.*",
+                f"vstsagent.{organization}.*{repo_name}*",
+                f"vstsagent.{organization}.*Agent*",
+                f"vstsagent.{organization}.*SelfHosted*",
+                f"vstsagent.{organization}.*"
+            ])
+        else:
+            suggestions.extend([
+                f"vstsagent.*{repo_name}*",
+                f"vstsagent.*Agent*",
+                f"vstsagent.*SelfHosted*",
+                f"vstsagent.*"
+            ])
+        
+        return suggestions 

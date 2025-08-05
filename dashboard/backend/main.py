@@ -1472,7 +1472,7 @@ class DashboardApplication:
                     try:
                         from services.git_utils import get_best_practices_content
                         from pr_agent.git_providers.github_provider import GithubProvider
-                        from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+                        
                         
                         git_provider = None
                         if repo.provider == 'github' and repo.github_token:
@@ -1486,11 +1486,7 @@ class DashboardApplication:
                                 logger.warning(f"Could not get repository object for {repo.name}: {repo_error}")
                                 # Continue without repo_obj, get_best_practices_content will try different approaches
                         elif repo.provider == 'azure_devops' and repo.azure_pat:
-                            # Configure Azure DevOps settings
-                            self._configure_azure_devops_settings(repo)
-                            git_provider = AzureDevopsProvider()
-                            # Set repository information
-                            git_provider.repo = repo.name
+                            git_provider = self._create_azure_devops_provider(repo)
                         
                         if git_provider:
                             best_practices_content = get_best_practices_content(git_provider)
@@ -1661,7 +1657,7 @@ class DashboardApplication:
                     try:
                         from services.git_utils import get_best_practices_content
                         from pr_agent.git_providers.github_provider import GithubProvider
-                        from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+                        
                         
                         git_provider = None
                         if repo.provider == 'github' and repo.github_token:
@@ -1675,11 +1671,7 @@ class DashboardApplication:
                                 logger.warning(f"Could not get repository object for {repo.name}: {repo_error}")
                                 # Continue without repo_obj, get_best_practices_content will try different approaches
                         elif repo.provider == 'azure_devops' and repo.azure_pat:
-                            # Configure Azure DevOps settings
-                            self._configure_azure_devops_settings(repo)
-                            git_provider = AzureDevopsProvider()
-                            # Set repository information
-                            git_provider.repo = repo.name
+                            git_provider = self._create_azure_devops_provider(repo)
                         else:
                             raise HTTPException(status_code=400, detail=f"Repository provider {repo.provider} not supported or tokens not configured")
                         
@@ -1769,7 +1761,7 @@ class DashboardApplication:
                 
                 # Set up git provider
                 from pr_agent.git_providers.github_provider import GithubProvider
-                from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+                
                 from datetime import datetime
                 
                 git_provider = None
@@ -2009,7 +2001,7 @@ This PR {'creates' if not repo.has_best_practices else 'updates'} the `best_prac
                     try:
                         from services.git_utils import get_pr_agent_config_content
                         from pr_agent.git_providers.github_provider import GithubProvider
-                        from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+                        
                         
                         git_provider = None
                         if repo.provider == 'github' and repo.github_token:
@@ -2018,11 +2010,7 @@ This PR {'creates' if not repo.has_best_practices else 'updates'} the `best_prac
                             git_provider.repo = repo.name
                             git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
                         elif repo.provider == 'azure_devops' and repo.azure_pat:
-                            # Configure Azure DevOps settings
-                            self._configure_azure_devops_settings(repo)
-                            git_provider = AzureDevopsProvider()
-                            # Set repository information
-                            git_provider.repo = repo.name
+                            git_provider = self._create_azure_devops_provider(repo)
                         else:
                             # Continue without repo_obj, get_pr_agent_config_content will try different approaches
                             logger.warning(f"No provider configured for repository {repo.name}, attempting direct fetch")
@@ -2122,7 +2110,7 @@ This PR {'creates' if not repo.has_best_practices else 'updates'} the `best_prac
                 
                 # Set up git provider
                 from pr_agent.git_providers.github_provider import GithubProvider
-                from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+                
                 from datetime import datetime
                 
                 git_provider = None
@@ -3073,7 +3061,26 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 # List all Azure agent services
                 services = monitor.list_azure_agent_services()
                 
-                return APIResponse(data={"services": services}, message="Azure agent services listed successfully")
+                # Generate suggestions based on repo info
+                from urllib.parse import urlparse
+                suggestions = []
+                if repo.url:
+                    parsed_url = urlparse(repo.url)
+                    if 'dev.azure.com' in parsed_url.netloc or 'visualstudio.com' in parsed_url.netloc:
+                        path_parts = parsed_url.path.strip('/').split('/')
+                        if len(path_parts) >= 2:
+                            organization = path_parts[0]
+                            repo_name = path_parts[-1] if path_parts[-1] != '_git' else path_parts[-2]
+                            suggestions = monitor.suggest_service_names(repo_name, organization)
+                
+                logger.info(f"API RESPONSE - Services: {services}")
+                logger.info(f"API RESPONSE - Suggestions: {suggestions}")
+                
+                return APIResponse(data={
+                    "services": services,
+                    "suggestions": suggestions,
+                    "total_found": len(services)
+                }, message=f"Found {len(services)} Azure agent services")
                 
             except Exception as e:
                 logger.error(f"Error listing Azure agent services: {e}")
@@ -4544,6 +4551,40 @@ This file can override any setting from the global PR-Agent configuration, inclu
             settings.azure_devops = {}
         settings.azure_devops['org'] = org_url
         settings.azure_devops['pat'] = repo.azure_pat
+    
+    def _create_azure_devops_provider(self, repo):
+        """Create a properly initialized Azure DevOps provider for file operations"""
+        try:
+            from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+        except ImportError as e:
+            logger.error(f"Failed to import AzureDevopsProvider: {e}")
+            return None
+        
+        # Configure Azure DevOps settings first
+        self._configure_azure_devops_settings(repo)
+        
+        try:
+            # Create a dummy PR URL for file access functionality
+            # The provider needs a PR URL structure to work properly
+            dummy_pr_url = f"{repo.url}/pullrequest/1"
+            git_provider = AzureDevopsProvider(pr_url=dummy_pr_url)
+            
+            # Set additional repository information
+            git_provider.repo = repo.name
+            git_provider.azure_pat = repo.azure_pat
+            
+            return git_provider
+        except Exception as e:
+            logger.warning(f"Failed to create Azure DevOps provider for {repo.name}: {e}")
+            try:
+                # Fallback: create provider without PR URL (some methods may not work)
+                git_provider = AzureDevopsProvider()
+                git_provider.repo = repo.name
+                git_provider.azure_pat = repo.azure_pat
+                return git_provider
+            except Exception as fallback_e:
+                logger.error(f"Failed to create fallback Azure DevOps provider for {repo.name}: {fallback_e}")
+                return None
 
     async def _test_github_token(self, repo):
         """Test GitHub token permissions"""
