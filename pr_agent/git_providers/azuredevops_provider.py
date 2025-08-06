@@ -248,7 +248,25 @@ class AzureDevopsProvider(GitProvider):
                 continue
 
             # Calculate the proper end offset - should be the length of the last line
-            end_line_offset = 9999  # Default fallback
+            end_line_offset = 9999  # Default fallback - use large number to span to end of line
+            if original_suggestion and original_suggestion.get('existing_code'):
+                existing_code = original_suggestion['existing_code']
+                # Split by newlines and handle trailing empty lines properly
+                existing_lines = existing_code.split('\n')
+                
+                # Remove empty lines from the end (caused by trailing newlines)
+                while existing_lines and not existing_lines[-1]:
+                    existing_lines.pop()
+                
+                if existing_lines:
+                    # Get the actual last line with content
+                    last_line = existing_lines[-1]
+                    end_line_offset = len(last_line) + 1  # +1 for end of line position
+                    get_logger().info(f"THREAD CONTEXT: Last line '{last_line}' (length={len(last_line)}), using offset={end_line_offset}")
+                else:
+                    get_logger().info(f"THREAD CONTEXT: No non-empty lines found in existing_code, using default offset={end_line_offset}")
+            else:
+                get_logger().info(f"THREAD CONTEXT: No existing_code available, using default offset={end_line_offset}")
             
             thread_context = CommentThreadContext(
                 file_path=relevant_file,
