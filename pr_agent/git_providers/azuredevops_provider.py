@@ -136,116 +136,106 @@ class AzureDevopsProvider(GitProvider):
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         """
-        Publishes code suggestions as comments on the PR.
+        Publishes code suggestions as review comments on the current PR.
+
+        For commit-eligible suggestions we now build a *proper mini-patch* inside a
+        ```suggestion``` block (-old / +new lines).  
+        This prevents Azure DevOps from keeping the original code at the end of the
+        suggestion while still showing the “Apply change” button.
         """
         post_parameters_list = []
         for idx, suggestion in enumerate(code_suggestions):
-            if not suggestion:  # Skip None suggestions
+            if not suggestion:
                 get_logger().warning(f"Skipping None suggestion #{idx + 1}")
                 continue
-            
-            body = suggestion['body']
-            original_suggestion = suggestion.get('original_suggestion', None)
-            
-            # Check if suggestion is commit-eligible - only convert non-commit-eligible suggestions to diff format
-            is_commit_eligible = original_suggestion.get('commit_eligible', True) if original_suggestion else True
-            
-            # Add comprehensive logging to understand what data we're sending to Azure DevOps
-            get_logger().info(f"=== AZURE SUGGESTION DEBUG #{idx + 1} ===")
-            get_logger().info(f"Original suggestion data structure:")
-            get_logger().info(f"  - commit_eligible: {original_suggestion.get('commit_eligible') if original_suggestion else 'N/A'}")
-            get_logger().info(f"  - has existing_code: {bool(original_suggestion and original_suggestion.get('existing_code')) if original_suggestion else False}")
-            get_logger().info(f"  - has improved_code: {bool(original_suggestion and original_suggestion.get('improved_code')) if original_suggestion else False}")
-            
-            if original_suggestion and original_suggestion.get('existing_code'):
-                existing_code = original_suggestion['existing_code']
-                get_logger().info(f"EXISTING_CODE ({len(existing_code)} chars):")
-                get_logger().info(f"'{existing_code}'")
-                get_logger().info(f"EXISTING_CODE lines: {existing_code.split(chr(10))}")
-            
-            if original_suggestion and original_suggestion.get('improved_code'):
-                improved_code = original_suggestion['improved_code']
-                get_logger().info(f"IMPROVED_CODE ({len(improved_code)} chars):")
-                get_logger().info(f"'{improved_code}'")
-                get_logger().info(f"IMPROVED_CODE lines: {improved_code.split(chr(10))}")
-            
-            get_logger().info(f"SUGGESTION BODY being sent to Azure:")
-            get_logger().info(f"'{body}'")
-            
-            # Extract the content within the suggestion block to see exactly what Azure will display
-            suggestion_match = re.search(r'```suggestion\n(.*?)\n```', body, re.DOTALL)
-            if suggestion_match:
-                suggestion_content = suggestion_match.group(1)
-                get_logger().info(f"SUGGESTION BLOCK CONTENT (what Azure will show literally):")
-                get_logger().info(f"'{suggestion_content}'")
-                get_logger().info(f"SUGGESTION BLOCK lines: {suggestion_content.split(chr(10))}")
-            
-            # Only convert ```suggestion blocks to ```diff blocks for NON-commit-eligible suggestions
-            # Commit-eligible suggestions need to stay as ```suggestion for Azure DevOps to show commit button
-            if not is_commit_eligible and original_suggestion and original_suggestion.get('existing_code') and original_suggestion.get('improved_code'):
-                try:
-                    existing_code = original_suggestion['existing_code'].rstrip() + "\n"
-                    improved_code = original_suggestion['improved_code'].rstrip() + "\n"
-                    
-                    diff = difflib.unified_diff(existing_code.split('\n'),
-                                                improved_code.split('\n'), n=999)
-                    patch_orig = "\n".join(diff)
-                    patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
-                    diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
-                    
-                    # replace ```suggestion ... ``` with diff_code, using regex:
-                    body = re.sub(r'```suggestion.*?```', diff_code, body, flags=re.DOTALL)
-                    
-                except Exception as e:
-                    get_logger().exception(f"Failed to convert suggestion to diff format, error: {e}")
-            
-            relevant_file = suggestion['relevant_file']
-            relevant_lines_start = suggestion['relevant_lines_start']
-            relevant_lines_end = suggestion['relevant_lines_end']
 
-            if not relevant_lines_start or relevant_lines_start == -1:
+            # ──────────────────────────────────────────────────────────────
+            #  Unpack input
+            # ──────────────────────────────────────────────────────────────
+            body                = suggestion["body"]
+            original_suggestion = suggestion.get("original_suggestion", {})
+            is_commit_eligible  = original_suggestion.get("commit_eligible", True)
+
+            existing_code  = original_suggestion.get("existing_code", "").rstrip("\n")
+            improved_code  = original_suggestion.get("improved_code", "").rstrip("\n")
+
+            # ──────────────────────────────────────────────────────────────
+            #  Build a proper mini-patch for commit-eligible suggestions ▲
+            # ──────────────────────────────────────────────────────────────
+            if (
+                is_commit_eligible
+                and existing_code
+                and improved_code
+            ):
+                patch_lines = (
+                    [f"-{line}" for line in existing_code.splitlines()] +
+                    [f"+{line}" for line in improved_code.splitlines()]
+                )
+
+                suggestion_block = "```suggestion\n" + "\n".join(patch_lines) + "\n```"
+
+                # Replace whatever ```suggestion…``` block is already in *body*
+                body = re.sub(
+                    r"```suggestion.*?```",
+                    suggestion_block,
+                    body,
+                    flags=re.DOTALL
+                )
+                get_logger().debug(
+                    f"Built mini-patch for suggestion #{idx + 1}:\n{suggestion_block}"
+                )
+
+            # ──────────────────────────────────────────────────────────────
+            #  Thread context
+            # ──────────────────────────────────────────────────────────────
+            relevant_file        = suggestion["relevant_file"]
+            relevant_lines_start = suggestion["relevant_lines_start"]
+            relevant_lines_end   = suggestion["relevant_lines_end"]
+
+            if relevant_lines_start in (None, -1):
                 get_logger().warning(
-                    f"Failed to publish code suggestion, relevant_lines_start is {relevant_lines_start}")
+                    f"Suggestion #{idx + 1}: invalid relevant_lines_start={relevant_lines_start}"
+                )
                 continue
-
             if relevant_lines_end < relevant_lines_start:
-                get_logger().warning(f"Failed to publish code suggestion, "
-                                       f"relevant_lines_end is {relevant_lines_end} and "
-                                       f"relevant_lines_start is {relevant_lines_start}")
+                get_logger().warning(
+                    f"Suggestion #{idx + 1}: relevant_lines_end ({relevant_lines_end}) "
+                    f"is before relevant_lines_start ({relevant_lines_start})"
+                )
                 continue
 
             thread_context = CommentThreadContext(
                 file_path=relevant_file,
                 right_file_start=CommentPosition(offset=1, line=relevant_lines_start),
-                right_file_end=CommentPosition(offset=1, line=relevant_lines_end))
-            
-            # Use codeChange comment type for suggestions to potentially improve Azure DevOps rendering
-            # comment_type: 0=unknown, 1=text, 2=codeChange, 3=system
-            comment_type = 2 if '```suggestion' in body or '```diff' in body else 1
-            comment = Comment(content=body, comment_type=comment_type)
-            thread = CommentThread(comments=[comment], thread_context=thread_context)
-            
-            # Log the exact payload being sent to Azure DevOps API
-            get_logger().info(f"AZURE API PAYLOAD for suggestion #{idx + 1}:")
-            get_logger().info(f"  - Comment content length: {len(body)} chars")
-            get_logger().info(f"  - Comment content: '{body}'")
-            get_logger().info(f"  - Thread context: {thread_context}")
-            get_logger().info(f"  - Project: {self.workspace_slug}")
-            get_logger().info(f"  - Repository: {self.repo_slug}")
-            get_logger().info(f"  - PR ID: {self.pr_num}")
-            
+                right_file_end=CommentPosition(offset=1, line=relevant_lines_end),
+            )
+
+            # Use codeChange (2) for anything that contains a suggestion/diff ▲
+            comment_type = 2 if "```suggestion" in body or "```diff" in body else 1
+            comment      = Comment(content=body, comment_type=comment_type)
+            thread       = CommentThread(comments=[comment], thread_context=thread_context)
+
+            # ──────────────────────────────────────────────────────────────
+            #  Publish
+            # ──────────────────────────────────────────────────────────────
             try:
                 api_response = self.azure_devops_client.create_thread(
-                    comment_thread=thread,
-                    project=self.workspace_slug,
-                    repository_id=self.repo_slug,
-                    pull_request_id=self.pr_num
+                    comment_thread   = thread,
+                    project          = self.workspace_slug,
+                    repository_id    = self.repo_slug,
+                    pull_request_id  = self.pr_num
                 )
-                get_logger().info(f"AZURE API RESPONSE for suggestion #{idx + 1}: {api_response}")
-                get_logger().info(f"=== END AZURE SUGGESTION DEBUG #{idx + 1} ===\n")
-            except Exception as e:
-                get_logger().error(f"Azure failed to publish code suggestion #{idx + 1}, error: {e}")
+                get_logger().info(
+                    f"Published suggestion #{idx + 1}: "
+                    f"commentId={api_response.comments[0].id}"
+                )
+            except Exception as exc:
+                get_logger().error(
+                    f"Azure DevOps failed to publish suggestion #{idx + 1}: {exc}"
+                )
+
         return True
+
 
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str, is_temporary: bool = False) -> Comment:
         # comment_id is actually thread_id
