@@ -208,8 +208,10 @@ class ConfigService:
                     # Skip ignore patterns for now
                     continue
                 else:
-                    # Everything else goes to main config
-                    main_config[section_key] = section_value
+                    # Everything else goes to main config under [config] section
+                    if 'config' not in main_config:
+                        main_config['config'] = {}
+                    main_config['config'][section_key] = section_value
             
             # Update main configuration file
             if main_config and self.config_path:
