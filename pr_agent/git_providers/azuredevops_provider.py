@@ -219,7 +219,10 @@ class AzureDevopsProvider(GitProvider):
                 right_file_start=CommentPosition(offset=1, line=relevant_lines_start),
                 right_file_end=CommentPosition(offset=1, line=relevant_lines_end))
             
-            comment = Comment(content=body, comment_type=1)
+            # Use codeChange comment type for suggestions to potentially improve Azure DevOps rendering
+            # comment_type: 0=unknown, 1=text, 2=codeChange, 3=system
+            comment_type = 2 if '```suggestion' in body or '```diff' in body else 1
+            comment = Comment(content=body, comment_type=comment_type)
             thread = CommentThread(comments=[comment], thread_context=thread_context)
             
             # Log the exact payload being sent to Azure DevOps API
