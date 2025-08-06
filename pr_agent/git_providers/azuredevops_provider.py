@@ -222,13 +222,24 @@ class AzureDevopsProvider(GitProvider):
             comment = Comment(content=body, comment_type=1)
             thread = CommentThread(comments=[comment], thread_context=thread_context)
             
+            # Log the exact payload being sent to Azure DevOps API
+            get_logger().info(f"AZURE API PAYLOAD for suggestion #{idx + 1}:")
+            get_logger().info(f"  - Comment content length: {len(body)} chars")
+            get_logger().info(f"  - Comment content: '{body}'")
+            get_logger().info(f"  - Thread context: {thread_context}")
+            get_logger().info(f"  - Project: {self.workspace_slug}")
+            get_logger().info(f"  - Repository: {self.repo_slug}")
+            get_logger().info(f"  - PR ID: {self.pr_num}")
+            
             try:
-                self.azure_devops_client.create_thread(
+                api_response = self.azure_devops_client.create_thread(
                     comment_thread=thread,
                     project=self.workspace_slug,
                     repository_id=self.repo_slug,
                     pull_request_id=self.pr_num
                 )
+                get_logger().info(f"AZURE API RESPONSE for suggestion #{idx + 1}: {api_response}")
+                get_logger().info(f"=== END AZURE SUGGESTION DEBUG #{idx + 1} ===\n")
             except Exception as e:
                 get_logger().error(f"Azure failed to publish code suggestion #{idx + 1}, error: {e}")
         return True
