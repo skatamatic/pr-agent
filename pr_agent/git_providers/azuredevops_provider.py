@@ -168,8 +168,7 @@ class AzureDevopsProvider(GitProvider):
                 and improved_code
             ):
                 patch_lines = (
-                    [f"-{line}" for line in existing_code.splitlines()] +
-                    [f"+{line}" for line in improved_code.splitlines()]
+                    [f"{line}" for line in improved_code.splitlines()]
                 )
 
                 suggestion_block = "```suggestion\n" + "\n".join(patch_lines) + "\n```"
