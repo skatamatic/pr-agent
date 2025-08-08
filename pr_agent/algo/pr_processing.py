@@ -81,12 +81,25 @@ async def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 owner, repo_name = git_provider.repo.split('/', 1) # Make sure git_provider.repo is in 'owner/repo' format
                 pr_number = git_provider.pr_num # Make sure git_provider.pr_num holds the PR number
                 
-                # The PR agent's GitHub token needs to be passed.
-                github_user_token = get_settings().get("GITHUB.USER_TOKEN", None)
-                if not github_user_token and get_settings().config.git_provider == "github":
-                     get_logger().warning("GITHUB.USER_TOKEN not set; C# service might fail if it needs to clone a private repo.")
+                # Get the appropriate access token based on git provider
+                git_provider_type = get_settings().config.get("git_provider", "github").lower()
+                access_token = None
                 
-                csharp_minimal_contexts_map = await get_csharp_minimal_context(owner, repo_name, pr_number, github_user_token)
+                if git_provider_type == "github":
+                    access_token = get_settings().get("GITHUB.USER_TOKEN", None)
+                    if not access_token:
+                        get_logger().warning("GITHUB.USER_TOKEN not set; C# service might fail if it needs to clone a private repo.")
+                elif git_provider_type == "azure":
+                    # For Azure DevOps, try different possible token settings
+                    access_token = (get_settings().get("AZURE_DEVOPS.PAT", None) or 
+                                  get_settings().get("AZURE_DEVOPS_PAT", None) or
+                                  get_settings().get("SYSTEM_ACCESSTOKEN", None))
+                    if not access_token:
+                        get_logger().warning("Azure DevOps PAT not set; C# service might fail if it needs to clone a private repo.")
+                else:
+                    get_logger().warning(f"Unknown git provider type: {git_provider_type}; C# service might fail.")
+                
+                csharp_minimal_contexts_map = await get_csharp_minimal_context(owner, repo_name, pr_number, access_token)
                 if csharp_minimal_contexts_map is None: # Handle API call failure or disabled service
                     csharp_minimal_contexts_map = {}
 
@@ -426,12 +439,25 @@ async def get_pr_context(git_provider: GitProvider):
                 owner, repo_name = git_provider.repo.split('/', 1) # Make sure git_provider.repo is in 'owner/repo' format
                 pr_number = git_provider.pr_num # Make sure git_provider.pr_num holds the PR number
                 
-                # The PR agent's GitHub token needs to be passed.
-                github_user_token = get_settings().get("GITHUB.USER_TOKEN", None)
-                if not github_user_token and get_settings().config.git_provider == "github":
-                     get_logger().warning("GITHUB.USER_TOKEN not set; C# service might fail if it needs to clone a private repo.")
+                # Get the appropriate access token based on git provider
+                git_provider_type = get_settings().config.get("git_provider", "github").lower()
+                access_token = None
                 
-                csharp_minimal_contexts_map = await get_csharp_minimal_context(owner, repo_name, pr_number, github_user_token)
+                if git_provider_type == "github":
+                    access_token = get_settings().get("GITHUB.USER_TOKEN", None)
+                    if not access_token:
+                        get_logger().warning("GITHUB.USER_TOKEN not set; C# service might fail if it needs to clone a private repo.")
+                elif git_provider_type == "azure":
+                    # For Azure DevOps, try different possible token settings
+                    access_token = (get_settings().get("AZURE_DEVOPS.PAT", None) or 
+                                  get_settings().get("AZURE_DEVOPS_PAT", None) or
+                                  get_settings().get("SYSTEM_ACCESSTOKEN", None))
+                    if not access_token:
+                        get_logger().warning("Azure DevOps PAT not set; C# service might fail if it needs to clone a private repo.")
+                else:
+                    get_logger().warning(f"Unknown git provider type: {git_provider_type}; C# service might fail.")
+                
+                csharp_minimal_contexts_map = await get_csharp_minimal_context(owner, repo_name, pr_number, access_token)
                 if csharp_minimal_contexts_map is None: # Handle API call failure or disabled service
                     csharp_minimal_contexts_map = {}
 

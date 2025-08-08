@@ -1,9 +1,9 @@
 # pr_agent/algo/csharp_context_client.py
 import httpx
+import json
+import ssl
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
-
-import ssl # Import the ssl module
 
 async def _login_and_get_service_token(client: httpx.AsyncClient, service_settings: dict) -> str | None:
     """
@@ -35,7 +35,7 @@ async def _login_and_get_service_token(client: httpx.AsyncClient, service_settin
         get_logger().error(f"[Context] - Exception during C# context service login: {e}", exc_info=True)
         return None
     
-async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int, github_token_for_repo_access: str) -> dict | None:
+async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int, access_token: str) -> dict | None:
     service_settings = get_settings().csharp_code_context_service
     if not service_settings.get("enabled", False):
         return None
@@ -43,9 +43,15 @@ async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int,
     base_url = service_settings.base_url.rstrip('/')
     analyze_endpoint = f"{base_url}/api/analyze"
 
-    if not github_token_for_repo_access: # This is the GitHub token for your service to access the repo
-        get_logger().error("[Context] - GitHub token (for repo access by C# service) is not available.")
+    if not access_token: # This is the access token for your service to access the repo
+        get_logger().error("[Context] - Access token (for repo access by C# service) is not available.")
         return None
+    
+    # Determine source control type based on git provider setting
+    git_provider_type = get_settings().config.get("git_provider", "github").lower()
+    is_github = git_provider_type == "github"
+    
+    get_logger().info(f"[Context] - Using source control type: {'GitHub' if is_github else 'Azure DevOps'} (git_provider={git_provider_type})")
 
     # For local development with self-signed certificates
     ssl_context = ssl.create_default_context()
@@ -61,14 +67,44 @@ async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int,
 
         headers = {"Authorization": f"Bearer {service_api_token}"}
 
+        # Build the new API payload format
+        if is_github:
+            # GitHub format
+            source_control_info = {
+                "isGitHub": True,
+                "token": access_token,
+                "org": "",  # GitHub doesn't use org in this context
+                "owner": owner,
+                "project": "",  # GitHub doesn't use project
+                "repo": repo_name
+            }
+        else:
+            # Azure DevOps format
+            # For Azure DevOps, owner might be "org/project" format, need to parse it
+            if '/' in owner:
+                org, project = owner.split('/', 1)
+            else:
+                # Fallback: use owner as both org and project
+                org = owner
+                project = owner
+            
+            source_control_info = {
+                "isGitHub": False,
+                "token": access_token,
+                "org": org,
+                "owner": org,  # In Azure DevOps, org and owner are typically the same
+                "project": project,
+                "repo": repo_name
+            }
+        
         payload_for_analysis = {
-            "token": github_token_for_repo_access, # GitHub token for the service to use for repo access
-            "owner": owner,
-            "repo": repo_name,
+            "sourceControlConnectionInfo": source_control_info,
             "prNumber": pr_number,
             "depth": service_settings.default_depth,
             "mode": service_settings.default_mode
         }
+        
+        get_logger().debug(f"[Context] - API payload: {json.dumps(payload_for_analysis, indent=2)}")
 
         try:
             response = await client.post(analyze_endpoint, json=payload_for_analysis, headers=headers)
