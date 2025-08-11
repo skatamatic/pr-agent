@@ -675,33 +675,70 @@ class AzureDevopsProvider(GitProvider):
         return self.pr.title
 
     def get_languages(self):
-        languages = []
-        files = self.azure_devops_client.get_items(
-            project=self.workspace_slug,
-            repository_id=self.repo_slug,
-            recursion_level="Full",
-            include_content_metadata=True,
-            include_links=False,
-            download=False,
-        )
-        for f in files:
-            if f.git_object_type == "blob":
-                file_name, file_extension = os.path.splitext(f.path)
-                languages.append(file_extension[1:])
+        """
+        Get language distribution for files changed in this PR, not the entire repository.
+        This aligns with the PR-focused approach used by get_diff_files().
+        """
+        try:
+            # Get PR iterations (same approach as get_diff_files)
+            iterations = self.azure_devops_client.get_pull_request_iterations(
+                repository_id=self.repo_slug,
+                pull_request_id=self.pr_num,
+                project=self.workspace_slug
+            )
+            
+            if not iterations:
+                get_logger().warning("Azure DevOps get_languages: No PR iterations found")
+                return {}
+                
+            iteration_id = iterations[-1].id  # Get the last iteration (most recent changes)
 
-        extension_counts = {}
-        for ext in languages:
-            if ext != "":
-                extension_counts[ext] = extension_counts.get(ext, 0) + 1
+            # Get changes for the iteration  
+            changes = self.azure_devops_client.get_pull_request_iteration_changes(
+                repository_id=self.repo_slug,
+                pull_request_id=self.pr_num,
+                iteration_id=iteration_id,
+                project=self.workspace_slug
+            )
+            
+            if not changes or not changes.change_entries:
+                get_logger().warning("Azure DevOps get_languages: No PR changes found")
+                return {}
 
-        total_extensions = sum(extension_counts.values())
+            # Extract file extensions from PR changes
+            languages = []
+            for change in changes.change_entries:
+                item = change.additional_properties.get('item', {})
+                path = item.get('path', None)
+                if path:
+                    file_name, file_extension = os.path.splitext(path)
+                    if file_extension:  # Only count files with extensions
+                        languages.append(file_extension[1:])
 
-        extension_percentages = {
-            ext: (count / total_extensions) * 100
-            for ext, count in extension_counts.items()
-        }
+            get_logger().debug(f"Azure DevOps get_languages: Found {len(languages)} files with extensions in PR changes")
 
-        return extension_percentages
+            if not languages:
+                get_logger().warning("Azure DevOps get_languages: No files with extensions found in PR")
+                return {}
+
+            # Calculate extension counts and percentages
+            extension_counts = {}
+            for ext in languages:
+                if ext != "":
+                    extension_counts[ext] = extension_counts.get(ext, 0) + 1
+
+            total_extensions = sum(extension_counts.values())
+            extension_percentages = {
+                ext: (count / total_extensions) * 100
+                for ext, count in extension_counts.items()
+            }
+            
+            get_logger().debug(f"Azure DevOps get_languages: PR language percentages: {extension_percentages}")
+            return extension_percentages
+            
+        except Exception as e:
+            get_logger().error(f"Azure DevOps get_languages: Failed to get PR languages: {e}")
+            return {}
 
     def get_pr_branch(self):
         try:
