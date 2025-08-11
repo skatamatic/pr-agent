@@ -721,20 +721,37 @@ class AzureDevopsProvider(GitProvider):
                 get_logger().warning("Azure DevOps get_languages: No files with extensions found in PR")
                 return {}
 
-            # Calculate extension counts and percentages
+            # Calculate extension counts
             extension_counts = {}
             for ext in languages:
                 if ext != "":
                     extension_counts[ext] = extension_counts.get(ext, 0) + 1
 
-            total_extensions = sum(extension_counts.values())
-            extension_percentages = {
-                ext: (count / total_extensions) * 100
-                for ext, count in extension_counts.items()
+            # Map extensions to language names using the language_extension_map
+            from pr_agent.config_loader import get_settings
+            language_extension_map_org = get_settings().language_extension_map_org
+            
+            # Create reverse mapping: extension -> language name
+            extension_to_language = {}
+            for language, extensions in language_extension_map_org.items():
+                for ext_with_dot in extensions:
+                    ext_without_dot = ext_with_dot.lstrip('.')
+                    extension_to_language[ext_without_dot] = language
+
+            # Convert extension counts to language counts
+            language_counts = {}
+            for ext, count in extension_counts.items():
+                language_name = extension_to_language.get(ext, ext)  # fallback to extension if not found
+                language_counts[language_name] = language_counts.get(language_name, 0) + count
+
+            total_extensions = sum(language_counts.values())
+            language_percentages = {
+                lang: (count / total_extensions) * 100
+                for lang, count in language_counts.items()
             }
             
-            get_logger().debug(f"Azure DevOps get_languages: PR language percentages: {extension_percentages}")
-            return extension_percentages
+            get_logger().debug(f"Azure DevOps get_languages: PR language percentages: {language_percentages}")
+            return language_percentages
             
         except Exception as e:
             get_logger().error(f"Azure DevOps get_languages: Failed to get PR languages: {e}")
