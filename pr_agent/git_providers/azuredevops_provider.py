@@ -360,6 +360,8 @@ class AzureDevopsProvider(GitProvider):
     def set_pr(self, pr_url: str):
         self.pr_url = pr_url
         self.workspace_slug, self.repo_slug, self.pr_num = self._parse_pr_url(pr_url)
+        # Set repo in "owner/repo" format to match GitHub provider behavior
+        self.repo = f"{self.workspace_slug}/{self.repo_slug}"
         self.pr = self._get_pr()
 
     def get_repo_settings(self):

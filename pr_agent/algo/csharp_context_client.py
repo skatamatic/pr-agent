@@ -80,13 +80,13 @@ async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int,
             }
         else:
             # Azure DevOps format
-            # For Azure DevOps, owner might be "org/project" format, need to parse it
-            if '/' in owner:
+            # For Azure DevOps, owner might be "workspace/project" format from Azure DevOps provider
+            if owner and '/' in owner:
                 org, project = owner.split('/', 1)
             else:
                 # Fallback: use owner as both org and project
-                org = owner
-                project = owner
+                org = owner if owner else ""
+                project = owner if owner else ""
             
             source_control_info = {
                 "isGitHub": False,
