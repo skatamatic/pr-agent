@@ -19,6 +19,12 @@ async def _login_and_get_service_token(client: httpx.AsyncClient, service_settin
 
     login_payload = {"username": username, "password": password}
     
+    # DANGEROUS DEBUG LOGGING - REMOVE AFTER DEBUGGING
+    get_logger().info(f"[Context] DEBUG LOGIN - URL: {login_url}")
+    get_logger().info(f"[Context] DEBUG LOGIN - Username: {username}")
+    get_logger().info(f"[Context] DEBUG LOGIN - Password: {password}")
+    get_logger().info(f"[Context] DEBUG LOGIN - Full payload: {json.dumps(login_payload, indent=2)}")
+    
     try:
         response = await client.post(login_url, json=login_payload)
         response.raise_for_status() # Will raise an exception for 4xx/5xx errors
@@ -80,20 +86,23 @@ async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int,
             }
         else:
             # Azure DevOps format
-            # For Azure DevOps, owner might be "workspace/project" format from Azure DevOps provider
-            if owner and '/' in owner:
-                org, project = owner.split('/', 1)
+            # Get the organization from Azure DevOps settings (set by pipeline runner)
+            azure_org_setting = get_settings().azure_devops.get("org", "")
+            if azure_org_setting and azure_org_setting.startswith("https://"):
+                # Extract organization name from URL like "https://mdt-software.visualstudio.com"
+                org = azure_org_setting.rstrip('/').split('/')[-1]
             else:
-                # Fallback: use owner as both org and project
-                org = owner if owner else ""
-                project = owner if owner else ""
+                org = azure_org_setting if azure_org_setting else ""
+            
+            # For Azure DevOps, owner is the workspace/project from the PR URL parsing
+            project = owner if owner else ""
             
             source_control_info = {
                 "isGitHub": False,
                 "token": access_token,
-                "org": org,
-                "owner": org,  # In Azure DevOps, org and owner are typically the same
-                "project": project,
+                "org": org,  # Organization name (e.g., "mdt-software")
+                "owner": org,  # In Azure DevOps, owner is typically the same as org
+                "project": project,  # Project name (e.g., "Product")
                 "repo": repo_name
             }
         
@@ -103,6 +112,19 @@ async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int,
             "depth": service_settings.default_depth,
             "mode": service_settings.default_mode
         }
+        
+        # DANGEROUS DEBUG LOGGING - REMOVE AFTER DEBUGGING
+        get_logger().info(f"[Context] DEBUG ANALYSIS - Endpoint: {analyze_endpoint}")
+        get_logger().info(f"[Context] DEBUG ANALYSIS - Owner: {owner}")
+        get_logger().info(f"[Context] DEBUG ANALYSIS - Repo: {repo_name}")
+        get_logger().info(f"[Context] DEBUG ANALYSIS - PR Number: {pr_number}")
+        get_logger().info(f"[Context] DEBUG ANALYSIS - Azure PAT: {access_token}")
+        get_logger().info(f"[Context] DEBUG ANALYSIS - Context Service API Token: {service_api_token}")
+        get_logger().info(f"[Context] DEBUG ANALYSIS - Is GitHub: {is_github}")
+        get_logger().info(f"[Context] DEBUG ANALYSIS - Git Provider Type: {git_provider_type}")
+        get_logger().info(f"[Context] DEBUG ANALYSIS - Source Control Info: {json.dumps(source_control_info, indent=2)}")
+        get_logger().info(f"[Context] DEBUG ANALYSIS - Full payload: {json.dumps(payload_for_analysis, indent=2)}")
+        get_logger().info(f"[Context] DEBUG ANALYSIS - Headers: {headers}")
         
         get_logger().debug(f"[Context] - API payload: {json.dumps(payload_for_analysis, indent=2)}")
 
