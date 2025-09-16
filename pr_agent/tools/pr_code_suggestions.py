@@ -260,11 +260,9 @@ class PRCodeSuggestions:
                             file_name = prediction.get("relevant_file", "unknown")
                             summary = prediction.get("one_sentence_summary", "no summary")[:50]
                             
-                            if score >= score_threshold:
-                                result_data["code_suggestions"].append(prediction)
-                                get_logger().info(f"[Filtering] - ✅ ACCEPTED suggestion {i+1} in call {j+1}: score={score} >= threshold={score_threshold} | {file_name} | {summary}...")
-                            else:
-                                get_logger().info(f"[Filtering] - ❌ REJECTED suggestion {i+1} in call {j+1}: score={score} < threshold={score_threshold} | {file_name} | {summary}...")
+                            # Add all suggestions to result_data - filtering will happen after reflection
+                            result_data["code_suggestions"].append(prediction)
+                            get_logger().debug(f"[Generating] - Added suggestion {i+1} in call {j+1}: score={score} | {file_name} | {summary}...")
                         except Exception as e:
                             get_logger().error(f"[Generating] - Error processing suggestion {i} in call {j}: {e}",
                                                artifact={"prediction": prediction})
@@ -291,15 +289,33 @@ class PRCodeSuggestions:
             patches_diff = "\n\n".join(self.patches_diff_list) if self.patches_diff_list else ""
             
             # Perform self-reflection using existing logic
+            get_logger().info(f'[Reflecting] - Calling self_reflect_on_suggestions with {len(result["code_suggestions"])} suggestions')
             response_reflect = await self.self_reflect_on_suggestions(
                 result['code_suggestions'],
                 patches_diff,
                 model
             )
+            get_logger().info(f'[Reflecting] - Self-reflection returned: {len(response_reflect) if response_reflect else 0} characters')
             
             if response_reflect:
                 get_logger().info('[Reflecting] - Analyzing reflection response and updating scores...')
+                
+                # Debug: Log scores BEFORE analyze_self_reflection_response
+                get_logger().info("[DEBUG] - Scores BEFORE analyze_self_reflection_response:")
+                for i, suggestion in enumerate(result["code_suggestions"]):
+                    score = suggestion.get("score", "unknown")
+                    file_name = suggestion.get("relevant_file", "unknown")
+                    get_logger().info(f"[DEBUG] - Pre-analysis suggestion {i+1}: score={score} | {file_name}")
+                
                 await self.analyze_self_reflection_response(result, response_reflect)
+                
+                # Debug: Log scores AFTER analyze_self_reflection_response
+                get_logger().info("[DEBUG] - Scores AFTER analyze_self_reflection_response:")
+                for i, suggestion in enumerate(result["code_suggestions"]):
+                    score = suggestion.get("score", "unknown")
+                    file_name = suggestion.get("relevant_file", "unknown")
+                    get_logger().info(f"[DEBUG] - Post-analysis suggestion {i+1}: score={score} | {file_name}")
+                    
             else:
                 get_logger().warning('[Reflecting] - Reflection failed, applying default scores')
                 # Default scores if reflection fails
@@ -1432,6 +1448,9 @@ class PRCodeSuggestions:
                 original_score = feedback.get("suggestion_score", 7)
                 score_reasoning = feedback.get("why", "No reasoning provided")
                 
+                # Debug: Log what we extracted from feedback
+                get_logger().info(f"[DEBUG] - Feedback for suggestion {i+1}: suggestion_score={original_score} | feedback_keys={list(feedback.keys())}")
+                
                 # Handle new commit eligibility scoring system (0-10) vs old boolean system
                 commit_eligibility_score = feedback.get("commit_eligibility_score")
                 commit_eligibility_reason = feedback.get("commit_eligibility_reason", "No eligibility reasoning provided")
@@ -1457,6 +1476,9 @@ class PRCodeSuggestions:
                 suggestion["score"] = original_score
                 suggestion["score_why"] = score_reasoning
                 suggestion["commit_eligible"] = commit_eligible
+                
+                # Debug: Log the score assignment
+                get_logger().info(f"[DEBUG] - Applied score to suggestion {i+1}: original_score={original_score} | file={suggestion_file}")
 
                 # Handle missing line number information
                 if 'relevant_lines_start' not in suggestion:
@@ -2331,13 +2353,9 @@ class PRCodeSuggestions:
                     
                     for i, prediction in enumerate(call_suggestions):
                         try:
-                            score = int(prediction.get("score", 1))
-                            
-                            if score >= score_threshold:
-                                data["code_suggestions"].append(prediction)
-                                filtering_stats['passed_threshold'] += 1
-                            else:
-                                filtering_stats['below_threshold'] += 1
+                            # Add all suggestions - filtering will happen after reflection
+                            data["code_suggestions"].append(prediction)
+                            filtering_stats['passed_threshold'] += 1  # Count all as "passed" for now
                                 
                         except Exception as e:
                             filtering_stats['processing_errors'] += 1
