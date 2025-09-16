@@ -16,8 +16,22 @@ class RetentionService:
     Database retention and management service with industry best practices
     """
     
-    def __init__(self, database_manager, db_path: str = "dashboard.db"):
+    def __init__(self, database_manager, db_path: str = None):
         self.database_manager = database_manager
+        # Use the database URL from settings instead of hardcoded path
+        if db_path is None:
+            from config import settings
+            import os
+            # Extract the database path from the database URL
+            database_url = os.getenv("DATABASE_URL", settings.database_url)
+            if database_url.startswith("sqlite:///"):
+                # Remove sqlite:/// prefix and handle relative/absolute paths
+                db_path = database_url[10:]  # Remove "sqlite:///"
+                if db_path.startswith("./"):
+                    db_path = db_path[2:]  # Remove "./" prefix for relative paths
+            else:
+                # Fallback for non-SQLite databases or malformed URLs
+                db_path = "dashboard.db"
         self.db_path = db_path
         
         # Initialize last backup time from database

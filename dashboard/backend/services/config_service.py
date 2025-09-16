@@ -53,12 +53,20 @@ class ConfigService:
     
     def _load_toml_file(self, file_path: Optional[Path]) -> Dict[str, Any]:
         """Load a TOML file safely, returning empty dict if file doesn't exist or has errors"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         try:
             if file_path and file_path.exists():
-                with open(file_path, 'r') as f:
-                    return toml.load(f)
+                logger.debug(f"Loading TOML file: {file_path}")
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    config = toml.load(f)
+                logger.debug(f"Successfully loaded TOML file: {file_path}")
+                return config
+            else:
+                logger.debug(f"TOML file does not exist: {file_path}")
         except Exception as e:
-            print(f"Warning: Failed to load {file_path}: {str(e)}")
+            logger.error(f"Failed to load TOML file {file_path}: {str(e)}")
         return {}
     
     def _get_default_config(self) -> Dict[str, Any]:
@@ -190,7 +198,15 @@ class ConfigService:
     
     async def update_config(self, config_data: Dict[str, Any]) -> Dict[str, str]:
         """Update PR-Agent configuration by distributing settings to appropriate files"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         try:
+            logger.info(f"Starting configuration update with {len(config_data)} sections")
+            
+            # Log the current paths being used
+            logger.info(f"Config paths - Main: {self.config_path}, Secrets: {self.secrets_path}, Context: {self.csharp_context_config_path}")
+            
             # Separate configuration into different files
             main_config = {}
             secrets_config = {}
@@ -198,36 +214,46 @@ class ConfigService:
             
             # Distribute settings to appropriate files
             for section_key, section_value in config_data.items():
+                logger.debug(f"Processing section: {section_key}")
                 if section_key == 'api_keys':
                     # API keys go to secrets file
                     secrets_config['api_keys'] = section_value
+                    logger.debug(f"Added {section_key} to secrets config")
                 elif section_key == 'csharp_code_context_service':
                     # Context service config goes to its own file
                     context_config['csharp_code_context_service'] = section_value
+                    logger.debug(f"Added {section_key} to context config")
                 elif section_key in ['ignore']:
                     # Skip ignore patterns for now
+                    logger.debug(f"Skipping {section_key} section")
                     continue
                 else:
                     # Everything else goes to main config under [config] section
                     if 'config' not in main_config:
                         main_config['config'] = {}
                     main_config['config'][section_key] = section_value
+                    logger.debug(f"Added {section_key} to main config")
             
             # Update main configuration file
             if main_config and self.config_path:
+                logger.info(f"Updating main config file: {self.config_path}")
                 await self._update_single_config_file(self.config_path, main_config, self.backup_path)
             
             # Update secrets file if we have API keys
             if secrets_config and self.secrets_path:
+                logger.info(f"Updating secrets file: {self.secrets_path}")
                 await self._update_single_config_file(self.secrets_path, secrets_config)
             
             # Update context service config if we have those settings
             if context_config and self.csharp_context_config_path:
+                logger.info(f"Updating context config file: {self.csharp_context_config_path}")
                 await self._update_single_config_file(self.csharp_context_config_path, context_config)
             
+            logger.info("Configuration update completed successfully")
             return {"status": "success", "message": "Configuration updated successfully across multiple files"}
             
         except Exception as e:
+            logger.error(f"Configuration update failed: {str(e)}")
             return {"status": "error", "message": f"Failed to update configuration: {str(e)}"}
     
     async def _update_single_config_file(self, file_path: Path, config_data: Dict[str, Any], backup_path: Optional[Path] = None):
@@ -245,23 +271,38 @@ class ConfigService:
     
     async def _surgical_update_toml(self, file_path: Path, new_data: Dict[str, Any]):
         """Update a TOML file by loading, merging, and saving - avoiding duplicate keys"""
-        if not file_path.exists():
-            # If file doesn't exist, create it with the new data
-            with open(file_path, 'w') as f:
-                toml.dump(new_data, f)
-            return
+        import logging
+        logger = logging.getLogger(__name__)
         
-        # Load existing config
-        existing_config = self._load_toml_file(file_path)
-        if not existing_config:
-            existing_config = {}
-        
-        # Deep merge the configurations
-        merged_config = self._deep_merge(existing_config, new_data)
-        
-        # Write the merged config back to the file
-        with open(file_path, 'w') as f:
-            toml.dump(merged_config, f)
+        try:
+            # Ensure parent directory exists
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            if not file_path.exists():
+                # If file doesn't exist, create it with the new data
+                logger.info(f"Creating new TOML file: {file_path}")
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    toml.dump(new_data, f)
+                return
+            
+            # Load existing config
+            existing_config = self._load_toml_file(file_path)
+            if not existing_config:
+                existing_config = {}
+            
+            # Deep merge the configurations
+            merged_config = self._deep_merge(existing_config, new_data)
+            
+            # Write the merged config back to the file
+            logger.info(f"Updating TOML file: {file_path}")
+            with open(file_path, 'w', encoding='utf-8') as f:
+                toml.dump(merged_config, f)
+            
+            logger.info(f"Successfully updated TOML file: {file_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to update TOML file {file_path}: {str(e)}")
+            raise
     
     def _find_config_changes(self, existing: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
         """Find what has actually changed between existing and new config"""

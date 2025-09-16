@@ -14,8 +14,8 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# Database configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./dashboard.db")
+# Database configuration - use settings.toml with environment variable override
+DATABASE_URL = os.getenv("DATABASE_URL", settings.database_url)
 
 # Create engine with appropriate configuration
 if DATABASE_URL.startswith("sqlite"):
@@ -157,6 +157,43 @@ def migrate_database():
                 conn.execute(text("ALTER TABLE operations ADD COLUMN estimated_dev_hours_saved FLOAT"))
                 conn.commit()
             print("Added estimated_dev_hours_saved column to operations table")
+        
+        # NEW: Multi-model AI/LLM Metrics columns
+        if not check_column_exists(engine, 'operations', 'current_step'):
+            print("Adding current_step column to operations table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE operations ADD COLUMN current_step VARCHAR"))
+                conn.commit()
+            print("Added current_step column to operations table")
+        
+        if not check_column_exists(engine, 'operations', 'ai_models_used'):
+            print("Adding ai_models_used column to operations table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE operations ADD COLUMN ai_models_used JSON"))
+                conn.commit()
+            print("Added ai_models_used column to operations table")
+        
+        if not check_column_exists(engine, 'operations', 'total_input_tokens'):
+            print("Adding total_input_tokens column to operations table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE operations ADD COLUMN total_input_tokens INTEGER"))
+                conn.commit()
+            print("Added total_input_tokens column to operations table")
+        
+        if not check_column_exists(engine, 'operations', 'total_output_tokens'):
+            print("Adding total_output_tokens column to operations table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE operations ADD COLUMN total_output_tokens INTEGER"))
+                conn.commit()
+            print("Added total_output_tokens column to operations table")
+        
+        # CRITICAL: AI Insights column for analytics data
+        if not check_column_exists(engine, 'operations', 'insights'):
+            print("Adding insights column to operations table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE operations ADD COLUMN insights JSON"))
+                conn.commit()
+            print("Added insights column to operations table")
     
     # Check if log_entries table needs job_id and operation_id columns
     if check_table_exists(engine, 'log_entries'):
@@ -505,6 +542,13 @@ def migrate_database():
                 conn.execute(text("ALTER TABLE repositories ADD COLUMN last_activity DATETIME"))
                 conn.commit()
             print("Added last_activity column to repositories table")
+        
+        if not check_column_exists(engine, 'repositories', 'description'):
+            print("Adding description column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN description TEXT"))
+                conn.commit()
+            print("Added description column to repositories table")
     
     # Check and fix metrics_aggregate table
     if check_table_exists(engine, 'metrics_aggregate'):
@@ -574,6 +618,138 @@ def migrate_database():
             """))
             conn.commit()
         print("Created metrics_config table")
+    
+    # Check for additional tables that might be missing
+    if not check_table_exists(engine, 'health_cache'):
+        print("Creating health_cache table...")
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE health_cache (
+                    id INTEGER PRIMARY KEY,
+                    service_name VARCHAR UNIQUE,
+                    status VARCHAR,
+                    message TEXT,
+                    details JSON,
+                    last_checked DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.commit()
+        print("Created health_cache table")
+    
+    if not check_table_exists(engine, 'users'):
+        print("Creating users table...")
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    username VARCHAR UNIQUE NOT NULL,
+                    email VARCHAR UNIQUE,
+                    password_hash VARCHAR NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    is_admin BOOLEAN DEFAULT FALSE,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_login DATETIME
+                )
+            """))
+            conn.commit()
+        print("Created users table")
+    else:
+        # Check for missing columns in existing users table
+        if not check_column_exists(engine, 'users', 'email'):
+            print("Adding email column to users table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR"))
+                conn.commit()
+            print("Added email column to users table")
+        
+        if not check_column_exists(engine, 'users', 'is_admin'):
+            print("Adding is_admin column to users table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT FALSE"))
+                conn.commit()
+            print("Added is_admin column to users table")
+        
+        if not check_column_exists(engine, 'users', 'updated_at'):
+            print("Adding updated_at column to users table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN updated_at DATETIME"))
+                conn.commit()
+            print("Added updated_at column to users table")
+    
+    if not check_table_exists(engine, 'notification_configs'):
+        print("Creating notification_configs table...")
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE notification_configs (
+                    id INTEGER PRIMARY KEY,
+                    service_type VARCHAR NOT NULL,
+                    name VARCHAR NOT NULL,
+                    enabled BOOLEAN DEFAULT TRUE,
+                    webhook_url VARCHAR,
+                    channel VARCHAR,
+                    smtp_server VARCHAR,
+                    smtp_port INTEGER,
+                    email_username VARCHAR,
+                    email_password VARCHAR,
+                    recipient_emails JSON,
+                    event_types JSON,
+                    repository_filter JSON,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_test DATETIME,
+                    test_status VARCHAR
+                )
+            """))
+            conn.commit()
+        print("Created notification_configs table")
+    
+    if not check_table_exists(engine, 'notification_events'):
+        print("Creating notification_events table...")
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE notification_events (
+                    id INTEGER PRIMARY KEY,
+                    event_type VARCHAR NOT NULL,
+                    message TEXT NOT NULL,
+                    context JSON,
+                    repository VARCHAR,
+                    job_id VARCHAR,
+                    operation_id VARCHAR,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    sent_at DATETIME,
+                    status VARCHAR DEFAULT 'pending',
+                    error_message TEXT,
+                    config_id INTEGER,
+                    retry_count INTEGER DEFAULT 0
+                )
+            """))
+            conn.commit()
+        print("Created notification_events table")
+    else:
+        # Check for missing columns in existing notification_events table
+        missing_event_columns = [
+            ('message', 'TEXT'),
+            ('context', 'JSON'),
+            ('repository', 'VARCHAR'),
+            ('job_id', 'VARCHAR'),
+            ('operation_id', 'VARCHAR'),
+            ('created_at', 'DATETIME'),
+            ('sent_at', 'DATETIME'),
+            ('status', 'VARCHAR'),
+            ('error_message', 'TEXT'),
+            ('config_id', 'INTEGER'),
+            ('retry_count', 'INTEGER')
+        ]
+        
+        for column_name, column_def in missing_event_columns:
+            if not check_column_exists(engine, 'notification_events', column_name):
+                print(f"Adding {column_name} column to notification_events table...")
+                with engine.connect() as conn:
+                    conn.execute(text(f"ALTER TABLE notification_events ADD COLUMN {column_name} {column_def}"))
+                    conn.commit()
+                print(f"Added {column_name} column to notification_events table")
     
     print("Database migration completed successfully!")
 
