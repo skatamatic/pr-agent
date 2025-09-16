@@ -47,23 +47,16 @@ except ImportError as e:
 class AzureDevopsProvider(GitProvider):
     
     def _debug_suggestion_structure(self, suggestion: dict, idx: int):
-        """Helper method to deeply debug suggestion structures"""
-        get_logger().info(f"🔍 AZURE DEBUG: ====== DEEP SUGGESTION ANALYSIS #{idx + 1} ======")
-        
+        """Debug suggestion structure - only enabled in debug mode"""
+        if get_logger().level > 10:  # Only log if debug level is enabled
+            return
+            
         try:
-            # Pretty print the full suggestion structure
-            suggestion_json = json.dumps(suggestion, indent=2, default=str)
-            get_logger().info(f"🔍 AZURE DEBUG: Full suggestion structure:")
-            get_logger().info(f"🔍 AZURE DEBUG: {suggestion_json}")
+            # Basic suggestion info for debugging
+            body_length = len(suggestion.get('body', ''))
+            get_logger().debug(f"Suggestion #{idx + 1}: body_length={body_length}")
         except Exception as e:
-            get_logger().warning(f"🔍 AZURE DEBUG: Could not serialize suggestion to JSON: {e}")
-        
-        # Check for potential sources of duplication
-        body = suggestion.get('body', '')
-        if body:
-            # Look for repeated lines or patterns
-            lines = body.split('\n')
-            get_logger().info(f"🔍 AZURE DEBUG: Body has {len(lines)} lines")
+            get_logger().debug(f"Error analyzing suggestion #{idx + 1}: {e}")
             
             # Check for line duplication
             seen_lines = {}
@@ -150,18 +143,8 @@ class AzureDevopsProvider(GitProvider):
             # Check if suggestion is commit-eligible - only convert non-commit-eligible suggestions to diff format
             is_commit_eligible = original_suggestion.get('commit_eligible', True) if original_suggestion else True
             
-            # Add comprehensive logging to understand what data we're sending to Azure DevOps
-            get_logger().info(f"=== AZURE SUGGESTION DEBUG #{idx + 1} ===")
-            get_logger().info(f"Original suggestion data structure:")
-            get_logger().info(f"  - commit_eligible: {original_suggestion.get('commit_eligible') if original_suggestion else 'N/A'}")
-            get_logger().info(f"  - has existing_code: {bool(original_suggestion and original_suggestion.get('existing_code')) if original_suggestion else False}")
-            get_logger().info(f"  - has improved_code: {bool(original_suggestion and original_suggestion.get('improved_code')) if original_suggestion else False}")
-            
-            if original_suggestion and original_suggestion.get('existing_code'):
-                existing_code = original_suggestion['existing_code']
-                get_logger().info(f"EXISTING_CODE ({len(existing_code)} chars):")
-                get_logger().info(f"'{existing_code}'")
-                get_logger().info(f"EXISTING_CODE lines: {existing_code.split(chr(10))}")
+            # Log basic suggestion info
+            get_logger().debug(f"Processing suggestion #{idx + 1}: commit_eligible={original_suggestion.get('commit_eligible') if original_suggestion else 'N/A'}")
             
             if original_suggestion and original_suggestion.get('improved_code'):
                 improved_code = original_suggestion['improved_code']
