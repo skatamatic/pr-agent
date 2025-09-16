@@ -225,7 +225,14 @@ class PRCodeSuggestions:
     async def _generate_suggestions_with_data(self, data):
         """Stage 2: Generate AI suggestions"""
         try:
+            # Log filtering configuration at start
+            score_threshold = max(1, int(get_settings().pr_code_suggestions.suggestions_score_threshold))
+            commitable_enabled = get_settings().pr_code_suggestions.commitable_code_suggestions
+            
             get_logger().info('[Generating] - Starting AI code suggestions generation...')
+            get_logger().info(f"[Filtering] - Score threshold: {score_threshold} (raw setting: {get_settings().pr_code_suggestions.suggestions_score_threshold})")
+            get_logger().info(f"[Filtering] - Commitable suggestions: {commitable_enabled}")
+            
             model = get_settings().config.model
             
             # Generate suggestions using existing logic from prepare_prediction_main
@@ -250,12 +257,14 @@ class PRCodeSuggestions:
                     for i, prediction in enumerate(predictions["code_suggestions"]):
                         try:
                             score = int(prediction.get("score", 1))
+                            file_name = prediction.get("relevant_file", "unknown")
+                            summary = prediction.get("one_sentence_summary", "no summary")[:50]
+                            
                             if score >= score_threshold:
                                 result_data["code_suggestions"].append(prediction)
+                                get_logger().info(f"[Filtering] - ✅ ACCEPTED suggestion {i+1} in call {j+1}: score={score} >= threshold={score_threshold} | {file_name} | {summary}...")
                             else:
-                                                            get_logger().info(
-                                f"[Generating] - Filtering out low-score suggestion {i} from call {j} (score={score}, threshold={score_threshold})",
-                                artifact=prediction)
+                                get_logger().info(f"[Filtering] - ❌ REJECTED suggestion {i+1} in call {j+1}: score={score} < threshold={score_threshold} | {file_name} | {summary}...")
                         except Exception as e:
                             get_logger().error(f"[Generating] - Error processing suggestion {i} in call {j}: {e}",
                                                artifact={"prediction": prediction})
@@ -985,14 +994,8 @@ class PRCodeSuggestions:
             else:
                 get_logger().info(f"[Generating] - Extracted {suggestions_count} code suggestions from AI response")
                 
-                # Log brief suggestion summaries (first 3 only)
-                for i, suggestion in enumerate(data.get("code_suggestions", [])[:3]):
-                    summary = suggestion.get('one_sentence_summary', 'No summary')[:80]
-                    file_name = suggestion.get('relevant_file', 'Unknown file')
-                    get_logger().info(f"[Generating] - {i+1}. {summary} ({file_name})")
-                
-                if suggestions_count > 3:
-                    get_logger().info(f"[Generating] - ... and {suggestions_count - 3} more suggestions")
+                # Log suggestion count only
+                get_logger().debug(f"[Generating] - Generated {suggestions_count} suggestions")
                     
         except Exception as e:
             get_logger().error("[Generating] - Failed to parse AI response into suggestions", 

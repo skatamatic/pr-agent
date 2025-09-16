@@ -113,19 +113,8 @@ async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int,
             "mode": service_settings.default_mode
         }
         
-        # DANGEROUS DEBUG LOGGING - REMOVE AFTER DEBUGGING
-        get_logger().info(f"[Context] DEBUG ANALYSIS - Endpoint: {analyze_endpoint}")
-        get_logger().info(f"[Context] DEBUG ANALYSIS - Owner: {owner}")
-        get_logger().info(f"[Context] DEBUG ANALYSIS - Repo: {repo_name}")
-        get_logger().info(f"[Context] DEBUG ANALYSIS - PR Number: {pr_number}")
-        get_logger().info(f"[Context] DEBUG ANALYSIS - Azure PAT: {access_token}")
-        get_logger().info(f"[Context] DEBUG ANALYSIS - Context Service API Token: {service_api_token}")
-        get_logger().info(f"[Context] DEBUG ANALYSIS - Is GitHub: {is_github}")
-        get_logger().info(f"[Context] DEBUG ANALYSIS - Git Provider Type: {git_provider_type}")
-        get_logger().info(f"[Context] DEBUG ANALYSIS - Source Control Info: {json.dumps(source_control_info, indent=2)}")
-        get_logger().info(f"[Context] DEBUG ANALYSIS - Full payload: {json.dumps(payload_for_analysis, indent=2)}")
-        get_logger().info(f"[Context] DEBUG ANALYSIS - Headers: {headers}")
-        
+        # Log context service request
+        get_logger().debug(f"[Context] - Requesting analysis for {owner}/{repo_name} PR #{pr_number}")
         get_logger().debug(f"[Context] - API payload: {json.dumps(payload_for_analysis, indent=2)}")
 
         try:
