@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Clock, Target, CheckCircle, AlertCircle, TrendingUp, BarChart3, FileText, Code, Activity, Key, ChevronLeft, ChevronRight } from 'lucide-react';
 import { formatInsightsTime } from '../utils/timeUtils';
+import apiService from '../services/api';
 
 const OperationInsights = ({ operationId, onClose }) => {
   const [insights, setInsights] = useState(null);
@@ -18,13 +19,9 @@ const OperationInsights = ({ operationId, onClose }) => {
   const fetchInsights = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`/api/operations/${operationId}`);
+      const response = await apiService.getOperation(operationId);
       
-      if (!response.ok) {
-        throw new Error(`Failed to fetch insights: ${response.statusText}`);
-      }
-      
-      const data = await response.json();
+      const data = response.data;
       setInsights(data.data.insights);
       
       // Set default tab based on available insights
