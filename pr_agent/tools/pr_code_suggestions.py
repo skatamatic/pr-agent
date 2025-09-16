@@ -1424,8 +1424,18 @@ class PRCodeSuggestions:
                     suggestion["commit_eligibility_score"] = 7 if commit_eligible else 3  # Default mapping
                     suggestion["commit_eligibility_reason"] = "Legacy boolean system - no detailed reasoning available"
                 
-                suggestion["score"] = original_score
-                suggestion["score_why"] = score_reasoning
+                # Apply score threshold filtering after self-reflection
+                score_threshold = max(1, int(get_settings().pr_code_suggestions.suggestions_score_threshold))
+                
+                if original_score >= score_threshold:
+                    suggestion["score"] = original_score
+                    suggestion["score_why"] = score_reasoning
+                    get_logger().info(f"[Post-Reflection Filtering] - ✅ ACCEPTED suggestion after reflection: score={original_score} >= threshold={score_threshold}")
+                else:
+                    # Mark suggestion for removal by setting score to 0
+                    suggestion["score"] = 0
+                    suggestion["score_why"] = f"Filtered out after reflection: score={original_score} < threshold={score_threshold}"
+                    get_logger().info(f"[Post-Reflection Filtering] - ❌ REJECTED suggestion after reflection: score={original_score} < threshold={score_threshold}")
                 suggestion["commit_eligible"] = commit_eligible
 
                 # Handle missing line number information
@@ -1696,7 +1706,15 @@ class PRCodeSuggestions:
 
     async def push_inline_code_suggestions(self, data):
         # Starting to format and publish code suggestions to PR
-        pass
+        
+        # Apply final filtering to remove suggestions with score=0 (filtered out after reflection)
+        if data and "code_suggestions" in data:
+            original_count = len(data["code_suggestions"])
+            data["code_suggestions"] = [s for s in data["code_suggestions"] if s.get("score", 0) > 0]
+            filtered_count = len(data["code_suggestions"])
+            
+            if filtered_count < original_count:
+                get_logger().info(f"[Final Filtering] - Removed {original_count - filtered_count} suggestions with score=0 after reflection")
 
         # Handle empty suggestions case
         if not data.get('code_suggestions'):
