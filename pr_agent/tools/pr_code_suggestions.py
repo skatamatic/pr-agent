@@ -307,6 +307,28 @@ class PRCodeSuggestions:
                     suggestion["score"] = 7
                     suggestion["score_why"] = ""
             
+            # FINAL FILTERING: Apply score threshold after all reflection stages are complete
+            score_threshold = max(1, int(get_settings().pr_code_suggestions.suggestions_score_threshold))
+            get_logger().info(f"[Final Filtering] - Applying final score threshold: {score_threshold}")
+            
+            original_count = len(result.get("code_suggestions", []))
+            filtered_suggestions = []
+            
+            for i, suggestion in enumerate(result.get("code_suggestions", [])):
+                current_score = suggestion.get("score", 0)
+                file_name = suggestion.get("relevant_file", "unknown")
+                summary = suggestion.get("one_sentence_summary", "no summary")[:50]
+                
+                if current_score >= score_threshold:
+                    filtered_suggestions.append(suggestion)
+                    get_logger().info(f"[Final Filtering] - ✅ ACCEPTED suggestion {i+1}: score={current_score} >= threshold={score_threshold} | {file_name} | {summary}...")
+                else:
+                    get_logger().info(f"[Final Filtering] - ❌ REJECTED suggestion {i+1}: score={current_score} < threshold={score_threshold} | {file_name} | {summary}...")
+            
+            result["code_suggestions"] = filtered_suggestions
+            final_count = len(filtered_suggestions)
+            
+            get_logger().info(f"[Final Filtering] - Filtered suggestions: {original_count} → {final_count} (threshold: {score_threshold})")
             get_logger().info('[Reflecting] - Self-reflection completed successfully')
             return result
             
@@ -1023,14 +1045,23 @@ class PRCodeSuggestions:
                         
                 if response_reflect:
                     get_logger().info("[Reflecting] - Self-reflection completed, analyzing results...")
+                    get_logger().info(f"[Reflecting] - Response length: {len(response_reflect)} chars")
                     await self.analyze_self_reflection_response(data, response_reflect)
                             
                     # Count suggestions after self-reflection filtering
                     final_count = len([s for s in data.get("code_suggestions", []) if s.get("score", 0) > 0])
                     get_logger().info(f"[Reflecting] - Kept {final_count} suggestions (from {suggestions_count} original)")
+                    
+                    # Debug: Log scores after analyze_self_reflection_response
+                    get_logger().info("[Reflecting] - Scores after analyze_self_reflection_response:")
+                    for i, suggestion in enumerate(data["code_suggestions"]):
+                        score = suggestion.get("score", "unknown")
+                        file_name = suggestion.get("relevant_file", "unknown")
+                        get_logger().info(f"[Reflecting] - Post-analysis suggestion {i+1}: score={score} | {file_name}")
                             
                 else:
                     get_logger().warning("[Reflecting] - Self-reflection failed, using default scores")
+                    get_logger().warning("[Reflecting] - ⚠️ OVERRIDING ALL SCORES TO 7 - This might be the problem!")
                     for i, suggestion in enumerate(data["code_suggestions"]):
                         suggestion["score"] = 7
                         suggestion["score_why"] = "Self-reflection unavailable"
@@ -1044,10 +1075,8 @@ class PRCodeSuggestions:
                     suggestion["score_why"] = "Self-reflection failed"
         else:
             get_logger().info("[Reflecting] - Skipping self-reflection (will be handled in separate stage)")
-            # Apply default scores when skipping self-reflection
-            for i, suggestion in enumerate(data["code_suggestions"]):
-                suggestion["score"] = 7  # Default score for multi-stage processing
-                suggestion["score_why"] = "Default score - reflection pending"
+            # Don't override scores when skipping self-reflection - they may have been set by a previous stage
+            get_logger().debug("[Reflecting] - Preserving existing scores from previous stage")
 
         # AI metrics are tracked via _track_ai_metrics() and sent via _send_aggregated_ai_metrics()
 
@@ -1424,18 +1453,9 @@ class PRCodeSuggestions:
                     suggestion["commit_eligibility_score"] = 7 if commit_eligible else 3  # Default mapping
                     suggestion["commit_eligibility_reason"] = "Legacy boolean system - no detailed reasoning available"
                 
-                # Apply score threshold filtering after self-reflection
-                score_threshold = max(1, int(get_settings().pr_code_suggestions.suggestions_score_threshold))
-                
-                if original_score >= score_threshold:
-                    suggestion["score"] = original_score
-                    suggestion["score_why"] = score_reasoning
-                    get_logger().info(f"[Post-Reflection Filtering] - ✅ ACCEPTED suggestion after reflection: score={original_score} >= threshold={score_threshold}")
-                else:
-                    # Mark suggestion for removal by setting score to 0
-                    suggestion["score"] = 0
-                    suggestion["score_why"] = f"Filtered out after reflection: score={original_score} < threshold={score_threshold}"
-                    get_logger().info(f"[Post-Reflection Filtering] - ❌ REJECTED suggestion after reflection: score={original_score} < threshold={score_threshold}")
+                # Apply the reflected score (filtering will happen later in _self_reflect_on_result)
+                suggestion["score"] = original_score
+                suggestion["score_why"] = score_reasoning
                 suggestion["commit_eligible"] = commit_eligible
 
                 # Handle missing line number information
@@ -1464,27 +1484,6 @@ class PRCodeSuggestions:
                             
                 except Exception as e:
                     get_logger().warning(f"[Reflecting] - Error checking duplicate code for suggestion {i+1}: {e}")
-
-                # Log analytics statistics if enabled
-                try:
-                    if get_settings().config.publish_output:
-                        if not suggestion["score"]:
-                            analytics_score = -1
-                        else:
-                            analytics_score = int(suggestion["score"])
-                        
-                        label = suggestion.get("label", "").lower().strip().replace('<br>', ' ')
-                        
-                        suggestion_statistics_dict = {
-                            'score': analytics_score,
-                            'label': label,
-                            'file': suggestion_file
-                        }
-                        
-                        pass
-                        
-                except Exception as e:
-                    get_logger().warning(f"[Reflecting] - Failed to log analytics for suggestion {i+1}: {e}")
 
                 # Track score distribution
                 final_score = suggestion.get("score", 0)
@@ -1707,15 +1706,6 @@ class PRCodeSuggestions:
     async def push_inline_code_suggestions(self, data):
         # Starting to format and publish code suggestions to PR
         
-        # Apply final filtering to remove suggestions with score=0 (filtered out after reflection)
-        if data and "code_suggestions" in data:
-            original_count = len(data["code_suggestions"])
-            data["code_suggestions"] = [s for s in data["code_suggestions"] if s.get("score", 0) > 0]
-            filtered_count = len(data["code_suggestions"])
-            
-            if filtered_count < original_count:
-                get_logger().info(f"[Final Filtering] - Removed {original_count - filtered_count} suggestions with score=0 after reflection")
-
         # Handle empty suggestions case
         if not data.get('code_suggestions'):
             get_logger().warning("⚠️ No suggestions available to publish")
