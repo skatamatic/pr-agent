@@ -4,6 +4,7 @@ import os
 from typing import Union
 
 from pr_agent.agent.pr_agent import PRAgent
+from pr_agent.algo.pr_filters import check_pr_filters
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.utils import apply_repo_settings
@@ -116,6 +117,40 @@ async def run_action():
                 return
             
             if pr_url:
+                # Apply PR filters before processing
+                try:
+                    git_provider = get_git_provider(pr_url)
+                    # Determine which commands will be run to pass appropriate command context
+                    commands_to_run = []
+                    if auto_describe is None or is_true(auto_describe):
+                        commands_to_run.append("describe")
+                    if auto_review is None or is_true(auto_review):
+                        commands_to_run.append("review")
+                    if auto_improve is None or is_true(auto_improve):
+                        commands_to_run.append("improve")
+                    
+                    # Check filters for each command that will be run
+                    for command in commands_to_run:
+                        filter_result = check_pr_filters(git_provider, command)
+                        
+                        if filter_result.should_terminate:
+                            get_logger().error(f"PR filter triggered termination: {filter_result.reason}")
+                            return
+                        elif filter_result.should_skip:
+                            get_logger().info(f"PR filter triggered skip for {command}: {filter_result.reason}")
+                            # Remove the skipped command from the list
+                            if command in commands_to_run:
+                                commands_to_run.remove(command)
+                    
+                    # If all commands were skipped, exit early
+                    if not commands_to_run:
+                        get_logger().info("All commands skipped by PR filters")
+                        return
+                        
+                except Exception as e:
+                    get_logger().error(f"Failed to apply PR filters, terminating for safety: {e}")
+                    return
+                
                 # legacy - supporting both GITHUB_ACTION and GITHUB_ACTION_CONFIG
                 auto_review = get_setting_or_env("GITHUB_ACTION.AUTO_REVIEW", None)
                 if auto_review is None:

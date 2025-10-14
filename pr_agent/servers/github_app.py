@@ -13,6 +13,7 @@ from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent
+from pr_agent.algo.pr_filters import check_pr_filters
 from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import (get_git_provider,
@@ -140,6 +141,20 @@ async def handle_new_pr_opened(body: Dict[str, Any],
     if "This PR was created automatically via PR Agent Dashboard" in pr_description:
         get_logger().info(f"Skipping PR processing - PR was created by PR Agent Dashboard: {api_url=}")
         return {}
+    
+    # Apply PR filters
+    try:
+        git_provider = get_git_provider_with_context(api_url)
+        filter_result = check_pr_filters(git_provider)
+        
+        if filter_result.should_terminate:
+            get_logger().info(f"PR filter triggered termination: {filter_result.reason}")
+            return {}
+        elif filter_result.should_skip:
+            get_logger().info(f"PR filter triggered skip: {filter_result.reason}")
+            return {}
+    except Exception as e:
+        get_logger().warning(f"Failed to apply PR filters, continuing: {e}")
     
     if action in get_settings().github_app.handle_pr_actions:  # ['opened', 'reopened', 'ready_for_review']
         # logic to ignore PRs with specific titles (e.g. "[Auto] ...")

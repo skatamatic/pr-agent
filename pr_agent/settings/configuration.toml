@@ -191,6 +191,14 @@ num_retrieved_snippets = 5
 
 [pr_config]
 
+[pr_filters]
+# Skip PR description generation if description already has text
+skip_if_description_exists = true
+# Terminate entire job if [no_bots] is found anywhere in PR description
+terminate_on_no_bots = true
+# Skip PR if it exceeds this many total lines changed (added + deleted)
+max_lines_changed = 1000
+
 [pr_help_docs]
 repo_url = ""
 repo_default_branch = "main"

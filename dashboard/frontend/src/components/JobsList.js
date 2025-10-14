@@ -22,7 +22,9 @@ import {
   DollarSign,
   TrendingUp,
   BarChart3,
-  Play
+  Play,
+  Trash2,
+  MoreVertical
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
@@ -45,7 +47,11 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
   const [lastRefreshTrigger, setLastRefreshTrigger] = useState(null);
   const [showInsights, setShowInsights] = useState(false);
   const [selectedOperationId, setSelectedOperationId] = useState(null);
-  const { showError } = useContext(ToastContext);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [jobToDelete, setJobToDelete] = useState(null);
+  const [deletionPreview, setDeletionPreview] = useState(null);
+  const [showJobActionsMenu, setShowJobActionsMenu] = useState(null);
+  const { showError, showSuccess } = useContext(ToastContext);
   const highlightedJobRef = useRef(null);
   const highlightedOperationRef = useRef(null);
 
@@ -104,6 +110,20 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
       }
     }
   }, [jobs]);
+
+  // Close actions menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (showJobActionsMenu && !event.target.closest('.relative')) {
+        setShowJobActionsMenu(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showJobActionsMenu]);
 
   // Listen for external filter events from status cards (convert to tab selection)
   useEffect(() => {
@@ -297,6 +317,41 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
     }
   };
 
+  const handleDeleteJob = async (job) => {
+    try {
+      // Get deletion preview
+      const response = await api.getJobDeletionPreview(job.job_id);
+      setDeletionPreview(response.data);
+      setJobToDelete(job);
+      setShowDeleteDialog(true);
+      setShowJobActionsMenu(null); // Close actions menu
+    } catch (error) {
+      showError('Failed to get deletion preview: ' + (error.response?.data?.detail || error.message));
+    }
+  };
+
+  const confirmDeleteJob = async () => {
+    if (!jobToDelete) return;
+    
+    try {
+      await api.deleteJob(jobToDelete.job_id);
+      showSuccess('Job and related data deleted successfully');
+      setShowDeleteDialog(false);
+      setJobToDelete(null);
+      setDeletionPreview(null);
+      // Refresh jobs list
+      fetchAllJobs();
+    } catch (error) {
+      showError('Failed to delete job: ' + (error.response?.data?.detail || error.message));
+    }
+  };
+
+  const cancelDeleteJob = () => {
+    setShowDeleteDialog(false);
+    setJobToDelete(null);
+    setDeletionPreview(null);
+  };
+
   const getJobStatusIcon = (status) => {
     const getStatusText = (status) => {
       switch (status) {
@@ -465,7 +520,16 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
 
   // Apply client-side filtering
   const filteredJobs = jobs.filter(job => {
-    const matchesStatus = selectedFilters.status === 'all' || job.status === selectedFilters.status;
+    // Apply status filter (same logic as applyClientSideFilters)
+    let matchesStatus = true;
+    if (selectedFilters.status !== 'all') {
+      if (selectedFilters.status === 'running') {
+        matchesStatus = ['running', 'pending'].includes(job.status);
+      } else {
+        matchesStatus = job.status === selectedFilters.status;
+      }
+    }
+    
     const matchesJobType = selectedFilters.jobType === 'all' || job.job_type === selectedFilters.jobType;
     const matchesRepository = selectedFilters.repository === 'all' || job.repository === selectedFilters.repository;
     
@@ -791,6 +855,29 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
                             PR
                           </a>
                         )}
+                        
+                        {/* Actions Menu */}
+                        <div className="relative">
+                          <button
+                            onClick={() => setShowJobActionsMenu(showJobActionsMenu === job.job_id ? null : job.job_id)}
+                            className="inline-flex items-center px-3 py-1 border border-gray-300 dark:border-gray-600 rounded-md text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                          >
+                            <MoreVertical className="h-3 w-3 mr-1" />
+                            Actions
+                          </button>
+                          
+                          {showJobActionsMenu === job.job_id && (
+                            <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-md shadow-lg z-10 border border-gray-200 dark:border-gray-700">
+                              <button
+                                onClick={() => handleDeleteJob(job)}
+                                className="block w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                              >
+                                <Trash2 className="h-4 w-4 inline mr-2" />
+                                Delete Job & Related Data
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1041,6 +1128,88 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
             setSelectedOperationId(null);
           }}
         />
+      )}
+
+      {/* Job Deletion Confirmation Dialog */}
+      {showDeleteDialog && jobToDelete && deletionPreview && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full mx-4">
+            <div className="p-6">
+              <div className="flex items-center mb-4">
+                <div className="flex-shrink-0">
+                  <Trash2 className="h-6 w-6 text-red-600 dark:text-red-400" />
+                </div>
+                <div className="ml-3">
+                  <h3 className="text-lg font-medium text-gray-900 dark:text-white">
+                    Delete Job & Related Data
+                  </h3>
+                </div>
+              </div>
+              
+              <div className="mb-4">
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                  This will permanently delete:
+                </p>
+                
+                <div className="bg-gray-50 dark:bg-gray-700 rounded-md p-4 mb-4">
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-600 dark:text-gray-400">Job:</span>
+                      <span className="font-medium text-gray-900 dark:text-white">
+                        #{jobToDelete.job_id} ({jobToDelete.job_type})
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600 dark:text-gray-400">Operations:</span>
+                      <span className="font-medium text-gray-900 dark:text-white">
+                        {deletionPreview.operations_count} associated operations
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600 dark:text-gray-400">Logs:</span>
+                      <span className="font-medium text-gray-900 dark:text-white">
+                        {deletionPreview.logs_count} log entries
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600 dark:text-gray-400">Repository:</span>
+                      <span className="font-medium text-gray-900 dark:text-white">
+                        {deletionPreview.repository}
+                      </span>
+                    </div>
+                    {deletionPreview.cost_impact !== 0 && (
+                      <div className="flex justify-between border-t border-gray-200 dark:border-gray-600 pt-2">
+                        <span className="text-gray-600 dark:text-gray-400">Cost Impact:</span>
+                        <span className={`font-medium ${deletionPreview.cost_impact < 0 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}`}>
+                          ${deletionPreview.cost_impact.toFixed(2)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                
+                <p className="text-sm text-red-600 dark:text-red-400 font-medium">
+                  ⚠️ This action cannot be undone.
+                </p>
+              </div>
+              
+              <div className="flex justify-end space-x-3">
+                <button
+                  onClick={cancelDeleteJob}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmDeleteJob}
+                  className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-md transition-colors"
+                >
+                  Delete Job & Data
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

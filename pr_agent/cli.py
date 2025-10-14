@@ -4,6 +4,7 @@ import os
 
 from pr_agent.agent.pr_agent import PRAgent, commands
 from pr_agent.algo.utils import get_version
+from pr_agent.algo.pr_filters import check_pr_filters
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger, setup_logger
 
@@ -110,6 +111,22 @@ def run(inargs=None, args=None):
     async def inner():
         result = None
         try:
+            # Apply PR filters before processing
+            try:
+                from pr_agent.git_providers.utils import get_git_provider_with_context
+                git_provider = get_git_provider_with_context(target_url)
+                filter_result = check_pr_filters(git_provider, command)
+                
+                if filter_result.should_terminate:
+                    get_logger().error(f"PR filter triggered termination: {filter_result.reason}")
+                    return False
+                elif filter_result.should_skip:
+                    get_logger().info(f"PR filter triggered skip: {filter_result.reason}")
+                    return True
+            except Exception as e:
+                get_logger().error(f"Failed to apply PR filters, terminating for safety: {e}")
+                return False
+            
             # Create job context if dashboard integration is available
             if DASHBOARD_AVAILABLE and dashboard_enabled:
                 try:

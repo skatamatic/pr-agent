@@ -16,7 +16,8 @@ import {
   Clock,
   Zap,
   Key,
-  RotateCcw
+  RotateCcw,
+  Shield
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
@@ -175,6 +176,15 @@ const PrAgentConfigEditor = ({
         { key: 'dashboard.webhook_url', label: 'Webhook URL', type: 'text', description: 'Dashboard webhook URL for notifications' },
         { key: 'dashboard.api_key_encrypted', label: 'Dashboard API Key', type: 'password', description: 'API key for dashboard authentication' }
       ]
+    },
+    pr_filters: {
+      title: 'PR Filters',
+      icon: Shield,
+      fields: [
+        { key: 'pr_filters.skip_if_description_exists', label: 'Skip if description exists', type: 'boolean', description: 'Skip description generation if PR already has text' },
+        { key: 'pr_filters.terminate_on_no_bots', label: 'Terminate on [no_bots]', type: 'boolean', description: 'Terminate entire job if [no_bots] found in PR description' },
+        { key: 'pr_filters.max_lines_changed', label: 'Max lines changed', type: 'number', min: 0, max: 100000, description: 'Skip PRs exceeding this many lines changed (0 = disabled)' }
+      ]
     }
   };
 
@@ -297,6 +307,16 @@ const PrAgentConfigEditor = ({
   const handleSave = async () => {
     setSaving(true);
     try {
+      // Validate PR filters configuration
+      if (overrides.pr_filters?.max_lines_changed !== undefined) {
+        const maxLines = overrides.pr_filters.max_lines_changed;
+        if (maxLines < 0 || maxLines > 100000) {
+          showError('Max lines changed must be between 0 and 100,000');
+          setSaving(false);
+          return;
+        }
+      }
+      
       // Convert overrides to TOML format
       const tomlContent = generateTomlFromOverrides(overrides);
       

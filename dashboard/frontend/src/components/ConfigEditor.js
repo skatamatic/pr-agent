@@ -20,7 +20,8 @@ import {
   Folder,
   Check,
   RefreshCw,
-  FolderOpen
+  FolderOpen,
+  Shield
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
@@ -250,6 +251,13 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           confidence_threshold: configData.pr_dev_time_estimation?.confidence_threshold || 'medium'
         },
         
+        // PR Filters settings
+        pr_filters: {
+          skip_if_description_exists: configData.pr_filters?.skip_if_description_exists !== false,
+          terminate_on_no_bots: configData.pr_filters?.terminate_on_no_bots !== false,
+          max_lines_changed: configData.pr_filters?.max_lines_changed || 1000
+        },
+        
         // API keys (don't expose actual values for security)
         api_keys: {
           openai: configData.api_keys?.openai ? '***' : '',
@@ -328,6 +336,11 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           fallback_to_heuristic: false,
           estimation_timeout_seconds: 30,
           confidence_threshold: 'medium'
+        },
+        pr_filters: {
+          skip_if_description_exists: true,
+          terminate_on_no_bots: true,
+          max_lines_changed: 1000
         },
         api_keys: {
           openai: '',
@@ -901,6 +914,17 @@ const ConfigEditor = ({ navigationTarget = null }) => {
               >
                 <Clock className="h-4 w-4 mr-3 flex-shrink-0" />
                 <span className="truncate">Time Estimation</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('pr-filters')}
+                className={`w-full flex items-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === 'pr-filters'
+                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                }`}
+              >
+                <Shield className="h-4 w-4 mr-3 flex-shrink-0" />
+                <span className="truncate">PR Filters</span>
               </button>
               <button
                 onClick={() => setActiveTab('advanced')}
@@ -1644,6 +1668,116 @@ const ConfigEditor = ({ navigationTarget = null }) => {
         </SectionHeader>
            </div>
          )}
+
+        {/* PR Filters Tab */}
+        {activeTab === 'pr-filters' && (
+          <div className="space-y-8 animate-in slide-in-from-right-4 fade-in duration-300">
+            <SectionHeader title="PR Filters" icon={Shield}>
+              <div className="space-y-6 pt-4">
+                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-4">
+                  <div className="flex items-center">
+                    <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2" />
+                    <span className="text-blue-800 dark:text-blue-200 text-sm">
+                      Configure filters to prevent PR-Agent from running in specific scenarios. These filters apply to all entry points (CLI, GitHub Actions, Azure DevOps, etc.).
+                    </span>
+                  </div>
+                </div>
+
+                {/* Skip if description exists */}
+                <div className="flex items-center space-x-3">
+                  <input
+                    type="checkbox"
+                    id="skip-if-description-exists"
+                    checked={config.pr_filters?.skip_if_description_exists || false}
+                    onChange={(e) => updateConfig('pr_filters.skip_if_description_exists', e.target.checked)}
+                    disabled={!editing}
+                    className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                  <label htmlFor="skip-if-description-exists" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Skip description generation if PR already has text
+                    <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                      Prevents overwriting existing PR descriptions when running the describe command
+                    </span>
+                  </label>
+                </div>
+
+                {/* Terminate on no_bots */}
+                <div className="flex items-center space-x-3">
+                  <input
+                    type="checkbox"
+                    id="terminate-on-no-bots"
+                    checked={config.pr_filters?.terminate_on_no_bots || false}
+                    onChange={(e) => updateConfig('pr_filters.terminate_on_no_bots', e.target.checked)}
+                    disabled={!editing}
+                    className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                  <label htmlFor="terminate-on-no-bots" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Terminate entire job if [no_bots] found in PR description
+                    <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                      Stops all PR-Agent processing if the PR description contains [no_bots] anywhere
+                    </span>
+                  </label>
+                </div>
+
+                {/* Max lines changed */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Maximum lines changed limit
+                    <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                      Skip PRs that exceed this many total lines changed (added + deleted). Set to 0 to disable.
+                    </span>
+                  </label>
+                  <input
+                    type="number"
+                    value={config.pr_filters?.max_lines_changed || 1000}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value) || 0;
+                      if (value < 0) {
+                        setErrors(prev => ({...prev, 'pr_filters.max_lines_changed': 'Value must be 0 or greater'}));
+                      } else if (value > 100000) {
+                        setErrors(prev => ({...prev, 'pr_filters.max_lines_changed': 'Value must be 100,000 or less'}));
+                      } else {
+                        setErrors(prev => {
+                          const newErrors = {...prev};
+                          delete newErrors['pr_filters.max_lines_changed'];
+                          return newErrors;
+                        });
+                      }
+                      updateConfig('pr_filters.max_lines_changed', value);
+                    }}
+                    min="0"
+                    max="100000"
+                    disabled={!editing}
+                    className={`w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed ${
+                      errors['pr_filters.max_lines_changed'] 
+                        ? 'border-red-300 dark:border-red-600 bg-red-50 dark:bg-red-900/20' 
+                        : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800'
+                    } text-gray-900 dark:text-white`}
+                  />
+                  {errors['pr_filters.max_lines_changed'] && (
+                    <p className="text-red-600 dark:text-red-400 text-xs mt-1">{errors['pr_filters.max_lines_changed']}</p>
+                  )}
+                </div>
+
+                {/* Filter behavior info */}
+                <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md p-4">
+                  <div className="flex items-start">
+                    <Check className="h-5 w-5 text-green-600 dark:text-green-400 mr-2 mt-0.5" />
+                    <div className="text-green-800 dark:text-green-200 text-sm">
+                      <p className="font-medium mb-1">Filter Behavior:</p>
+                      <ul className="list-disc list-inside space-y-1 text-xs">
+                        <li><strong>Skip:</strong> Skips the specific command but allows other commands to run</li>
+                        <li><strong>Terminate:</strong> Stops the entire job immediately, no other commands will run</li>
+                        <li>Filters are applied early in the processing pipeline to avoid unnecessary work</li>
+                        <li>All filters work across CLI, GitHub Actions, Azure DevOps, and other entry points</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </SectionHeader>
+          </div>
+        )}
 
         {/* Advanced Settings Tab */}
         {activeTab === 'advanced' && (

@@ -4,6 +4,7 @@ from functools import partial
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.cli_args import CliArgs
+from pr_agent.algo.pr_filters import check_pr_filters
 from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.utils import apply_repo_settings
@@ -63,6 +64,22 @@ class PRAgent:
             action, *args = list(lexer)
         else:
             action, *args = request
+
+        # Apply PR filters before processing
+        try:
+            from pr_agent.git_providers.utils import get_git_provider_with_context
+            git_provider = get_git_provider_with_context(pr_url)
+            filter_result = check_pr_filters(git_provider, action)
+            
+            if filter_result.should_terminate:
+                get_logger().error(f"PR filter triggered termination: {filter_result.reason}")
+                return False
+            elif filter_result.should_skip:
+                get_logger().info(f"PR filter triggered skip: {filter_result.reason}")
+                return True
+        except Exception as e:
+            get_logger().error(f"Failed to apply PR filters, terminating for safety: {e}")
+            return False
 
         # validate args
         is_valid, arg = CliArgs.validate_user_args(args)

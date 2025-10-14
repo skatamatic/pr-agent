@@ -125,6 +125,11 @@ class ConfigService:
                 "fallback_to_heuristic": True,
                 "estimation_timeout_seconds": 30,
                 "confidence_threshold": "medium"
+            },
+            "pr_filters": {
+                "skip_if_description_exists": True,
+                "terminate_on_no_bots": True,
+                "max_lines_changed": 1000
             }
         }
     

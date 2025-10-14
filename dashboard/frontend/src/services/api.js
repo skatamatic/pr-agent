@@ -71,6 +71,12 @@ const apiService = {
   getJobs: (params = {}) => api.get('/api/jobs', { params }),
   getJob: (id) => api.get(`/api/jobs/${id}`),
   getJobOperations: (jobId) => api.get(`/api/jobs/${jobId}/operations`),
+  getJobDeletionPreview: (jobId) => api.get(`/api/jobs/${jobId}/deletion-preview`),
+  deleteJob: (jobId) => api.delete(`/api/jobs/${jobId}`),
+  
+  // Data Cleanup
+  previewCleanup: (data) => api.post('/api/admin/cleanup/preview', data),
+  executeCleanup: (data) => api.post('/api/admin/cleanup/execute', data),
   
   // Operations (legacy support)
   getOperations: (params = {}) => api.get('/api/operations', { params }),

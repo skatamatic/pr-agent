@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useContext } from 'react';
-import { Activity, AlertCircle, CheckCircle, GitPullRequest, Settings, Code, FileText, BarChart3, GitBranch, Bell, Shield, Database, TrendingUp, RefreshCw } from 'lucide-react';
+import { Activity, AlertCircle, CheckCircle, GitPullRequest, Settings, Code, FileText, BarChart3, GitBranch, Bell, Shield, Database, TrendingUp, RefreshCw, Trash2 } from 'lucide-react';
 import StatusOverview from './components/StatusOverview';
 import JobsList from './components/JobsList';
 import LogsViewer from './components/LogsViewer';
@@ -9,6 +9,7 @@ import RepositoryManager from './components/RepositoryManager';
 import Notifications from './components/Notifications';
 import AdminPanel from './components/AdminPanel';
 import MetricsView from './components/MetricsView';
+import DataCleanup from './components/DataCleanup';
 import SettingsDropdown from './components/SettingsDropdown';
 import Login from './components/Login';
 import { ThemeProvider } from './contexts/ThemeContext';
@@ -393,7 +394,8 @@ function Dashboard() {
     { id: 'repositories', name: 'Repositories', icon: GitBranch },
     { id: 'notifications', name: 'Notifications', icon: Bell },
     { id: 'config', name: 'AI Config', icon: Settings },
-    { id: 'admin', name: 'Retention', icon: Database }
+    { id: 'admin', name: 'Retention', icon: Database },
+    { id: 'cleanup', name: 'Data Cleanup', icon: Trash2 }
   ];
 
   const developerTab = developerMode ? { id: 'developer', name: 'Developer', icon: Code } : null;
@@ -621,6 +623,8 @@ function Dashboard() {
           return <Notifications />;
         case 'admin':
           return <AdminPanel />;
+        case 'cleanup':
+          return <DataCleanup />;
         case 'config':
           return <ConfigEditor navigationTarget={configNavigationTarget} />;
         case 'developer':

@@ -368,6 +368,112 @@ class DashboardApplication:
             """Get operations for a specific job"""
             operations = await self.cached_job_service.get_operations(job_id=job_id)
             return APIResponse(data={"operations": operations})
+        
+        @self.app.get("/api/jobs/{job_id}/deletion-preview")
+        async def get_job_deletion_preview(job_id: str):
+            """Get preview of what will be deleted with a specific job"""
+            try:
+                from services.job_deletion_service import JobDeletionService
+                job_deletion_service = JobDeletionService(self.database_manager, self.metrics_service)
+                preview = await job_deletion_service.get_job_deletion_preview(job_id)
+                return APIResponse(data=preview)
+            except ValueError as e:
+                raise HTTPException(status_code=404, detail=str(e))
+            except Exception as e:
+                logger.error(f"Error getting job deletion preview: {e}")
+                raise HTTPException(status_code=500, detail="Failed to get deletion preview")
+        
+        @self.app.delete("/api/jobs/{job_id}")
+        async def delete_job(job_id: str):
+            """Delete a specific job and all related data"""
+            try:
+                from services.job_deletion_service import JobDeletionService
+                job_deletion_service = JobDeletionService(self.database_manager, self.metrics_service)
+                result = await job_deletion_service.delete_job_and_related_data(job_id)
+                return APIResponse(data=result, message="Job and related data deleted successfully")
+            except ValueError as e:
+                raise HTTPException(status_code=404, detail=str(e))
+            except Exception as e:
+                logger.error(f"Error deleting job: {e}")
+                raise HTTPException(status_code=500, detail="Failed to delete job")
+
+        # Data Cleanup endpoints
+        @self.app.post("/api/admin/cleanup/preview")
+        async def preview_cleanup(request: dict):
+            """Preview cleanup impact before execution"""
+            try:
+                from services.data_cleanup_service import DataCleanupService
+                from datetime import datetime
+                
+                # Validate required fields
+                if 'cutoff_date' not in request:
+                    raise HTTPException(status_code=400, detail="cutoff_date is required")
+                
+                # Parse and validate date
+                try:
+                    cutoff_date_str = request['cutoff_date']
+                    if cutoff_date_str.endswith('Z'):
+                        cutoff_date_str = cutoff_date_str.replace('Z', '+00:00')
+                    cutoff_date = datetime.fromisoformat(cutoff_date_str)
+                except (ValueError, TypeError) as e:
+                    raise HTTPException(status_code=400, detail=f"Invalid cutoff_date format: {e}")
+                
+                repository = request.get('repository')
+                
+                data_cleanup_service = DataCleanupService(
+                    self.database_manager, 
+                    self.metrics_service, 
+                    self.retention_service
+                )
+                
+                preview = await data_cleanup_service.get_cleanup_preview(cutoff_date, repository)
+                return APIResponse(data=preview)
+                
+            except HTTPException:
+                # Re-raise HTTP exceptions as-is
+                raise
+            except Exception as e:
+                logger.error(f"Error getting cleanup preview: {e}")
+                raise HTTPException(status_code=500, detail="Failed to get cleanup preview")
+        
+        @self.app.post("/api/admin/cleanup/execute")
+        async def execute_cleanup(request: dict):
+            """Execute data cleanup with automatic backup"""
+            try:
+                from services.data_cleanup_service import DataCleanupService
+                from datetime import datetime
+                
+                # Validate required fields
+                if 'cutoff_date' not in request:
+                    raise HTTPException(status_code=400, detail="cutoff_date is required")
+                
+                # Parse and validate date
+                try:
+                    cutoff_date_str = request['cutoff_date']
+                    if cutoff_date_str.endswith('Z'):
+                        cutoff_date_str = cutoff_date_str.replace('Z', '+00:00')
+                    cutoff_date = datetime.fromisoformat(cutoff_date_str)
+                except (ValueError, TypeError) as e:
+                    raise HTTPException(status_code=400, detail=f"Invalid cutoff_date format: {e}")
+                
+                repository = request.get('repository')
+                data_types = request.get('data_types', ['operations', 'jobs', 'logs', 'notification_events'])
+                
+                data_cleanup_service = DataCleanupService(
+                    self.database_manager, 
+                    self.metrics_service, 
+                    self.retention_service
+                )
+                
+                result = await data_cleanup_service.execute_cleanup(cutoff_date, repository, data_types)
+                return APIResponse(data=result, message="Data cleanup completed successfully")
+                
+            except HTTPException:
+                # Re-raise HTTP exceptions as-is
+                raise
+            except Exception as e:
+                logger.error(f"Error executing cleanup: {e}")
+                raise HTTPException(status_code=500, detail="Failed to execute cleanup")
 
         # NEW: Job and Operation Management API Endpoints for PR-Agent Integration
         @self.app.post("/api/jobs/create")
