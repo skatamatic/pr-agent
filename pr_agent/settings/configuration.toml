@@ -196,8 +196,10 @@ num_retrieved_snippets = 5
 skip_if_description_exists = true
 # Terminate entire job if [no_bots] is found anywhere in PR description
 terminate_on_no_bots = true
-# Skip PR if it exceeds this many total lines changed (added + deleted)
+# Terminate PR processing if it exceeds this many total lines changed (added + deleted), posts explanatory comment
 max_lines_changed = 1000
+# Skip ALL tools if PR-Agent has already processed this PR (detects "PR Reviewer Guide 🔍" header)
+skip_if_review_suggestions_exist = false
 
 [pr_help_docs]
 repo_url = ""

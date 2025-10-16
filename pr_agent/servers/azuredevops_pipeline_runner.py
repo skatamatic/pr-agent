@@ -121,23 +121,58 @@ async def run_action():
             commands_to_run.append("review")
         if auto_improve is None or is_true(auto_improve):
             commands_to_run.append("improve")
-        
+
+        # Track skipped operations for dashboard signaling
+        skipped_operations = []
+
         # Check filters for each command that will be run
-        for command in commands_to_run:
+        for command in commands_to_run[:]:
             filter_result = check_pr_filters(git_provider, command)
-            
+
             if filter_result.should_terminate:
                 get_logger().error(f"PR filter triggered termination: {filter_result.reason}")
                 return
             elif filter_result.should_skip:
                 get_logger().info(f"PR filter triggered skip for {command}: {filter_result.reason}")
+                # Track skipped operation for later dashboard signaling
+                skipped_operations.append({
+                    'command': command,
+                    'reason': filter_result.reason
+                })
                 # Remove the skipped command from the list
                 if command in commands_to_run:
                     commands_to_run.remove(command)
-        
+
         # If all commands were skipped, exit early
         if not commands_to_run:
             get_logger().info("All commands skipped by PR filters")
+            try:
+                if DASHBOARD_AVAILABLE and dashboard_enabled:
+                    from pr_agent.log.job_context import job_context, JobType, operation_context, OperationType, update_operation_status, update_job_status
+                    # Create minimal job context for skipped operations
+                    with job_context(
+                        job_type=JobType.WEBHOOK,
+                        source="azuredevops_pipeline",
+                        repository=repository,
+                        pr_url=pr_url,
+                        trigger_event="pullrequest"
+                    ) as job_id:
+                        # Create skipped operations
+                        for skipped_op in skipped_operations:
+                            if skipped_op['command'] == "review":
+                                op_type = OperationType.REVIEW
+                            elif skipped_op['command'] == "improve":
+                                op_type = OperationType.IMPROVE
+                            elif skipped_op['command'] == "describe":
+                                op_type = OperationType.DESCRIBE
+                            else:
+                                op_type = OperationType.STARTING
+                            with operation_context(operation_type=op_type, command=skipped_op['command'], repo=repository, pr_url=pr_url):
+                                update_operation_status('skipped', result_data={ 'reason': skipped_op['reason'] })
+                        # Mark job as skipped
+                        update_job_status('skipped', result_summary={ 'reason': 'All commands skipped by PR filters' })
+            except Exception as e:
+                get_logger().debug(f"Failed to signal skipped operations/job: {e}")
             return
             
     except Exception as e:

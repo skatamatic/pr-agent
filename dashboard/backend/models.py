@@ -326,6 +326,7 @@ class JobStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    SKIPPED = "skipped"
 
 class OperationType(str, Enum):
     # PR-Agent commands/tools

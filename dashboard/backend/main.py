@@ -564,6 +564,7 @@ class DashboardApplication:
                     'completed': JobStatus.COMPLETED,
                     'failed': JobStatus.FAILED,
                     'cancelled': JobStatus.CANCELLED,
+                    'skipped': JobStatus.SKIPPED,
                     
                     # Common variations and aliases
                     'canceled': JobStatus.CANCELLED,           # US spelling

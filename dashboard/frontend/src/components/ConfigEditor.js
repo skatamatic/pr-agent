@@ -255,7 +255,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
         pr_filters: {
           skip_if_description_exists: configData.pr_filters?.skip_if_description_exists !== false,
           terminate_on_no_bots: configData.pr_filters?.terminate_on_no_bots !== false,
-          max_lines_changed: configData.pr_filters?.max_lines_changed || 1000
+          max_lines_changed: configData.pr_filters?.max_lines_changed || 1000,
+          skip_if_review_suggestions_exist: configData.pr_filters?.skip_if_review_suggestions_exist || false
         },
         
         // API keys (don't expose actual values for security)
@@ -340,7 +341,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
         pr_filters: {
           skip_if_description_exists: true,
           terminate_on_no_bots: true,
-          max_lines_changed: 1000
+          max_lines_changed: 1000,
+          skip_if_review_suggestions_exist: false
         },
         api_keys: {
           openai: '',
@@ -1724,7 +1726,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                     Maximum lines changed limit
                     <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                      Skip PRs that exceed this many total lines changed (added + deleted). Set to 0 to disable.
+                      Terminate processing of PRs that exceed this many total lines changed (added + deleted) and post explanatory comment. Set to 0 to disable.
                     </span>
                   </label>
                   <input
@@ -1759,6 +1761,24 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   )}
                 </div>
 
+                {/* Skip if review suggestions exist */}
+                <div className="flex items-center space-x-3">
+                  <input
+                    type="checkbox"
+                    id="skip-if-review-suggestions-exist"
+                    checked={config.pr_filters?.skip_if_review_suggestions_exist || false}
+                    onChange={(e) => updateConfig('pr_filters.skip_if_review_suggestions_exist', e.target.checked)}
+                    disabled={!editing}
+                    className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                  <label htmlFor="skip-if-review-suggestions-exist" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Skip ALL tools if PR-Agent has already processed this PR
+                    <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                      Prevents duplicate processing by detecting the "PR Reviewer Guide 🔍" header left by previous runs
+                    </span>
+                  </label>
+                </div>
+
                 {/* Filter behavior info */}
                 <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md p-4">
                   <div className="flex items-start">
@@ -1767,7 +1787,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                       <p className="font-medium mb-1">Filter Behavior:</p>
                       <ul className="list-disc list-inside space-y-1 text-xs">
                         <li><strong>Skip:</strong> Skips the specific command but allows other commands to run</li>
-                        <li><strong>Terminate:</strong> Stops the entire job immediately, no other commands will run</li>
+                        <li><strong>Terminate:</strong> Stops the entire job immediately, no other commands will run (may post explanatory comment)</li>
                         <li>Filters are applied early in the processing pipeline to avoid unnecessary work</li>
                         <li>All filters work across CLI, GitHub Actions, Azure DevOps, and other entry points</li>
                       </ul>

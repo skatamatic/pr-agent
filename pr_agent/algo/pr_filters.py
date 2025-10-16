@@ -71,24 +71,53 @@ def check_pr_filters(git_provider: GitProvider, command: str = None) -> PRFilter
                     reason="[no_bots] found in PR description, terminating entire job"
                 )
         
-        # Filter 3: Skip if PR is too large (too many lines changed)
+        # Filter 3: Terminate if PR is too large (too many lines changed)
         max_lines = filters.get("max_lines_changed", 0)
         if max_lines > 0:
             try:
                 total_lines = calculate_total_lines_changed(git_provider)
                 get_logger().debug(f"PR size check: {total_lines} lines changed (limit: {max_lines})")
                 if total_lines > max_lines:
-                    get_logger().info(f"PR filter: Too large ({total_lines} > {max_lines}), skipping")
+                    get_logger().info(f"PR filter: Too large ({total_lines} > {max_lines}), terminating")
+
+                    # Add a comment to inform the user about the size limit
+                    try:
+                        comment_body = f"This PR is too large for automated analysis. The maximum allowed diff size is {max_lines} lines (this PR has {total_lines} lines changed)."
+                        git_provider.publish_comment(comment_body)
+                        get_logger().info("Posted size limit comment to PR")
+                    except Exception as comment_error:
+                        get_logger().warning(f"Failed to post size limit comment: {comment_error}")
+                        # Continue with termination even if comment posting fails
+
                     return PRFilterResult(
-                        should_skip=True,
-                        reason=f"PR too large ({total_lines} lines changed > {max_lines} limit), skipping"
+                        should_terminate=True,
+                        reason=f"PR too large ({total_lines} lines changed > {max_lines} limit), terminating entire job"
                     )
             except Exception as e:
                 get_logger().error(f"Failed to calculate PR line count for filtering: {e}")
-                # If we can't calculate line count, we should be conservative and skip
+                # If we can't calculate line count, we should be conservative and terminate
+                return PRFilterResult(
+                    should_terminate=True,
+                    reason=f"Failed to calculate PR size for filtering: {e}"
+                )
+
+        # Filter 4: Skip all tools if PR-Agent has already processed this PR
+        if filters.get("skip_if_review_suggestions_exist", False):
+            try:
+                has_existing_comments = check_for_existing_pr_agent_comments(git_provider)
+                get_logger().debug(f"Existing PR-Agent comments check: {has_existing_comments}")
+                if has_existing_comments:
+                    get_logger().info(f"PR filter: PR-Agent has already processed this PR, skipping {command}")
+                    return PRFilterResult(
+                        should_skip=True,
+                        reason=f"PR-Agent has already processed this PR, skipping {command} command"
+                    )
+            except Exception as e:
+                get_logger().error(f"Failed to check for existing PR-Agent comments: {e}")
+                # If we can't check, we should be conservative and skip
                 return PRFilterResult(
                     should_skip=True,
-                    reason=f"Failed to calculate PR size for filtering: {e}"
+                    reason=f"Failed to check for existing PR-Agent comments: {e}"
                 )
         
         get_logger().debug("All PR filters passed")
@@ -184,28 +213,73 @@ def should_terminate_job(git_provider: GitProvider) -> Tuple[bool, str]:
     return False, ""
 
 
+def check_for_existing_pr_agent_comments(git_provider: GitProvider) -> bool:
+    """
+    Check if PR already has PR-Agent generated comments (reviews or suggestions)
+
+    Looks for the specific header left by the review tool: "PR Reviewer Guide 🔍"
+    If present, it means PR-Agent has already processed this PR at least once.
+
+    Args:
+        git_provider: Git provider instance to access PR data
+
+    Returns:
+        True if PR-Agent review comments already exist
+    """
+    try:
+        comments = list(git_provider.get_issue_comments())
+
+        # Look for the specific header left by PR-Agent's review tool
+        review_header = "PR Reviewer Guide 🔍"
+
+        for comment in comments:
+            comment_body = comment.body if hasattr(comment, 'body') else str(comment)
+            if not comment_body:
+                continue
+
+            # Check if this comment starts with the review header (case-sensitive)
+            try:
+                if comment_body.startswith(review_header):
+                    get_logger().debug(f"Found existing PR-Agent review header: {review_header}")
+                    return True
+            except (UnicodeDecodeError, UnicodeEncodeError):
+                # If there are encoding issues, try a different approach
+                try:
+                    if str(comment_body).startswith(review_header):
+                        get_logger().debug(f"Found existing PR-Agent review header (encoding fallback): {review_header}")
+                        return True
+                except Exception:
+                    continue
+
+        return False
+
+    except Exception as e:
+        get_logger().warning(f"Failed to check for existing PR-Agent comments: {e}")
+        return False
+
+
 def should_skip_large_pr(git_provider: GitProvider) -> Tuple[bool, str]:
     """
     Check if PR should be skipped due to size
-    
+
     Args:
         git_provider: Git provider instance to access PR data
-        
+
     Returns:
         Tuple of (should_skip, reason)
     """
     settings = get_settings()
     filters = settings.get("pr_filters", {})
-    
+
     max_lines = filters.get("max_lines_changed", 0)
     if max_lines <= 0:
         return False, ""
-    
+
     try:
         total_lines = calculate_total_lines_changed(git_provider)
         if total_lines > max_lines:
             return True, f"PR too large ({total_lines} lines changed > {max_lines} limit), skipping"
     except Exception as e:
         get_logger().warning(f"Failed to check PR size for skipping: {e}")
-    
+
     return False, ""

@@ -24,7 +24,8 @@ import {
   BarChart3,
   Play,
   Trash2,
-  MoreVertical
+  MoreVertical,
+  MinusCircle
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
@@ -63,6 +64,7 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
     { id: 'completed', label: 'Completed', icon: CheckCircle },
     { id: 'failed', label: 'Failed', icon: XCircle },
     { id: 'cancelled', label: 'Cancelled', icon: AlertTriangle },
+    { id: 'skipped', label: 'Skipped', icon: MinusCircle },
     { id: 'all', label: 'All Jobs', icon: BarChart3 }
   ];
 
@@ -360,6 +362,7 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
         case 'completed': return 'Job completed successfully';
         case 'failed': return 'Job failed to complete';
         case 'cancelled': return 'Job was cancelled';
+        case 'skipped': return 'Job was skipped';
         default: return 'Job status pending';
       }
     };
@@ -376,6 +379,8 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
         return <XCircle className="h-4 w-4 text-red-500" title={getStatusText(status)} />;
       case 'cancelled':
         return <AlertTriangle className="h-4 w-4 text-yellow-500" title={getStatusText(status)} />;
+      case 'skipped':
+        return <MinusCircle className="h-4 w-4 text-gray-400" title={getStatusText(status)} />;
       default:
         return <Clock className="h-4 w-4 text-gray-500" title={getStatusText(status)} />;
     }

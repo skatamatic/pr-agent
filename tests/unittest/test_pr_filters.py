@@ -1,6 +1,15 @@
 """
 Tests for PR Filtering Utilities
 Tests the filtering logic to prevent pr-agent from running in specific scenarios
+
+This module includes comprehensive tests for:
+- PRFilterResult class functionality
+- PR size calculation utilities
+- Description generation filters
+- No-bots termination filters
+- Large PR termination filters
+- Existing PR-Agent comments detection and filtering
+- Integration scenarios and edge cases
 """
 import pytest
 from unittest.mock import Mock, patch, MagicMock
@@ -10,7 +19,8 @@ from pr_agent.algo.pr_filters import (
     calculate_total_lines_changed,
     should_skip_description_generation,
     should_terminate_job,
-    should_skip_large_pr
+    should_skip_large_pr,
+    check_for_existing_pr_agent_comments
 )
 
 
@@ -486,12 +496,12 @@ class TestCheckPRFilters:
     
     @patch('pr_agent.algo.pr_filters.calculate_total_lines_changed')
     @patch('pr_agent.algo.pr_filters.get_settings')
-    def test_skip_large_pr(self, mock_get_settings, mock_calculate_lines):
-        """Test skipping when PR is too large - using review command to avoid description skip"""
+    def test_terminate_large_pr(self, mock_get_settings, mock_calculate_lines):
+        """Test terminating when PR is too large - using review command to avoid description skip"""
         mock_git_provider = Mock()
         mock_git_provider.get_pr_description_full.return_value = "Normal description"
         mock_calculate_lines.return_value = 1500
-        
+
         mock_get_settings.return_value = {
             "pr_filters": {
                 "skip_if_description_exists": True,
@@ -499,11 +509,11 @@ class TestCheckPRFilters:
                 "max_lines_changed": 1000
             }
         }
-        
+
         result = check_pr_filters(mock_git_provider, "review")
-        
-        assert result.should_skip == True
-        assert result.should_terminate == False
+
+        assert result.should_skip == False
+        assert result.should_terminate == True
         assert "PR too large" in result.reason
     
     @patch('pr_agent.algo.pr_filters.get_settings')
@@ -528,12 +538,12 @@ class TestCheckPRFilters:
     
     @patch('pr_agent.algo.pr_filters.calculate_total_lines_changed')
     @patch('pr_agent.algo.pr_filters.get_settings')
-    def test_skip_on_line_calculation_error(self, mock_get_settings, mock_calculate_lines):
-        """Test skipping when line calculation fails - using review command to avoid description skip"""
+    def test_terminate_on_line_calculation_error(self, mock_get_settings, mock_calculate_lines):
+        """Test terminating when line calculation fails - using review command to avoid description skip"""
         mock_git_provider = Mock()
         mock_git_provider.get_pr_description_full.return_value = "Normal description"
         mock_calculate_lines.side_effect = Exception("Calculation error")
-        
+
         mock_get_settings.return_value = {
             "pr_filters": {
                 "skip_if_description_exists": True,
@@ -541,11 +551,11 @@ class TestCheckPRFilters:
                 "max_lines_changed": 1000
             }
         }
-        
+
         result = check_pr_filters(mock_git_provider, "review")
-        
-        assert result.should_skip == True
-        assert result.should_terminate == False
+
+        assert result.should_skip == False
+        assert result.should_terminate == True
         assert "Failed to calculate PR size" in result.reason
     
     @patch('pr_agent.algo.pr_filters.get_settings')
@@ -656,9 +666,9 @@ class TestIntegrationScenarios:
             }
         }
         
-        # Should skip due to size
+        # Should terminate due to size
         result = check_pr_filters(mock_git_provider, "describe")
-        assert result.should_skip == True
+        assert result.should_terminate == True
         assert "PR too large" in result.reason
     
     @patch('pr_agent.algo.pr_filters.calculate_total_lines_changed')
@@ -702,3 +712,335 @@ class TestIntegrationScenarios:
         result = check_pr_filters(mock_git_provider, "describe")
         assert result.should_skip == False
         assert result.should_terminate == False
+
+
+class TestCheckForExistingPRAgentComments:
+    """Test cases for check_for_existing_pr_agent_comments function"""
+
+    def test_detect_existing_review_header(self):
+        """Test detecting existing PR-Agent review header"""
+        mock_git_provider = Mock()
+        mock_comment = Mock()
+        mock_comment.body = "PR Reviewer Guide 🔍\n\nSome review content here..."
+        mock_git_provider.get_issue_comments.return_value = [mock_comment]
+
+        result = check_for_existing_pr_agent_comments(mock_git_provider)
+
+        assert result == True
+        mock_git_provider.get_issue_comments.assert_called_once()
+
+    def test_detect_review_header_with_different_content(self):
+        """Test detecting review header with different following content"""
+        mock_git_provider = Mock()
+        mock_comment = Mock()
+        mock_comment.body = "PR Reviewer Guide 🔍\n\n## Code Suggestions\n\nSome suggestions..."
+        mock_git_provider.get_issue_comments.return_value = [mock_comment]
+
+        result = check_for_existing_pr_agent_comments(mock_git_provider)
+
+        assert result == True
+
+    def test_no_existing_comments(self):
+        """Test when no PR-Agent comments exist"""
+        mock_git_provider = Mock()
+        mock_comment1 = Mock()
+        mock_comment1.body = "This is a regular comment"
+        mock_comment2 = Mock()
+        mock_comment2.body = "Another comment"
+        mock_git_provider.get_issue_comments.return_value = [mock_comment1, mock_comment2]
+
+        result = check_for_existing_pr_agent_comments(mock_git_provider)
+
+        assert result == False
+
+    def test_empty_comments_list(self):
+        """Test when there are no comments at all"""
+        mock_git_provider = Mock()
+        mock_git_provider.get_issue_comments.return_value = []
+
+        result = check_for_existing_pr_agent_comments(mock_git_provider)
+
+        assert result == False
+
+    def test_comment_without_body_attribute(self):
+        """Test handling comments without body attribute"""
+        mock_git_provider = Mock()
+        mock_comment = Mock()
+        del mock_comment.body  # Remove body attribute
+        mock_comment.__str__ = Mock(return_value="PR Reviewer Guide 🔍")
+        mock_git_provider.get_issue_comments.return_value = [mock_comment]
+
+        result = check_for_existing_pr_agent_comments(mock_git_provider)
+
+        assert result == True
+
+    def test_exception_in_get_issue_comments(self):
+        """Test exception handling when fetching comments fails"""
+        mock_git_provider = Mock()
+        mock_git_provider.get_issue_comments.side_effect = Exception("API error")
+
+        result = check_for_existing_pr_agent_comments(mock_git_provider)
+
+        assert result == False
+
+    def test_empty_comment_body(self):
+        """Test handling empty comment bodies"""
+        mock_git_provider = Mock()
+        mock_comment1 = Mock()
+        mock_comment1.body = ""
+        mock_comment2 = Mock()
+        mock_comment2.body = None
+        mock_git_provider.get_issue_comments.return_value = [mock_comment1, mock_comment2]
+
+        result = check_for_existing_pr_agent_comments(mock_git_provider)
+
+        assert result == False
+
+    def test_multiple_comments_with_header(self):
+        """Test finding header among multiple comments"""
+        mock_git_provider = Mock()
+
+        mock_comment1 = Mock()
+        mock_comment1.body = "Regular comment"
+
+        mock_comment2 = Mock()
+        mock_comment2.body = "PR Reviewer Guide 🔍\n\nReview content"
+
+        mock_comment3 = Mock()
+        mock_comment3.body = "Another regular comment"
+
+        mock_git_provider.get_issue_comments.return_value = [mock_comment1, mock_comment2, mock_comment3]
+
+        result = check_for_existing_pr_agent_comments(mock_git_provider)
+
+        assert result == True
+
+    def test_case_sensitive_header_matching(self):
+        """Test that header matching is case-sensitive"""
+        mock_git_provider = Mock()
+        mock_comment = Mock()
+        mock_comment.body = "pr reviewer guide 🔍"  # lowercase
+        mock_git_provider.get_issue_comments.return_value = [mock_comment]
+
+        result = check_for_existing_pr_agent_comments(mock_git_provider)
+
+        assert result == False
+
+    def test_partial_header_match_not_sufficient(self):
+        """Test that partial header matches don't count"""
+        mock_git_provider = Mock()
+
+        # These should not match
+        test_comments = [
+            "PR Reviewer Guide",  # missing emoji
+            "Reviewer Guide 🔍",  # missing PR prefix
+            "PR Reviewer 🔍",     # missing Guide
+            "Guide 🔍",           # missing PR Reviewer
+        ]
+
+        for comment_body in test_comments:
+            mock_comment = Mock()
+            mock_comment.body = comment_body
+            mock_git_provider.get_issue_comments.return_value = [mock_comment]
+
+            result = check_for_existing_pr_agent_comments(mock_git_provider)
+            assert result == False, f"Should not match partial header: {comment_body}"
+
+
+class TestSkipIfReviewSuggestionsExist:
+    """Test cases for the skip_if_review_suggestions_exist filter"""
+
+    @patch('pr_agent.algo.pr_filters.check_for_existing_pr_agent_comments')
+    @patch('pr_agent.algo.pr_filters.calculate_total_lines_changed')
+    @patch('pr_agent.algo.pr_filters.get_settings')
+    def test_skip_when_existing_comments_found(self, mock_get_settings, mock_calculate_lines, mock_check_comments):
+        """Test skipping when existing PR-Agent comments are found"""
+        mock_git_provider = Mock()
+        mock_git_provider.get_pr_description_full.return_value = "Normal description"
+        mock_calculate_lines.return_value = 500
+        mock_check_comments.return_value = True
+
+        mock_get_settings.return_value = {
+            "pr_filters": {
+                "skip_if_review_suggestions_exist": True,
+                "terminate_on_no_bots": False,
+                "max_lines_changed": 1000
+            }
+        }
+
+        result = check_pr_filters(mock_git_provider, "review")
+
+        assert result.should_skip == True
+        assert result.should_terminate == False
+        assert "PR-Agent has already processed this PR" in result.reason
+        mock_check_comments.assert_called_once_with(mock_git_provider)
+
+    @patch('pr_agent.algo.pr_filters.check_for_existing_pr_agent_comments')
+    @patch('pr_agent.algo.pr_filters.calculate_total_lines_changed')
+    @patch('pr_agent.algo.pr_filters.get_settings')
+    def test_no_skip_when_no_existing_comments(self, mock_get_settings, mock_calculate_lines, mock_check_comments):
+        """Test not skipping when no existing PR-Agent comments are found"""
+        mock_git_provider = Mock()
+        mock_git_provider.get_pr_description_full.return_value = "Normal description"
+        mock_calculate_lines.return_value = 500
+        mock_check_comments.return_value = False
+
+        mock_get_settings.return_value = {
+            "pr_filters": {
+                "skip_if_review_suggestions_exist": True,
+                "terminate_on_no_bots": False,
+                "max_lines_changed": 1000
+            }
+        }
+
+        result = check_pr_filters(mock_git_provider, "review")
+
+        assert result.should_skip == False
+        assert result.should_terminate == False
+        assert result.reason == ""
+        mock_check_comments.assert_called_once_with(mock_git_provider)
+
+    @patch('pr_agent.algo.pr_filters.check_for_existing_pr_agent_comments')
+    @patch('pr_agent.algo.pr_filters.calculate_total_lines_changed')
+    @patch('pr_agent.algo.pr_filters.get_settings')
+    def test_skip_applies_to_all_commands(self, mock_get_settings, mock_calculate_lines, mock_check_comments):
+        """Test that the existing comments filter applies to all commands"""
+        mock_git_provider = Mock()
+        mock_git_provider.get_pr_description_full.return_value = "Normal description"
+        mock_calculate_lines.return_value = 500
+        mock_check_comments.return_value = True
+
+        mock_get_settings.return_value = {
+            "pr_filters": {
+                "skip_if_review_suggestions_exist": True,
+                "terminate_on_no_bots": False,
+                "max_lines_changed": 1000
+            }
+        }
+
+        # Test with different commands
+        for command in ["review", "describe", "improve", "ask"]:
+            result = check_pr_filters(mock_git_provider, command)
+            assert result.should_skip == True, f"Should skip command: {command}"
+            assert "PR-Agent has already processed this PR" in result.reason
+
+    @patch('pr_agent.algo.pr_filters.check_for_existing_pr_agent_comments')
+    @patch('pr_agent.algo.pr_filters.calculate_total_lines_changed')
+    @patch('pr_agent.algo.pr_filters.get_settings')
+    def test_filter_disabled_when_setting_false(self, mock_get_settings, mock_calculate_lines, mock_check_comments):
+        """Test that filter is not applied when setting is False"""
+        mock_git_provider = Mock()
+        mock_git_provider.get_pr_description_full.return_value = "Normal description"
+        mock_calculate_lines.return_value = 500
+        mock_check_comments.return_value = True
+
+        mock_get_settings.return_value = {
+            "pr_filters": {
+                "skip_if_review_suggestions_exist": False,  # Disabled
+                "terminate_on_no_bots": False,
+                "max_lines_changed": 1000
+            }
+        }
+
+        result = check_pr_filters(mock_git_provider, "review")
+
+        # Should not check for existing comments at all
+        mock_check_comments.assert_not_called()
+        assert result.should_skip == False
+        assert result.should_terminate == False
+
+    @patch('pr_agent.algo.pr_filters.check_for_existing_pr_agent_comments')
+    @patch('pr_agent.algo.pr_filters.calculate_total_lines_changed')
+    @patch('pr_agent.algo.pr_filters.get_settings')
+    def test_exception_in_existing_comments_check(self, mock_get_settings, mock_calculate_lines, mock_check_comments):
+        """Test exception handling when checking for existing comments fails - should skip conservatively"""
+        mock_git_provider = Mock()
+        mock_git_provider.get_pr_description_full.return_value = "Normal description"
+        mock_calculate_lines.return_value = 500
+        mock_check_comments.side_effect = Exception("Comment check failed")
+
+        mock_get_settings.return_value = {
+            "pr_filters": {
+                "skip_if_review_suggestions_exist": True,
+                "terminate_on_no_bots": False,
+                "max_lines_changed": 1000
+            }
+        }
+
+        result = check_pr_filters(mock_git_provider, "review")
+
+        assert result.should_skip == True
+        assert result.should_terminate == False
+        assert "Failed to check for existing PR-Agent comments" in result.reason
+
+
+class TestLargePRTermination:
+    """Test cases for the updated large PR filter (now terminates instead of skips)"""
+
+    @patch('pr_agent.algo.pr_filters.calculate_total_lines_changed')
+    @patch('pr_agent.algo.pr_filters.get_settings')
+    def test_terminate_on_large_pr(self, mock_get_settings, mock_calculate_lines):
+        """Test that large PRs now terminate instead of skip"""
+        mock_git_provider = Mock()
+        mock_git_provider.get_pr_description_full.return_value = "Normal description"
+        mock_calculate_lines.return_value = 1500
+
+        mock_get_settings.return_value = {
+            "pr_filters": {
+                "max_lines_changed": 1000,
+                "terminate_on_no_bots": False
+            }
+        }
+
+        result = check_pr_filters(mock_git_provider, "review")
+
+        assert result.should_skip == False
+        assert result.should_terminate == True
+        assert "PR too large" in result.reason
+        assert "1500" in result.reason
+        assert "1000" in result.reason
+
+    @patch('pr_agent.algo.pr_filters.calculate_total_lines_changed')
+    @patch('pr_agent.algo.pr_filters.get_settings')
+    def test_priority_terminate_over_skip(self, mock_get_settings, mock_calculate_lines):
+        """Test that termination has priority over skipping"""
+        mock_git_provider = Mock()
+        # PR has [no_bots] AND is large
+        mock_git_provider.get_pr_description_full.return_value = "This PR has [no_bots] and is large"
+        mock_calculate_lines.return_value = 1500
+
+        mock_get_settings.return_value = {
+            "pr_filters": {
+                "terminate_on_no_bots": True,
+                "max_lines_changed": 1000
+            }
+        }
+
+        result = check_pr_filters(mock_git_provider, "review")
+
+        # Should terminate due to [no_bots], not due to size
+        assert result.should_skip == False
+        assert result.should_terminate == True
+        assert "[no_bots] found" in result.reason
+        assert "PR too large" not in result.reason
+
+    @patch('pr_agent.algo.pr_filters.calculate_total_lines_changed')
+    @patch('pr_agent.algo.pr_filters.get_settings')
+    def test_large_pr_with_comment_posting(self, mock_get_settings, mock_calculate_lines):
+        """Test that large PR termination includes comment posting requirement"""
+        mock_git_provider = Mock()
+        mock_git_provider.get_pr_description_full.return_value = "Normal description"
+        mock_calculate_lines.return_value = 2000
+
+        mock_get_settings.return_value = {
+            "pr_filters": {
+                "max_lines_changed": 1000,
+                "terminate_on_no_bots": False
+            }
+        }
+
+        result = check_pr_filters(mock_git_provider, "review")
+
+        assert result.should_terminate == True
+        # The reason should indicate this terminates the entire job
+        assert "PR too large" in result.reason
