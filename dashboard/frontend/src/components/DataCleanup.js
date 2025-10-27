@@ -1,38 +1,85 @@
 import React, { useState, useEffect, useContext } from 'react';
-import { 
-  Trash2, 
-  Calendar, 
-  Database, 
-  AlertTriangle, 
-  CheckCircle, 
-  Info, 
+import {
+  Trash2,
+  Calendar,
+  Database,
+  AlertTriangle,
+  CheckCircle,
+  Info,
   Shield,
   HardDrive,
   DollarSign,
   BarChart3,
   RefreshCw,
-  X
+  X,
+  Clock,
+  GitBranch
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
 
 const DataCleanup = () => {
-  const [cleanupScope, setCleanupScope] = useState('all'); // 'all' or 'repository'
-  const [selectedRepository, setSelectedRepository] = useState('');
+  // Add CSS to hide native date/time picker indicators
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.textContent = `
+      /* Hide native date/time picker indicators */
+      .hide-date-picker::-webkit-calendar-picker-indicator,
+      .hide-time-picker::-webkit-calendar-picker-indicator {
+        display: none !important;
+        -webkit-appearance: none !important;
+        appearance: none !important;
+      }
+
+      /* Ensure the custom icons are clickable */
+      .hide-date-picker,
+      .hide-time-picker {
+        cursor: text;
+      }
+    `;
+    document.head.appendChild(style);
+
+    return () => {
+      document.head.removeChild(style);
+    };
+  }, []);
+
+  // Custom styled date/time inputs with proper dark mode icons
+  const DateTimeInput = ({ type, id, label, value, onChange, icon: Icon }) => (
+    <div>
+      <label htmlFor={id} className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+        {label}
+      </label>
+      <div className="relative">
+        <input
+          id={id}
+          type={type}
+          value={value}
+          onChange={onChange}
+          className={`w-full border border-gray-300 dark:border-gray-600 rounded-md px-3 py-2 pr-10 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${type === 'date' ? 'hide-date-picker' : 'hide-time-picker'}`}
+          style={{
+            colorScheme: 'dark'
+          }}
+        />
+        <div
+          className="absolute inset-y-0 right-0 flex items-center pr-3 cursor-pointer"
+          onClick={() => document.getElementById(id)?.showPicker?.() || document.getElementById(id)?.click?.()}
+        >
+          <Icon className="h-4 w-4 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-400 transition-colors" />
+        </div>
+      </div>
+    </div>
+  );
+
+  const [selectedScope, setSelectedScope] = useState('all'); // 'all' or repository name
   const [cutoffDate, setCutoffDate] = useState('');
   const [cutoffTime, setCutoffTime] = useState('00:00');
-  const [dataTypes, setDataTypes] = useState({
-    operations: true,
-    jobs: true,
-    logs: true,
-    metrics: true,
-    notification_events: true
-  });
   const [repositories, setRepositories] = useState([]);
   const [cleanupPreview, setCleanupPreview] = useState(null);
   const [loading, setLoading] = useState(false);
   const [executing, setExecuting] = useState(false);
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [confirmations, setConfirmations] = useState({
     understand: false,
@@ -50,18 +97,12 @@ const DataCleanup = () => {
   const fetchRepositories = async () => {
     try {
       const response = await api.getRepositories();
-      setRepositories(response.data || []);
+      setRepositories(response.data?.data || []);
     } catch (error) {
       showError('Failed to load repositories: ' + (error.response?.data?.detail || error.message));
     }
   };
 
-  const handleDataTypeChange = (type) => {
-    setDataTypes(prev => ({
-      ...prev,
-      [type]: !prev[type]
-    }));
-  };
 
   const handlePreviewCleanup = async () => {
     if (!cutoffDate) {
@@ -69,10 +110,7 @@ const DataCleanup = () => {
       return;
     }
 
-    if (cleanupScope === 'repository' && !selectedRepository) {
-      showError('Please select a repository for cleanup');
-      return;
-    }
+    // No validation needed - selectedScope is always valid
 
     setLoading(true);
     try {
@@ -85,13 +123,15 @@ const DataCleanup = () => {
       
       const requestData = {
         cutoff_date: cutoffDateTime.toISOString(),
-        repository: cleanupScope === 'repository' ? selectedRepository : null
+        repository: selectedScope === 'all' ? null : selectedScope
       };
 
       const response = await api.previewCleanup(requestData);
-      setCleanupPreview(response.data);
+      setCleanupPreview(response.data?.data);
+      setShowPreviewModal(true);
     } catch (error) {
       showError('Failed to get cleanup preview: ' + (error.response?.data?.detail || error.message));
+      setCleanupPreview(null); // Reset preview on error
     } finally {
       setLoading(false);
     }
@@ -99,12 +139,6 @@ const DataCleanup = () => {
 
   const handleExecuteCleanup = async () => {
     if (!cleanupPreview) return;
-
-    const selectedDataTypes = Object.keys(dataTypes).filter(type => dataTypes[type]);
-    if (selectedDataTypes.length === 0) {
-      showError('Please select at least one data type to clean');
-      return;
-    }
 
     setExecuting(true);
     try {
@@ -114,11 +148,11 @@ const DataCleanup = () => {
         showError('Invalid date or time selected');
         return;
       }
-      
+
       const requestData = {
         cutoff_date: cutoffDateTime.toISOString(),
-        repository: cleanupScope === 'repository' ? selectedRepository : null,
-        data_types: selectedDataTypes
+        repository: selectedScope === 'all' ? null : selectedScope,
+        data_types: ['operations', 'jobs', 'logs', 'metrics', 'notification_events']
       };
 
       const response = await api.executeCleanup(requestData);
@@ -144,60 +178,55 @@ const DataCleanup = () => {
       />
       
       <div className="max-w-4xl mx-auto p-6 space-y-8">
-        {/* Cleanup Scope Selection */}
+        {/* Repository Scope Selection */}
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
           <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center">
-            <Database className="h-5 w-5 mr-2" />
-            Cleanup Scope
+            <GitBranch className="h-5 w-5 mr-2" />
+            Repository Scope
           </h3>
-          
-          <div className="space-y-4">
-            <div className="flex items-center space-x-3">
-              <input
-                type="radio"
-                id="scope-all"
-                name="cleanup-scope"
-                value="all"
-                checked={cleanupScope === 'all'}
-                onChange={(e) => setCleanupScope(e.target.value)}
-                className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
-              />
-              <label htmlFor="scope-all" className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                All Repositories (Global cleanup)
-              </label>
-            </div>
-            
-            <div className="flex items-center space-x-3">
-              <input
-                type="radio"
-                id="scope-repository"
-                name="cleanup-scope"
-                value="repository"
-                checked={cleanupScope === 'repository'}
-                onChange={(e) => setCleanupScope(e.target.value)}
-                className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
-              />
-              <label htmlFor="scope-repository" className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                Specific Repository
-              </label>
-            </div>
-            
-            {cleanupScope === 'repository' && (
-              <div className="ml-7">
-                <select
-                  value={selectedRepository}
-                  onChange={(e) => setSelectedRepository(e.target.value)}
-                  className="mt-1 block w-full border border-gray-300 dark:border-gray-600 rounded-md px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="">Select a repository...</option>
-                  {repositories.map((repo) => (
-                    <option key={repo.id} value={repo.name}>
-                      {repo.name}
-                    </option>
-                  ))}
-                </select>
+
+          <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+            Select the scope for data cleanup. Choose "All" for global cleanup or select a specific repository.
+          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {/* All Repositories Button */}
+            <button
+              onClick={() => setSelectedScope('all')}
+              className={`px-4 py-3 rounded-lg border text-sm font-medium transition-all duration-200 min-w-[120px] max-w-[200px] ${
+                selectedScope === 'all'
+                  ? 'bg-blue-600 border-blue-600 text-white shadow-md'
+                  : 'bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600'
+              }`}
+            >
+              <div className="flex flex-col items-center justify-center text-center">
+                <div className="flex items-center justify-center mb-1">
+                  <Database className="h-4 w-4 mr-1 flex-shrink-0" />
+                  <span className="leading-tight">All Repositories</span>
+                </div>
+                <div className="text-xs opacity-75 leading-tight">Global cleanup</div>
               </div>
-            )}
+            </button>
+
+            {/* Repository Buttons */}
+            {Array.isArray(repositories) && repositories.map((repo) => (
+              <button
+                key={repo.id}
+                onClick={() => setSelectedScope(repo.name)}
+                className={`px-4 py-3 rounded-lg border text-sm font-medium transition-all duration-200 min-w-[120px] max-w-[250px] ${
+                  selectedScope === repo.name
+                    ? 'bg-blue-600 border-blue-600 text-white shadow-md'
+                    : 'bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600'
+                }`}
+              >
+                <div className="flex flex-col items-center justify-center text-center">
+                  <div className="flex items-center justify-center mb-1">
+                    <GitBranch className="h-4 w-4 mr-1 flex-shrink-0" />
+                    <span className="leading-tight break-words">{repo.name}</span>
+                  </div>
+                </div>
+              </button>
+            ))}
           </div>
         </div>
 
@@ -214,31 +243,23 @@ const DataCleanup = () => {
             </p>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label htmlFor="cutoff-date" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                  Date
-                </label>
-                <input
-                  id="cutoff-date"
-                  type="date"
-                  value={cutoffDate}
-                  onChange={(e) => setCutoffDate(e.target.value)}
-                  className="w-full border border-gray-300 dark:border-gray-600 rounded-md px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              
-              <div>
-                <label htmlFor="cutoff-time" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                  Time (UTC)
-                </label>
-                <input
-                  id="cutoff-time"
-                  type="time"
-                  value={cutoffTime}
-                  onChange={(e) => setCutoffTime(e.target.value)}
-                  className="w-full border border-gray-300 dark:border-gray-600 rounded-md px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
+              <DateTimeInput
+                type="date"
+                id="cutoff-date"
+                label="Date"
+                value={cutoffDate}
+                onChange={(e) => setCutoffDate(e.target.value)}
+                icon={Calendar}
+              />
+
+              <DateTimeInput
+                type="time"
+                id="cutoff-time"
+                label="Time (UTC)"
+                value={cutoffTime}
+                onChange={(e) => setCutoffTime(e.target.value)}
+                icon={Clock}
+              />
             </div>
             
             <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-md p-4">
@@ -252,36 +273,18 @@ const DataCleanup = () => {
           </div>
         </div>
 
-        {/* Data Types Selection */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center">
-            <BarChart3 className="h-5 w-5 mr-2" />
-            Data Types to Clean
-          </h3>
-          
-          <div className="space-y-3">
-            {Object.entries(dataTypes).map(([type, checked]) => (
-              <div key={type} className="flex items-center space-x-3">
-                <input
-                  type="checkbox"
-                  id={`data-type-${type}`}
-                  checked={checked}
-                  onChange={() => handleDataTypeChange(type)}
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                />
-                <label htmlFor={`data-type-${type}`} className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                  {type.charAt(0).toUpperCase() + type.slice(1).replace('_', ' ')}
-                </label>
-              </div>
-            ))}
-            
-            <div className="mt-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-4">
-              <div className="flex items-center">
-                <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2" />
-                <span className="text-blue-800 dark:text-blue-200 text-sm">
-                  Repository configurations and settings will be preserved
-                </span>
-              </div>
+        {/* Information */}
+        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+          <div className="flex items-center">
+            <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3 flex-shrink-0" />
+            <div>
+              <p className="text-blue-800 dark:text-blue-200 text-sm font-medium">
+                Data Cleanup Process
+              </p>
+              <p className="text-blue-700 dark:text-blue-300 text-sm mt-1">
+                This will permanently delete all operations, jobs, logs, metrics, and notification events older than the specified date/time.
+                Repository configurations and settings will be preserved.
+              </p>
             </div>
           </div>
         </div>
@@ -302,99 +305,6 @@ const DataCleanup = () => {
           </button>
         </div>
 
-        {/* Cleanup Impact Preview */}
-        {cleanupPreview && (
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center">
-              <CheckCircle className="h-5 w-5 mr-2 text-green-600" />
-              Cleanup Impact Preview
-            </h3>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Before Cleanup */}
-              <div>
-                <h4 className="text-md font-medium text-gray-900 dark:text-white mb-3">Before Cleanup:</h4>
-                <div className="space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-gray-600 dark:text-gray-400">Operations:</span>
-                    <span className="font-medium">{cleanupPreview.before_cleanup.operations.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600 dark:text-gray-400">Jobs:</span>
-                    <span className="font-medium">{cleanupPreview.before_cleanup.jobs.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600 dark:text-gray-400">Logs:</span>
-                    <span className="font-medium">{cleanupPreview.before_cleanup.logs.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600 dark:text-gray-400">Cost Savings:</span>
-                    <span className="font-medium text-green-600">${cleanupPreview.before_cleanup.cost_savings.toFixed(2)}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* After Cleanup */}
-              <div>
-                <h4 className="text-md font-medium text-gray-900 dark:text-white mb-3">After Cleanup:</h4>
-                <div className="space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-gray-600 dark:text-gray-400">Operations:</span>
-                    <span className="font-medium">{cleanupPreview.after_cleanup.operations.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600 dark:text-gray-400">Jobs:</span>
-                    <span className="font-medium">{cleanupPreview.after_cleanup.jobs.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600 dark:text-gray-400">Logs:</span>
-                    <span className="font-medium">{cleanupPreview.after_cleanup.logs.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600 dark:text-gray-400">Cost Savings:</span>
-                    <span className="font-medium text-green-600">${cleanupPreview.after_cleanup.cost_savings.toFixed(2)}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Impact Summary */}
-            <div className="mt-6 bg-gray-50 dark:bg-gray-700 rounded-md p-4">
-              <h5 className="text-sm font-medium text-gray-900 dark:text-white mb-3">Impact Summary:</h5>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-gray-600 dark:text-gray-400">Records to be deleted:</span>
-                  <span className="font-medium text-red-600">
-                    {(cleanupPreview.to_be_deleted.operations + cleanupPreview.to_be_deleted.jobs + cleanupPreview.to_be_deleted.logs).toLocaleString()}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600 dark:text-gray-400">Cost Impact:</span>
-                  <span className={`font-medium ${cleanupPreview.cost_impact < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                    ${cleanupPreview.cost_impact.toFixed(2)}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600 dark:text-gray-400">Storage Freed:</span>
-                  <span className="font-medium text-blue-600">
-                    {cleanupPreview.storage_impact_mb.toFixed(2)} MB
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Execute Button */}
-            <div className="mt-6 flex justify-center">
-              <button
-                onClick={() => setShowConfirmation(true)}
-                className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
-              >
-                <Trash2 className="h-5 w-5 mr-2" />
-                Execute Cleanup
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* Confirmation Dialog */}
         {showConfirmation && (
@@ -485,6 +395,167 @@ const DataCleanup = () => {
                     ) : (
                       'Execute Cleanup'
                     )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Cleanup Preview Modal */}
+        {showPreviewModal && cleanupPreview && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+              <div className="p-6">
+                <div className="flex items-center justify-between mb-6">
+                  <div className="flex items-center">
+                    <div className="flex-shrink-0">
+                      <BarChart3 className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+                    </div>
+                    <div className="ml-3">
+                      <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                        Cleanup Impact Preview
+                      </h3>
+                      <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                        Review the impact before proceeding with cleanup
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowPreviewModal(false)}
+                    className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                  >
+                    <X className="h-6 w-6" />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                  {/* Before Cleanup */}
+                  <div>
+                    <h4 className="text-md font-medium text-gray-900 dark:text-white mb-4 flex items-center">
+                      <Database className="h-4 w-4 mr-2 text-gray-600 dark:text-gray-400" />
+                      Before Cleanup
+                    </h4>
+                    <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4">
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600 dark:text-gray-400">Operations:</span>
+                          <span className="font-semibold text-gray-900 dark:text-white">
+                            {(cleanupPreview.before_cleanup.operations || 0).toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600 dark:text-gray-400">Jobs:</span>
+                          <span className="font-semibold text-gray-900 dark:text-white">
+                            {(cleanupPreview.before_cleanup.jobs || 0).toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600 dark:text-gray-400">Logs:</span>
+                          <span className="font-semibold text-gray-900 dark:text-white">
+                            {(cleanupPreview.before_cleanup.logs || 0).toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600 dark:text-gray-400">Total Cost:</span>
+                          <span className="font-semibold text-green-600 dark:text-green-400">
+                            ${(cleanupPreview.before_cleanup.cost_savings || 0).toFixed(2)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* After Cleanup */}
+                  <div>
+                    <h4 className="text-md font-medium text-gray-900 dark:text-white mb-4 flex items-center">
+                      <Database className="h-4 w-4 mr-2 text-gray-600 dark:text-gray-400" />
+                      After Cleanup
+                    </h4>
+                    <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4">
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600 dark:text-gray-400">Operations:</span>
+                          <span className="font-semibold text-gray-900 dark:text-white">
+                            {(cleanupPreview.after_cleanup.operations || 0).toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600 dark:text-gray-400">Jobs:</span>
+                          <span className="font-semibold text-gray-900 dark:text-white">
+                            {(cleanupPreview.after_cleanup.jobs || 0).toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600 dark:text-gray-400">Logs:</span>
+                          <span className="font-semibold text-gray-900 dark:text-white">
+                            {(cleanupPreview.after_cleanup.logs || 0).toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600 dark:text-gray-400">Total Cost:</span>
+                          <span className="font-semibold text-green-600 dark:text-green-400">
+                            ${(cleanupPreview.after_cleanup.cost_savings || 0).toFixed(2)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Impact Summary */}
+                <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-6 mb-6">
+                  <h5 className="text-md font-semibold text-red-800 dark:text-red-200 mb-4 flex items-center">
+                    <AlertTriangle className="h-5 w-5 mr-2" />
+                    Cleanup Impact Summary
+                  </h5>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-red-600 dark:text-red-400 mb-1">
+                        {((cleanupPreview.to_be_deleted.operations || 0) +
+                          (cleanupPreview.to_be_deleted.jobs || 0) +
+                          (cleanupPreview.to_be_deleted.logs || 0)).toLocaleString()}
+                      </div>
+                      <div className="text-sm text-red-700 dark:text-red-300">Records to Delete</div>
+                    </div>
+                    <div className="text-center">
+                      <div className={`text-2xl font-bold mb-1 ${
+                        (cleanupPreview.cost_impact || 0) < 0
+                          ? 'text-red-600 dark:text-red-400'
+                          : 'text-green-600 dark:text-green-400'
+                      }`}>
+                        ${(Math.abs(cleanupPreview.cost_impact || 0)).toFixed(2)}
+                      </div>
+                      <div className="text-sm text-red-700 dark:text-red-300">
+                        {(cleanupPreview.cost_impact || 0) < 0 ? 'Cost Savings' : 'Cost Impact'}
+                      </div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-blue-600 dark:text-blue-400 mb-1">
+                        {(cleanupPreview.storage_impact_mb || 0).toFixed(2)} MB
+                      </div>
+                      <div className="text-sm text-red-700 dark:text-red-300">Storage Freed</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex justify-end space-x-3">
+                  <button
+                    onClick={() => setShowPreviewModal(false)}
+                    className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowPreviewModal(false);
+                      setShowConfirmation(true);
+                    }}
+                    className="inline-flex items-center px-6 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Proceed with Cleanup
                   </button>
                 </div>
               </div>

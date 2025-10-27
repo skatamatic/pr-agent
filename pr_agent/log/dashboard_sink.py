@@ -2,6 +2,7 @@ import json
 import asyncio
 from typing import Dict, Any, Optional
 from datetime import datetime
+import logging
 
 try:
     import aiohttp
@@ -13,7 +14,10 @@ try:
 except ImportError:
     logger = None
 
-from pr_agent.config_loader import get_settings
+try:
+    from pr_agent.config_loader import get_settings
+except ImportError:
+    get_settings = None
 
 
 class DashboardSink:
@@ -27,22 +31,51 @@ class DashboardSink:
                  api_key: Optional[str] = None,
                  batch_size: int = 10,
                  flush_interval: float = 5.0):
-        self.dashboard_url = dashboard_url or get_settings().get("DASHBOARD.URL")
-        self.api_key = api_key or get_settings().get("DASHBOARD.API_KEY")
+        self.dashboard_url = dashboard_url or (get_settings().get("DASHBOARD.URL") if get_settings else None)
+        self.api_key = api_key or (get_settings().get("DASHBOARD.API_KEY") if get_settings else None)
         self.batch_size = batch_size
         self.flush_interval = flush_interval
         self.log_buffer = []
         self.session = None
         self._flush_task = None
-        
+        self._min_log_level = self._get_min_log_level()
+
+    def _get_min_log_level(self):
+        """Get the minimum log level from configuration"""
+        try:
+            if get_settings:
+                level_str = get_settings().get("CONFIG.LOG_LEVEL", "INFO")
+                return logging.getLevelName(level_str.upper())
+        except Exception:
+            pass
+        # Default to INFO if can't determine
+        return logging.INFO
+
+    def _should_send_log(self, record):
+        """Check if this log should be sent to dashboard based on configured log level"""
+        level_name = record["level"].name
+        level_no = record["level"].no
+
+        # Always send critical errors and status updates for monitoring
+        if level_name in ["ERROR", "CRITICAL", "EXCEPTION"] or self._is_status_update(record):
+            return True
+
+        # Check against configured minimum log level
+        return level_no >= self._min_log_level
+
     def __call__(self, message):
         """
         Loguru sink function - called for each log message (MUST be synchronous)
         """
         try:
             record = message.record
+
+            # Check if we should filter this log based on configured log level
+            if not self._should_send_log(record):
+                return
+
             log_entry = self._format_log_entry(record)
-            
+
             # Add to buffer
             self.log_buffer.append(log_entry)
             

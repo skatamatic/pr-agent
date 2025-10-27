@@ -17,8 +17,16 @@ from pr_agent.tools.pr_reviewer import PRReviewer
 # Dashboard integration imports
 try:
     from pr_agent.log.job_context import (
-        job_context, JobType, extract_repository_from_url, 
-        setup_dashboard_integration, update_job_status
+        job_context,
+        JobType,
+        extract_repository_from_url,
+        setup_dashboard_integration,
+        update_job_status,
+        operation_context,
+        OperationType,
+        update_operation_status,
+        wait_for_pending_tasks,
+        cleanup_all_dashboard_tasks,
     )
     DASHBOARD_AVAILABLE = True
 except ImportError:
@@ -110,75 +118,6 @@ async def run_action():
     
     get_logger().info(f"Processing Azure DevOps PR: {pr_url}")
 
-    # Apply PR filters before processing
-    try:
-        git_provider = get_git_provider(pr_url)
-        # Determine which commands will be run to pass appropriate command context
-        commands_to_run = []
-        if auto_describe is None or is_true(auto_describe):
-            commands_to_run.append("describe")
-        if auto_review is None or is_true(auto_review):
-            commands_to_run.append("review")
-        if auto_improve is None or is_true(auto_improve):
-            commands_to_run.append("improve")
-
-        # Track skipped operations for dashboard signaling
-        skipped_operations = []
-
-        # Check filters for each command that will be run
-        for command in commands_to_run[:]:
-            filter_result = check_pr_filters(git_provider, command)
-
-            if filter_result.should_terminate:
-                get_logger().error(f"PR filter triggered termination: {filter_result.reason}")
-                return
-            elif filter_result.should_skip:
-                get_logger().info(f"PR filter triggered skip for {command}: {filter_result.reason}")
-                # Track skipped operation for later dashboard signaling
-                skipped_operations.append({
-                    'command': command,
-                    'reason': filter_result.reason
-                })
-                # Remove the skipped command from the list
-                if command in commands_to_run:
-                    commands_to_run.remove(command)
-
-        # If all commands were skipped, exit early
-        if not commands_to_run:
-            get_logger().info("All commands skipped by PR filters")
-            try:
-                if DASHBOARD_AVAILABLE and dashboard_enabled:
-                    from pr_agent.log.job_context import job_context, JobType, operation_context, OperationType, update_operation_status, update_job_status
-                    # Create minimal job context for skipped operations
-                    with job_context(
-                        job_type=JobType.WEBHOOK,
-                        source="azuredevops_pipeline",
-                        repository=repository,
-                        pr_url=pr_url,
-                        trigger_event="pullrequest"
-                    ) as job_id:
-                        # Create skipped operations
-                        for skipped_op in skipped_operations:
-                            if skipped_op['command'] == "review":
-                                op_type = OperationType.REVIEW
-                            elif skipped_op['command'] == "improve":
-                                op_type = OperationType.IMPROVE
-                            elif skipped_op['command'] == "describe":
-                                op_type = OperationType.DESCRIBE
-                            else:
-                                op_type = OperationType.STARTING
-                            with operation_context(operation_type=op_type, command=skipped_op['command'], repo=repository, pr_url=pr_url):
-                                update_operation_status('skipped', result_data={ 'reason': skipped_op['reason'] })
-                        # Mark job as skipped
-                        update_job_status('skipped', result_summary={ 'reason': 'All commands skipped by PR filters' })
-            except Exception as e:
-                get_logger().debug(f"Failed to signal skipped operations/job: {e}")
-            return
-            
-    except Exception as e:
-        get_logger().error(f"Failed to apply PR filters, terminating for safety: {e}")
-        return
-
     try:
         get_logger().info("Applying repo settings")
         apply_repo_settings(pr_url)
@@ -226,12 +165,7 @@ async def run_action():
             if auto_improve is None:
                 auto_improve = get_setting_or_env("GITHUB_ACTION_CONFIG.AUTO_IMPROVE", None)
 
-            # Set the configuration for auto actions
-            get_settings().config.is_auto_command = True # Set the flag to indicate that the command is auto
-            get_settings().pr_description.final_update_message = False  # No final update message when auto_describe is enabled
-            get_logger().info(f"Running auto actions: auto_describe={auto_describe}, auto_review={auto_review}, auto_improve={auto_improve}")
-
-            # Extract repository for dashboard tracking
+            # Extract repository for dashboard tracking (needed for filter processing)
             repository = None
             if DASHBOARD_AVAILABLE:
                 try:
@@ -241,14 +175,97 @@ async def run_action():
                 except Exception as e:
                     get_logger().debug(f"Failed to extract repository from URL: {e}")
 
-            # Determine which tools to run
+            # Apply PR filters before processing
+            try:
+                git_provider = get_git_provider()(pr_url=pr_url)
+                # Determine which commands will be run to pass appropriate command context
+                commands_to_run = []
+                if auto_describe is None or is_true(auto_describe):
+                    commands_to_run.append("describe")
+                if auto_review is None or is_true(auto_review):
+                    commands_to_run.append("review")
+                if auto_improve is None or is_true(auto_improve):
+                    commands_to_run.append("improve")
+
+                # Track skipped operations for dashboard signaling
+                skipped_operations = []
+
+                # Check filters for each command that will be run
+                for command in commands_to_run[:]:
+                    filter_result = check_pr_filters(git_provider, command)
+
+                    if filter_result.should_terminate:
+                        get_logger().error(f"PR filter triggered termination: {filter_result.reason}")
+                        return
+                    elif filter_result.should_skip:
+                        get_logger().info(f"PR filter triggered skip for {command}: {filter_result.reason}")
+                        # Track skipped operation for later dashboard signaling
+                        skipped_operations.append({
+                            'command': command,
+                            'reason': filter_result.reason
+                        })
+                        # Remove the skipped command from the list
+                        if command in commands_to_run:
+                            commands_to_run.remove(command)
+
+                # If all commands were skipped, exit early
+                if not commands_to_run:
+                    get_logger().info("All commands skipped by PR filters")
+                    try:
+                        if DASHBOARD_AVAILABLE and dashboard_enabled:
+                            # Create minimal job context for skipped operations
+                            with job_context(
+                                job_type=JobType.WEBHOOK,
+                                source="azuredevops_pipeline",
+                                repository=repository,
+                                pr_url=pr_url,
+                                trigger_event="pullrequest"
+                            ) as job_id:
+                                # Create skipped operations
+                                for skipped_op in skipped_operations:
+                                    if skipped_op['command'] == "review":
+                                        op_type = OperationType.REVIEW
+                                    elif skipped_op['command'] == "improve":
+                                        op_type = OperationType.IMPROVE
+                                    elif skipped_op['command'] == "describe":
+                                        op_type = OperationType.DESCRIBE
+                                    else:
+                                        op_type = OperationType.STARTING
+                                    with operation_context(operation_type=op_type, command=skipped_op['command'], repo=repository, pr_url=pr_url):
+                                        update_operation_status('skipped', result_data={ 'reason': skipped_op['reason'] })
+                                # Mark job as skipped and wait for completion
+                                update_job_status('skipped', result_summary={ 'reason': 'All commands skipped by PR filters' })
+                                # Ensure dashboard updates are processed before exiting
+                                try:
+                                    loop = asyncio.get_event_loop()
+                                    if loop.is_running():
+                                        # Wait for any pending dashboard tasks to complete
+                                        loop.run_until_complete(wait_for_pending_tasks(timeout=5.0))
+                                except Exception as e:
+                                    get_logger().debug(f"Failed to wait for dashboard tasks: {e}")
+                    except Exception as e:
+                        get_logger().debug(f"Failed to signal skipped operations/job: {e}")
+                    return
+
+            except Exception as e:
+                get_logger().error(f"Failed to apply PR filters, terminating for safety: {e}")
+                return
+
+            # Set the configuration for auto actions
+            get_settings().config.is_auto_command = True # Set the flag to indicate that the command is auto
+            get_settings().pr_description.final_update_message = False  # No final update message when auto_describe is enabled
+            get_logger().info(f"Running auto actions: auto_describe={auto_describe}, auto_review={auto_review}, auto_improve={auto_improve}")
+
+            # Determine which tools to run - using the FILTERED commands_to_run list
             tools_to_run = []
-            if auto_describe is None or is_true(auto_describe):
+            if "describe" in commands_to_run:
                 tools_to_run.append(("describe", PRDescription))
-            if auto_review is None or is_true(auto_review):
+            if "review" in commands_to_run:
                 tools_to_run.append(("review", PRReviewer))
-            if auto_improve is None or is_true(auto_improve):
+            if "improve" in commands_to_run:
                 tools_to_run.append(("improve", PRCodeSuggestions))
+            
+            get_logger().info(f"Tools to run after filtering: {[tool[0] for tool in tools_to_run]}")
 
             if tools_to_run:
                 try:
@@ -277,18 +294,14 @@ async def run_action():
                                     completed_tools = []
                                     for i, (tool_name, tool_class) in enumerate(tools_to_run):
                                         try:
-                                            get_logger().info(f"Executing {tool_name} tool ({i+1}/{len(tools_to_run)})...")
+                                            get_logger().debug(f"Executing {tool_name} tool ({i+1}/{len(tools_to_run)})")
                                             await tool_class(pr_url).run()
                                             completed_tools.append(tool_name)
-                                            get_logger().info(f"Successfully completed {tool_name} tool ({i+1}/{len(tools_to_run)})")
+                                            get_logger().debug(f"Successfully completed {tool_name} tool")
                                         except Exception as e:
-                                            get_logger().error(f"Failed to run {tool_name} tool ({i+1}/{len(tools_to_run)}): {e}")
-                                            get_logger().error(f"Exception type: {type(e).__name__}")
-                                            get_logger().error(f"Continuing to next tool...")
+                                            get_logger().error(f"Failed to run {tool_name} tool: {e}")
                                             # Continue with other tools but track the failure
                                             completed_tools.append(f"{tool_name}(failed)")
-                                        
-                                        get_logger().info(f"Completed processing {tool_name}, moving to next tool...")
                                     
                                     # All tools completed (some may have failed individually)
                                     final_status = "completed"
@@ -313,7 +326,6 @@ async def run_action():
                                         
                                         # Wait for all pending dashboard operations to complete
                                         get_logger().debug("Waiting for pending dashboard operations to complete...")
-                                        from pr_agent.log.job_context import wait_for_pending_tasks
                                         await wait_for_pending_tasks(timeout=10.0)
                                         get_logger().debug("Dashboard operations completed")
                                         
@@ -329,34 +341,24 @@ async def run_action():
                         except Exception as e:
                             get_logger().warning(f"Dashboard job tracking failed, continuing without tracking: {e}")
                             # Fall through to execute without job tracking
-                            get_logger().info("Executing tools without dashboard tracking (fallback mode)")
-                            for i, (tool_name, tool_class) in enumerate(tools_to_run):
+                            get_logger().debug("Executing tools without dashboard tracking (fallback mode)")
+                            for tool_name, tool_class in tools_to_run:
                                 try:
-                                    get_logger().info(f"Executing {tool_name} tool without tracking ({i+1}/{len(tools_to_run)})...")
                                     await tool_class(pr_url).run()
-                                    get_logger().info(f"Successfully completed {tool_name} tool without tracking ({i+1}/{len(tools_to_run)})")
+                                    get_logger().debug(f"Completed {tool_name} tool without tracking")
                                 except Exception as e:
-                                    get_logger().error(f"Failed to run {tool_name} tool without tracking ({i+1}/{len(tools_to_run)}): {e}")
-                                    get_logger().error(f"Exception type: {type(e).__name__}")
-                                    get_logger().error(f"Continuing to next tool...")
+                                    get_logger().error(f"Failed to run {tool_name} tool without tracking: {e}")
                                     # Continue with other tools
-                                
-                                get_logger().info(f"Completed processing {tool_name} (fallback), moving to next tool...")
                     else:
-                        # Execute without job tracking (fallback or dashboard disabled)
-                        get_logger().info("Executing tools without dashboard tracking (dashboard disabled)")
-                        for i, (tool_name, tool_class) in enumerate(tools_to_run):
+                        # Execute without job tracking (dashboard disabled)
+                        get_logger().debug("Executing tools without dashboard tracking (dashboard disabled)")
+                        for tool_name, tool_class in tools_to_run:
                             try:
-                                get_logger().info(f"Executing {tool_name} tool (no tracking) ({i+1}/{len(tools_to_run)})...")
                                 await tool_class(pr_url).run()
-                                get_logger().info(f"Successfully completed {tool_name} tool (no tracking) ({i+1}/{len(tools_to_run)})")
+                                get_logger().debug(f"Completed {tool_name} tool (dashboard disabled)")
                             except Exception as e:
-                                get_logger().error(f"Failed to run {tool_name} tool (no tracking) ({i+1}/{len(tools_to_run)}): {e}")
-                                get_logger().error(f"Exception type: {type(e).__name__}")
-                                get_logger().error(f"Continuing to next tool...")
+                                get_logger().error(f"Failed to run {tool_name} tool (dashboard disabled): {e}")
                                 # Continue with other tools
-                            
-                            get_logger().info(f"Completed processing {tool_name} (no tracking), moving to next tool...")
                                 
                 except Exception as e:
                     get_logger().error(f"Failed to execute Azure DevOps Pipeline tools: {e}")
@@ -378,7 +380,6 @@ if __name__ == '__main__':
                     get_logger().info("Starting final dashboard cleanup and sync...")
                     
                     # First, wait for any remaining pending tasks
-                    from pr_agent.log.job_context import wait_for_pending_tasks, cleanup_all_dashboard_tasks
                     await wait_for_pending_tasks(timeout=15.0)
                     get_logger().debug("Final pending tasks completed")
                     

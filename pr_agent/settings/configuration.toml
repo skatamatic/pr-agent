@@ -1,5 +1,5 @@
-model = "anthropic/claude-opus-4-20250514"
-model_reasoning = "anthropic/claude-opus-4-20250514"
+model = "anthropic/claude-sonnet-4-20250514"
+model_reasoning = "anthropic/claude-sonnet-4-20250514"
 model_weak = "o4-mini"
 fallback_models = [ "o4-mini",]
 reasoning_effort = "high"
@@ -7,16 +7,16 @@ max_model_tokens = 94000
 temperature = 0.2
 
 [config]
-model = "anthropic/claude-opus-4-20250514"
+model = "anthropic/claude-sonnet-4-20250514"
 fallback_models = [ "o4-mini",]
-model_reasoning = "anthropic/claude-opus-4-20250514"
-model_weak = "o4-mini"
+model_reasoning = "anthropic/claude-sonnet-4-20250514"
+model_weak = "anthropic/claude-sonnet-4-20250514"
 git_provider = "github"
 publish_output = true
 publish_output_progress = true
 verbosity_level = 2
 use_extra_bad_extensions = false
-log_level = "DEBUG"
+log_level = "INFO"
 use_wiki_settings_file = true
 use_repo_settings_file = true
 use_global_settings_file = true
@@ -79,7 +79,7 @@ minimal_commits_for_incremental_review = 0
 minimal_minutes_for_incremental_review = 0
 enable_intro_text = true
 enable_help_text = false
-# model = ""  # Optional: specify model for PR reviews (defaults to config.model if not set)
+model = ""
 
 [pr_description]
 publish_labels = false
@@ -103,7 +103,6 @@ include_generated_by_header = true
 enable_large_pr_handling = true
 max_ai_calls = 4
 async_ai_calls = true
-# model = ""  # Optional: specify model for PR descriptions (defaults to config.model if not set)
 
 [pr_questions]
 enable_help_text = false
@@ -121,8 +120,8 @@ persistent_comment = true
 max_history_len = 8
 publish_output_no_suggestions = true
 apply_suggestions_checkbox = true
-suggestions_score_threshold = 0
-commit_eligibility_threshold = 7  # Minimum score (0-10) for a suggestion to be considered directly committable
+suggestions_score_threshold = 5
+commit_eligibility_threshold = 8
 new_score_mechanism = true
 new_score_mechanism_th_high = 9
 new_score_mechanism_th_medium = 7
@@ -139,7 +138,7 @@ fold_suggestions_on_self_review = false
 publish_post_process_suggestion_impact = false
 wiki_page_accepted_suggestions = false
 allow_thumbs_up_down = false
-# model = ""  # Optional: specify model for code suggestions (defaults to config.model if not set)
+model = ""
 
 [pr_custom_prompt]
 prompt = "The code suggestions should focus only on the following:\n- ...\n- ...\n...\n"
@@ -194,12 +193,12 @@ num_retrieved_snippets = 5
 [pr_filters]
 # Skip PR description generation if description already has text
 skip_if_description_exists = true
-# Terminate entire job if [no_bots] is found anywhere in PR description
+# Terminate entire job if [nobots] or [no_bots] is found anywhere in PR description
 terminate_on_no_bots = true
 # Terminate PR processing if it exceeds this many total lines changed (added + deleted), posts explanatory comment
-max_lines_changed = 1000
-# Skip ALL tools if PR-Agent has already processed this PR (detects "PR Reviewer Guide 🔍" header)
-skip_if_review_suggestions_exist = false
+max_lines_changed = 2500
+# Skip ALL tools if PR-Agent has already processed this PR (detects "PR Reviewer Guide" in any comment)
+skip_if_review_suggestions_exist = true
 
 [pr_help_docs]
 repo_url = ""
@@ -320,6 +319,56 @@ ENABLED = true
 API_KEY = ""
 
 [pr_dev_time_estimation]
+enabled = true
+model = "anthropic/claude-sonnet-4-20250514"
+fallback_to_heuristic = true
+estimation_timeout_seconds = 30
+confidence_threshold = "medium"
+
+[config.pr_reviewer]
+num_max_findings = 15
+extra_instructions = ""
+model = ""
+
+[config.pr_description]
+extra_instructions = ""
+publish_labels = false
+generate_ai_title = false
+enable_large_pr_handling = true
+
+[config.pr_code_suggestions]
+extra_instructions = "We are looking for suggestions in this priority order:\n1 - Critical bugs\n2 - Architectural/design concerns (such as not adhering to SOLID, DRY, KISS, principle of least surprise)\n3 - Multithreading/concurrency/deadlock/contention/threadpool exhaustion potential.  Generally prefer modern async code to explicitly multithreaded code unless there's a clear reason to prefer the thread management\n4 - Misused or naively implemented library calls (such as using .Result on async methods, or using suboptimal LINQ etc)\n5 - Readability and testability:\n    - Fit with the rest of the codebase.  Refer to the additional context for style/integration clues\n    - Small methods\n    - Early returns\n    - Good naming of classes/variables/methods\n    - Simplicity\n6 - Modern best practices (especially in async code)\n7 - Design patterns that could be applied or are misapplied\n8 - Test coverage.  We don't need to test every little thing, but key/complex functionality MUST have tests.\n9 - Performance.  When citing performance, be sure to include the time and space complexity (O notation) of the affected code before and after the suggestion.\n10 - Leaks and lifecycle management (ie dispose methods etc)\n11 - Anything else you find pertinent!\n\nDo not hesitate to be harsh with language if things are outright bad!  But try to remain empathetic (ie This code sucks, but we all make mistakes or I see why you did it this way but it's suboptimal).  \nWe require the utmost quality and scrutiny.  Leave as many comments as needed to ensure an extremely high quality codebase.  \nDo not be worried about offending the author - let them know when their code is bad and help make them better at their jobs.\nDon't beat around the bush!  This is important - do not hesitate to insult the code if it is objectively bad quality.\n\nFeel free to provide many many suggestions for even a small PR if needed.  In fact, it is encouraged to address the code as comprehensively as possible.\n"
+focus_only_on_problems = false
+suggestions_score_threshold = 5
+commit_eligibility_threshold = 8
+commitable_code_suggestions = true
+dual_publishing_score_threshold = -1
+model = ""
+
+[config.github]
+bot_user = "github-actions[bot]"
+override_deployment_type = true
+pr_commands = [ "/describe --pr_description.final_update_message=false", "/review", "/improve",]
+
+[config.best_practices]
+content = ""
+organization_name = ""
+max_lines_allowed = 800
+enable_global_best_practices = false
+
+[config.auto_best_practices]
+enable_auto_best_practices = true
+utilize_auto_best_practices = true
+extra_instructions = ""
+content = ""
+max_patterns = 5
+
+[config.dashboard]
+URL = "http://localhost:8000/"
+ENABLED = true
+API_KEY = ""
+
+[config.pr_dev_time_estimation]
 enabled = true
 model = "anthropic/claude-sonnet-4-20250514"
 fallback_to_heuristic = true

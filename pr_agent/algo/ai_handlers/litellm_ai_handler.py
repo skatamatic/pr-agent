@@ -202,12 +202,12 @@ class LiteLLMAIHandler(BaseAiHandler):
             "budget_tokens": extended_thinking_budget_tokens
         }
         if get_settings().config.verbosity_level >= 2:
-            get_logger().info(f"Adding max output tokens {extended_thinking_max_output_tokens} to model {model}, extended thinking budget tokens: {extended_thinking_budget_tokens}")
+            get_logger().debug(f"Adding max output tokens {extended_thinking_max_output_tokens} to model {model}, extended thinking budget tokens: {extended_thinking_budget_tokens}")
         kwargs["max_tokens"] = extended_thinking_max_output_tokens
 
         # temperature may only be set to 1 when thinking is enabled
         if get_settings().config.verbosity_level >= 2:
-            get_logger().info("Temperature may only be set to 1 when thinking is enabled with claude models.")
+            get_logger().debug("Temperature may only be set to 1 when thinking is enabled with claude models.")
         kwargs["temperature"] = 1
 
         return kwargs

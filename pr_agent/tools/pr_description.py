@@ -137,16 +137,16 @@ class PRDescription:
             except Exception as e:
                 get_logger().warning(f"Dashboard operation context setup failed, continuing without tracking: {e}")
                 # Fall through to execute without tracking
-                get_logger().info("Executing PR description without dashboard tracking (context setup failed)")
+                get_logger().debug("Executing PR description without dashboard tracking (context setup failed)")
                 return await self._run_without_tracking()
             
             # Execute with dashboard tracking - let operation failures be tracked
             with operation_context_manager as operation_id:
-                get_logger().info(f"PR description operation started with ID: {operation_id}")
+                get_logger().debug(f"PR description operation started with ID: {operation_id}")
                 return await self._run_with_tracking(operation_id)
         
         # Execute without operation tracking (dashboard disabled)
-        get_logger().info("Executing PR description without dashboard tracking (dashboard disabled)")
+        get_logger().debug("Executing PR description without dashboard tracking (dashboard disabled)")
         return await self._run_without_tracking()
 
     async def _run_with_tracking(self, operation_id: str):
@@ -188,25 +188,25 @@ class PRDescription:
             # Step 1: Context and diff preparation
             if DASHBOARD_INTEGRATION_AVAILABLE:
                 set_operation_step("Context")
-            get_logger().info("[Context] - Preparing PR description context and diff...")
+            get_logger().debug("[Context] - Preparing PR description context and diff...")
             await self._prepare_context_and_tickets()
             
             # Step 2: Generate main description
             if DASHBOARD_INTEGRATION_AVAILABLE:
                 set_operation_step("Generating")
-            get_logger().info("[Generating] - Generating PR description...")
+            get_logger().debug("[Generating] - Generating PR description...")
             await self._generate_description()
             
             # Step 3: Prepare and process data
             if DASHBOARD_INTEGRATION_AVAILABLE:
                 set_operation_step("Processing")
-            get_logger().info("[Processing] - Processing generated description...")
+            get_logger().debug("[Processing] - Processing generated description...")
             result = await self._process_description_data()
             
             # Step 4: Dev time estimation (with insights capture)
             if DASHBOARD_INTEGRATION_AVAILABLE:
                 set_operation_step("DevTime")
-            get_logger().info("[DevTime] - Estimating time savings...")
+            get_logger().debug("[DevTime] - Estimating time savings...")
             dev_hours_saved, dev_time_insights = await self._estimate_dev_time_saved_with_insights(result)
             
             # Capture insights for dashboard
@@ -219,7 +219,7 @@ class PRDescription:
             
             # Step 5: Send aggregated AI metrics
             if DASHBOARD_INTEGRATION_AVAILABLE:
-                get_logger().info("[AI] - Sending aggregated AI metrics...")
+                get_logger().debug("[AI] - Sending aggregated AI metrics...")
                 self._send_aggregated_ai_metrics(dev_hours_saved)
             
             # Step 6: Publishing

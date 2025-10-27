@@ -53,12 +53,12 @@ class AzureDevopsProvider(GitProvider):
             
         try:
             # Basic suggestion info for debugging
-            body_length = len(suggestion.get('body', ''))
+            body = suggestion.get('body', '')
+            body_length = len(body)
             get_logger().debug(f"Suggestion #{idx + 1}: body_length={body_length}")
-        except Exception as e:
-            get_logger().debug(f"Error analyzing suggestion #{idx + 1}: {e}")
-            
+
             # Check for line duplication
+            lines = body.split('\n')
             seen_lines = {}
             duplicates = []
             for i, line in enumerate(lines):
@@ -68,24 +68,19 @@ class AzureDevopsProvider(GitProvider):
                         duplicates.append((i, line, seen_lines[stripped]))
                     else:
                         seen_lines[stripped] = i
-            
+
             if duplicates:
-                get_logger().warning(f"🔍 AZURE DEBUG: Found {len(duplicates)} potential duplicate lines in body:")
-                for line_num, line_content, first_occurrence in duplicates:
-                    get_logger().warning(f"🔍 AZURE DEBUG: Line {line_num} (first at {first_occurrence}): {repr(line_content)}")
-            else:
-                get_logger().info(f"🔍 AZURE DEBUG: No obvious line duplicates found in body")
-                
+                get_logger().warning(f"Found {len(duplicates)} potential duplicate lines in suggestion #{idx + 1}")
             # Check specific patterns that might indicate duplication
             if '```suggestion' in body and '```diff' in body:
-                get_logger().warning(f"🔍 AZURE DEBUG: Body contains BOTH suggestion and diff blocks - potential conversion issue!")
-            
+                get_logger().warning(f"Suggestion #{idx + 1} contains both suggestion and diff blocks")
+
             # Look for repeated code blocks
             code_blocks = []
             in_code_block = False
             current_block = []
             block_type = None
-            
+
             for line in lines:
                 if line.strip().startswith('```'):
                     if not in_code_block:
@@ -100,12 +95,11 @@ class AzureDevopsProvider(GitProvider):
                         block_type = None
                 elif in_code_block:
                     current_block.append(line)
-            
-            get_logger().info(f"🔍 AZURE DEBUG: Found {len(code_blocks)} code blocks")
-            for i, (block_type, block_content) in enumerate(code_blocks):
-                get_logger().info(f"🔍 AZURE DEBUG: Code block {i + 1} ({block_type}): {len(block_content)} chars")
-                
-        get_logger().info(f"🔍 AZURE DEBUG: ====== END DEEP ANALYSIS #{idx + 1} ======")
+
+            if len(code_blocks) > 5:  # Only log if unusually many code blocks
+                get_logger().debug(f"Suggestion #{idx + 1} has {len(code_blocks)} code blocks")
+        except Exception as e:
+            get_logger().debug(f"Error in debug analysis of suggestion #{idx + 1}: {e}")
 
     def __init__(
             self, pr_url: Optional[str] = None, incremental: Optional[bool] = False
@@ -178,7 +172,10 @@ class AzureDevopsProvider(GitProvider):
                         diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
                         
                         # replace ```suggestion ... ``` with diff_code, using regex:
-                        body = re.sub(r'```suggestion.*?```', diff_code, body, flags=re.DOTALL)
+                        # Use a function to avoid regex interpretation of backslashes in diff_code
+                        def replace_suggestion(match):
+                            return diff_code
+                        body = re.sub(r'```suggestion.*?```', replace_suggestion, body, flags=re.DOTALL)
                         get_logger().info(f"Converted non-commit-eligible suggestion #{idx + 1} to diff format")
                     else:
                         # For COMMIT-ELIGIBLE suggestions, keep ```suggestion format but optimize content
@@ -202,10 +199,13 @@ class AzureDevopsProvider(GitProvider):
                         if added_lines:
                             # Replace suggestion content with only the new/changed lines
                             clean_suggestion_content = '\n'.join(added_lines)
+                            # Use a function to avoid regex interpretation of backslashes in content
+                            def replace_clean_suggestion(match):
+                                return f'```suggestion\n{clean_suggestion_content}\n```'
                             body = re.sub(
-                                r'```suggestion\n(.*?)\n```', 
-                                f'```suggestion\n{clean_suggestion_content}\n```', 
-                                body, 
+                                r'```suggestion\n(.*?)\n```',
+                                replace_clean_suggestion,
+                                body,
                                 flags=re.DOTALL
                             )
                             get_logger().info(f"Optimized commit-eligible suggestion #{idx + 1} content (showing only new lines)")
@@ -360,7 +360,7 @@ class AzureDevopsProvider(GitProvider):
             return list(contents)[0]
         except Exception as e:
             if get_settings().config.verbosity_level >= 2:
-                get_logger().error(f"Failed to get repo settings, error: {e}")
+                get_logger().debug(f"Failed to get repo settings, error: {e}")
             return ""
 
     def get_files(self):
@@ -623,7 +623,7 @@ class AzureDevopsProvider(GitProvider):
                                                                                 absolute_position)
         if position == -1:
             if get_settings().config.verbosity_level >= 2:
-                get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
+                get_logger().debug(f"Could not find position for {relevant_file} {relevant_line_in_file}")
             subject_type = "FILE"
         else:
             subject_type = "LINE"
@@ -647,12 +647,12 @@ class AzureDevopsProvider(GitProvider):
                                             },
                                         })
                     if get_settings().config.verbosity_level >= 2:
-                        get_logger().info(
+                        get_logger().debug(
                             f"Published code suggestion on {self.pr_num} at {comment['path']}"
                         )
                 except Exception as e:
                     if get_settings().config.verbosity_level >= 2:
-                        get_logger().error(f"Failed to publish code suggestion, error: {e}")
+                        get_logger().debug(f"Failed to publish code suggestion, error: {e}")
                     overall_success = False
             return overall_success
 
@@ -883,7 +883,7 @@ class AzureDevopsProvider(GitProvider):
             return pr_id
         except Exception as e:
             if get_settings().config.verbosity_level >= 2:
-                get_logger().info(f"Failed to get PR id, error: {e}")
+                get_logger().debug(f"Failed to get PR id, error: {e}")
             return ""
 
     def publish_file_comments(self, file_comments: list) -> bool:

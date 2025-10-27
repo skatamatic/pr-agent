@@ -357,7 +357,7 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
             total_tokens += token_handler.count_tokens(patch_final)
             files_in_patch_list.append(filename)
             if get_settings().config.verbosity_level >= 2:
-                get_logger().info(f"Tokens: {total_tokens}, last filename: {filename}")
+                get_logger().debug(f"Tokens: {total_tokens}, last filename: {filename}")
     return total_tokens, patches, remaining_files_list_new, files_in_patch_list
 
 
@@ -527,7 +527,7 @@ async def get_pr_multi_diffs(git_provider: GitProvider,
     for file in sorted_files:
         if call_number > max_calls:
             if get_settings().config.verbosity_level >= 2:
-                get_logger().info(f"Reached max calls ({max_calls})")
+                get_logger().debug(f"Reached max calls ({max_calls})")
             break
 
         original_file_content_str = file.base_file
@@ -580,16 +580,16 @@ async def get_pr_multi_diffs(git_provider: GitProvider,
             call_number += 1
             if call_number > max_calls: # avoid creating new patches
                 if get_settings().config.verbosity_level >= 2:
-                    get_logger().info(f"Reached max calls ({max_calls})")
+                    get_logger().debug(f"Reached max calls ({max_calls})")
                 break
             if get_settings().config.verbosity_level >= 2:
-                get_logger().info(f"Call number: {call_number}")
+                get_logger().debug(f"Call number: {call_number}")
 
         if patch:
             patches.append(patch)
             total_tokens += new_patch_tokens
             if get_settings().config.verbosity_level >= 2:
-                get_logger().info(f"Tokens: {total_tokens}, last filename: {file.filename}")
+                get_logger().debug(f"Tokens: {total_tokens}, last filename: {file.filename}")
 
     # Add the last chunk
     if patches:

@@ -169,12 +169,12 @@ class PRReviewer:
             except Exception as e:
                 get_logger().warning(f"Dashboard operation context setup failed, continuing without tracking: {e}")
                 # Fall through to execute without tracking
-                get_logger().info("[Review] - Executing PR review without dashboard tracking (context setup failed)")
+                get_logger().debug("[Review] - Executing PR review without dashboard tracking (context setup failed)")
                 return await self._run_without_tracking()
             
             # Execute with dashboard tracking - let operation failures be tracked
             with operation_context_manager as operation_id:
-                get_logger().info(f"[Review] - PR review operation started with ID: {operation_id}")
+                get_logger().debug(f"[Review] - PR review operation started with ID: {operation_id}")
                 return await self._run_with_tracking(operation_id)
         
         # Execute without operation tracking (dashboard disabled)
@@ -220,25 +220,25 @@ class PRReviewer:
             # Step 1: Context and diff preparation
             if DASHBOARD_INTEGRATION_AVAILABLE:
                 set_operation_step("Context")
-            get_logger().info("[Context] - Preparing PR review context and diff...")
+            get_logger().debug("[Context] - Preparing PR review context and diff...")
             await self._prepare_context_and_diff()
             
             # Step 2: Generate main review
             if DASHBOARD_INTEGRATION_AVAILABLE:
                 set_operation_step("Generating")
-            get_logger().info("[Generating] - Generating PR review...")
+            get_logger().debug("[Generating] - Generating PR review...")
             await self._generate_review()
             
             # Step 3: Process review data
             if DASHBOARD_INTEGRATION_AVAILABLE:
                 set_operation_step("Processing") 
-            get_logger().info("[Processing] - Processing generated review...")
+            get_logger().debug("[Processing] - Processing generated review...")
             result = await self._process_review_data()
             
             # Step 4: Dev time estimation (with insights capture)
             if DASHBOARD_INTEGRATION_AVAILABLE:
                 set_operation_step("DevTime")
-            get_logger().info("[DevTime] - Estimating time savings...")
+            get_logger().debug("[DevTime] - Estimating time savings...")
             dev_hours_saved, dev_time_insights = await self._estimate_dev_time_saved_with_insights(result)
             
             # Capture insights for dashboard
@@ -252,7 +252,7 @@ class PRReviewer:
             
             # Step 5: Send aggregated AI metrics
             if DASHBOARD_INTEGRATION_AVAILABLE:
-                get_logger().info("[AI] - Sending aggregated AI metrics...")
+                get_logger().debug("[AI] - Sending aggregated AI metrics...")
                 self._send_aggregated_ai_metrics(dev_hours_saved)
             
             # Step 6: Publishing

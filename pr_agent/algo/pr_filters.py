@@ -61,14 +61,14 @@ def check_pr_filters(git_provider: GitProvider, command: str = None) -> PRFilter
                 reason="PR description already exists, skipping description generation"
             )
         
-        # Filter 2: Terminate if [no_bots] is found anywhere in description
+        # Filter 2: Terminate if [nobots] or [no_bots] is found anywhere in description
         if filters.get("terminate_on_no_bots", False):
-            # Case-insensitive, whitespace-tolerant matching for [no_bots]
-            if re.search(r'\[no_bots\]', pr_description, re.IGNORECASE):
-                get_logger().info("PR filter: [no_bots] found, terminating entire job")
+            # Case-insensitive matching for [nobots] or [no_bots]
+            if re.search(r'\[no[_]?bots\]', pr_description, re.IGNORECASE):
+                get_logger().info("PR filter: [nobots] found, terminating entire job")
                 return PRFilterResult(
                     should_terminate=True,
-                    reason="[no_bots] found in PR description, terminating entire job"
+                    reason="[nobots] found in PR description, terminating entire job"
                 )
         
         # Filter 3: Terminate if PR is too large (too many lines changed)
@@ -204,9 +204,9 @@ def should_terminate_job(git_provider: GitProvider) -> Tuple[bool, str]:
     
     try:
         pr_description = git_provider.get_pr_description_full() or ""
-        # Case-insensitive, whitespace-tolerant matching for [no_bots]
-        if re.search(r'\[no_bots\]', pr_description, re.IGNORECASE):
-            return True, "[no_bots] found in PR description, terminating entire job"
+        # Case-insensitive matching for [nobots] or [no_bots]
+        if re.search(r'\[no[_]?bots\]', pr_description, re.IGNORECASE):
+            return True, "[nobots] found in PR description, terminating entire job"
     except Exception as e:
         get_logger().warning(f"Failed to check PR description for termination: {e}")
     
@@ -215,41 +215,61 @@ def should_terminate_job(git_provider: GitProvider) -> Tuple[bool, str]:
 
 def check_for_existing_pr_agent_comments(git_provider: GitProvider) -> bool:
     """
-    Check if PR already has PR-Agent generated comments (reviews or suggestions)
+    Check if PR already has PR-Agent generated comments (reviews, suggestions, descriptions, etc.)
 
-    Looks for the specific header left by the review tool: "PR Reviewer Guide 🔍"
+    Looks for any PR-Agent generated content by checking for known patterns.
+    The primary trigger is any comment containing "PR Reviewer Guide" (case insensitive).
     If present, it means PR-Agent has already processed this PR at least once.
 
     Args:
         git_provider: Git provider instance to access PR data
 
     Returns:
-        True if PR-Agent review comments already exist
+        True if any PR-Agent generated content already exists
     """
     try:
         comments = list(git_provider.get_issue_comments())
-
-        # Look for the specific header left by PR-Agent's review tool
-        review_header = "PR Reviewer Guide 🔍"
 
         for comment in comments:
             comment_body = comment.body if hasattr(comment, 'body') else str(comment)
             if not comment_body:
                 continue
 
-            # Check if this comment starts with the review header (case-sensitive)
+            # Primary check: Any comment containing "PR Reviewer Guide" (case insensitive)
             try:
-                if comment_body.startswith(review_header):
-                    get_logger().debug(f"Found existing PR-Agent review header: {review_header}")
+                if "pr reviewer guide" in comment_body.lower():
+                    get_logger().debug(f"Found existing PR-Agent review guide in comment: {comment_body[:100]}...")
                     return True
             except (UnicodeDecodeError, UnicodeEncodeError):
-                # If there are encoding issues, try a different approach
                 try:
-                    if str(comment_body).startswith(review_header):
-                        get_logger().debug(f"Found existing PR-Agent review header (encoding fallback): {review_header}")
+                    if "pr reviewer guide" in str(comment_body).lower():
+                        get_logger().debug(f"Found existing PR-Agent review guide in comment (encoding fallback): {str(comment_body)[:100]}...")
                         return True
                 except Exception:
                     continue
+
+            # Additional patterns for completeness
+            pr_agent_patterns = [
+                "No suggestions found to improve this PR",
+                "No code suggestions found for the PR",
+                "Failed to generate code suggestions",
+                "## PR Code Suggestions ✨",
+                "## PR Agent Walkthrough 🤖",
+                "## PR Labels:",
+            ]
+
+            for pattern in pr_agent_patterns:
+                try:
+                    if pattern in comment_body:
+                        get_logger().debug(f"Found existing PR-Agent content pattern: {pattern}")
+                        return True
+                except (UnicodeDecodeError, UnicodeEncodeError):
+                    try:
+                        if pattern in str(comment_body):
+                            get_logger().debug(f"Found existing PR-Agent content pattern (encoding fallback): {pattern}")
+                            return True
+                    except Exception:
+                        continue
 
         return False
 

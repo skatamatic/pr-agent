@@ -311,7 +311,7 @@ const Notifications = () => {
   const handleAllRepositoriesToggle = () => {
     setFormData(prev => ({
       ...prev,
-      repository_filter: prev.repository_filter.length === repositories.length ? [] : repositories.map(r => r.name)
+      repository_filter: prev.repository_filter.length === (Array.isArray(repositories) ? repositories.length : 0) ? [] : (Array.isArray(repositories) ? repositories.map(r => r.name) : [])
     }));
   };
 
@@ -652,7 +652,7 @@ const Notifications = () => {
                       
                       {/* Individual Repository Toggles */}
                       <div className="space-y-2 max-h-48 overflow-y-auto">
-                        {repositories.map((repo) => (
+                        {Array.isArray(repositories) && repositories.map((repo) => (
                           <label key={repo.id} className="flex items-center gap-3 p-3 border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700/50 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer">
                             <input
                               type="checkbox"
@@ -1118,7 +1118,7 @@ const Notifications = () => {
                                   
                                   {/* Individual Repository Toggles */}
                                   <div className="space-y-2 max-h-48 overflow-y-auto">
-                                    {repositories.map((repo) => (
+                                    {Array.isArray(repositories) && repositories.map((repo) => (
                                       <label key={repo.id} className="flex items-center gap-3 p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer">
                                         <input
                                           type="checkbox"

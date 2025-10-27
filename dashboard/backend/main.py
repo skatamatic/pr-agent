@@ -372,15 +372,18 @@ class DashboardApplication:
         @self.app.get("/api/jobs/{job_id}/deletion-preview")
         async def get_job_deletion_preview(job_id: str):
             """Get preview of what will be deleted with a specific job"""
+            logger.info(f"Getting deletion preview for job {job_id}")
             try:
                 from services.job_deletion_service import JobDeletionService
                 job_deletion_service = JobDeletionService(self.database_manager, self.metrics_service)
                 preview = await job_deletion_service.get_job_deletion_preview(job_id)
+                logger.info(f"Deletion preview for job {job_id}: {preview}")
                 return APIResponse(data=preview)
             except ValueError as e:
+                logger.warning(f"Job not found for deletion preview: {job_id} - {e}")
                 raise HTTPException(status_code=404, detail=str(e))
             except Exception as e:
-                logger.error(f"Error getting job deletion preview: {e}")
+                logger.error(f"Error getting job deletion preview for {job_id}: {e}")
                 raise HTTPException(status_code=500, detail="Failed to get deletion preview")
         
         @self.app.delete("/api/jobs/{job_id}")
@@ -388,7 +391,7 @@ class DashboardApplication:
             """Delete a specific job and all related data"""
             try:
                 from services.job_deletion_service import JobDeletionService
-                job_deletion_service = JobDeletionService(self.database_manager, self.metrics_service)
+                job_deletion_service = JobDeletionService(self.database_manager, self.metrics_service, self.cached_job_service)
                 result = await job_deletion_service.delete_job_and_related_data(job_id)
                 return APIResponse(data=result, message="Job and related data deleted successfully")
             except ValueError as e:
@@ -421,9 +424,10 @@ class DashboardApplication:
                 repository = request.get('repository')
                 
                 data_cleanup_service = DataCleanupService(
-                    self.database_manager, 
-                    self.metrics_service, 
-                    self.retention_service
+                    self.database_manager,
+                    self.metrics_service,
+                    self.retention_service,
+                    self.cached_job_service
                 )
                 
                 preview = await data_cleanup_service.get_cleanup_preview(cutoff_date, repository)
@@ -460,9 +464,10 @@ class DashboardApplication:
                 data_types = request.get('data_types', ['operations', 'jobs', 'logs', 'notification_events'])
                 
                 data_cleanup_service = DataCleanupService(
-                    self.database_manager, 
-                    self.metrics_service, 
-                    self.retention_service
+                    self.database_manager,
+                    self.metrics_service,
+                    self.retention_service,
+                    self.cached_job_service
                 )
                 
                 result = await data_cleanup_service.execute_cleanup(cutoff_date, repository, data_types)

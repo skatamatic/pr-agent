@@ -161,16 +161,16 @@ class PRCodeSuggestions:
             except Exception as e:
                 get_logger().warning(f"Dashboard operation context setup failed, continuing without tracking: {e}")
                 # Fall through to execute without tracking
-                get_logger().info("Executing code suggestions without dashboard tracking (context setup failed)")
+                get_logger().debug("Executing code suggestions without dashboard tracking (context setup failed)")
                 return await self._run_without_tracking()
             
             # Execute with dashboard tracking - let operation failures be tracked
             with operation_context_manager as operation_id:
-                get_logger().info(f"Code suggestions operation started with ID: {operation_id}")
+                get_logger().debug(f"Code suggestions operation started with ID: {operation_id}")
                 return await self._run_with_tracking(operation_id)
         
         # Execute without operation tracking (dashboard disabled)
-        get_logger().info("Executing code suggestions without dashboard tracking (dashboard disabled)")
+        get_logger().debug("Executing code suggestions without dashboard tracking (dashboard disabled)")
         return await self._run_without_tracking()
 
     async def _fetch_context_and_diff(self):
@@ -215,7 +215,7 @@ class PRCodeSuggestions:
                 get_logger().warning(f"[Context] - Empty PR diff list")
                 return None
                 
-            get_logger().info(f"[Context] - Processing {len(self.patches_diff_list)} diff chunks")
+            get_logger().debug(f"[Context] - Processing {len(self.patches_diff_list)} diff chunks")
             return {"patches_fetched": True, "context_fetched": bool(self.context_data)}
             
         except Exception as e:
@@ -230,8 +230,7 @@ class PRCodeSuggestions:
             commitable_enabled = get_settings().pr_code_suggestions.commitable_code_suggestions
             
             get_logger().info('[Generating] - Starting AI code suggestions generation...')
-            get_logger().info(f"[Filtering] - Score threshold: {score_threshold} (raw setting: {get_settings().pr_code_suggestions.suggestions_score_threshold})")
-            get_logger().info(f"[Filtering] - Commitable suggestions: {commitable_enabled}")
+            get_logger().debug(f"[Filtering] - Score threshold: {score_threshold}, Commitable: {commitable_enabled}")
             
             model = get_settings().config.model
             
@@ -295,26 +294,11 @@ class PRCodeSuggestions:
                 patches_diff,
                 model
             )
-            get_logger().info(f'[Reflecting] - Self-reflection returned: {len(response_reflect) if response_reflect else 0} characters')
-            
+            get_logger().debug(f'[Reflecting] - Self-reflection returned: {len(response_reflect) if response_reflect else 0} characters')
+
             if response_reflect:
-                get_logger().info('[Reflecting] - Analyzing reflection response and updating scores...')
-                
-                # Debug: Log scores BEFORE analyze_self_reflection_response
-                get_logger().info("[DEBUG] - Scores BEFORE analyze_self_reflection_response:")
-                for i, suggestion in enumerate(result["code_suggestions"]):
-                    score = suggestion.get("score", "unknown")
-                    file_name = suggestion.get("relevant_file", "unknown")
-                    get_logger().info(f"[DEBUG] - Pre-analysis suggestion {i+1}: score={score} | {file_name}")
-                
+                get_logger().debug('[Reflecting] - Analyzing reflection response and updating scores...')
                 await self.analyze_self_reflection_response(result, response_reflect)
-                
-                # Debug: Log scores AFTER analyze_self_reflection_response
-                get_logger().info("[DEBUG] - Scores AFTER analyze_self_reflection_response:")
-                for i, suggestion in enumerate(result["code_suggestions"]):
-                    score = suggestion.get("score", "unknown")
-                    file_name = suggestion.get("relevant_file", "unknown")
-                    get_logger().info(f"[DEBUG] - Post-analysis suggestion {i+1}: score={score} | {file_name}")
                     
             else:
                 get_logger().warning('[Reflecting] - Reflection failed, applying default scores')

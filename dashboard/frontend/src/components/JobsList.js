@@ -323,7 +323,7 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
     try {
       // Get deletion preview
       const response = await api.getJobDeletionPreview(job.job_id);
-      setDeletionPreview(response.data);
+      setDeletionPreview(response.data?.data);
       setJobToDelete(job);
       setShowDeleteDialog(true);
       setShowJobActionsMenu(null); // Close actions menu
@@ -1138,64 +1138,97 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
       {/* Job Deletion Confirmation Dialog */}
       {showDeleteDialog && jobToDelete && deletionPreview && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full mx-4">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-2xl w-full mx-4">
             <div className="p-6">
-              <div className="flex items-center mb-4">
+              <div className="flex items-center mb-6">
                 <div className="flex-shrink-0">
                   <Trash2 className="h-6 w-6 text-red-600 dark:text-red-400" />
                 </div>
                 <div className="ml-3">
-                  <h3 className="text-lg font-medium text-gray-900 dark:text-white">
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
                     Delete Job & Related Data
                   </h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                    This action cannot be undone
+                  </p>
                 </div>
               </div>
-              
-              <div className="mb-4">
-                <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-                  This will permanently delete:
-                </p>
-                
-                <div className="bg-gray-50 dark:bg-gray-700 rounded-md p-4 mb-4">
-                  <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-600 dark:text-gray-400">Job:</span>
-                      <span className="font-medium text-gray-900 dark:text-white">
-                        #{jobToDelete.job_id} ({jobToDelete.job_type})
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600 dark:text-gray-400">Operations:</span>
-                      <span className="font-medium text-gray-900 dark:text-white">
-                        {deletionPreview.operations_count} associated operations
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600 dark:text-gray-400">Logs:</span>
-                      <span className="font-medium text-gray-900 dark:text-white">
-                        {deletionPreview.logs_count} log entries
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600 dark:text-gray-400">Repository:</span>
-                      <span className="font-medium text-gray-900 dark:text-white">
-                        {deletionPreview.repository}
-                      </span>
-                    </div>
-                    {deletionPreview.cost_impact !== 0 && (
-                      <div className="flex justify-between border-t border-gray-200 dark:border-gray-600 pt-2">
-                        <span className="text-gray-600 dark:text-gray-400">Cost Impact:</span>
-                        <span className={`font-medium ${deletionPreview.cost_impact < 0 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}`}>
-                          ${deletionPreview.cost_impact.toFixed(2)}
-                        </span>
-                      </div>
-                    )}
+
+              {/* Job Summary */}
+              <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 mb-6">
+                <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-3">Job Details:</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <span className="text-gray-600 dark:text-gray-400">Job ID:</span>
+                    <span className="ml-2 font-mono text-gray-900 dark:text-white">{jobToDelete.job_id}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-600 dark:text-gray-400">Type:</span>
+                    <span className="ml-2 font-medium text-gray-900 dark:text-white">{jobToDelete.job_type}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-600 dark:text-gray-400">Status:</span>
+                    <span className="ml-2 font-medium text-gray-900 dark:text-white">{jobToDelete.status}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-600 dark:text-gray-400">Repository:</span>
+                    <span className="ml-2 font-medium text-gray-900 dark:text-white">
+                      {deletionPreview.repository || 'Unknown'}
+                    </span>
                   </div>
                 </div>
-                
-                <p className="text-sm text-red-600 dark:text-red-400 font-medium">
-                  ⚠️ This action cannot be undone.
-                </p>
+              </div>
+
+              {/* Deletion Impact */}
+              <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-6 mb-6">
+                <h4 className="text-md font-semibold text-gray-900 dark:text-white mb-4 flex items-center">
+                  <AlertTriangle className="h-5 w-5 mr-2 text-orange-600" />
+                  Data to be Deleted
+                </h4>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {/* Operations */}
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-red-600 dark:text-red-400">
+                      {(deletionPreview.operations_count || 0).toLocaleString()}
+                    </div>
+                    <div className="text-sm text-gray-600 dark:text-gray-400">Operations</div>
+                  </div>
+
+                  {/* Logs */}
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-red-600 dark:text-red-400">
+                      {(deletionPreview.logs_count || 0).toLocaleString()}
+                    </div>
+                    <div className="text-sm text-gray-600 dark:text-gray-400">Log Entries</div>
+                  </div>
+
+                  {/* Cost Impact */}
+                  <div className="text-center">
+                    <div className={`text-2xl font-bold ${deletionPreview.cost_impact != null && deletionPreview.cost_impact < 0 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}`}>
+                      ${deletionPreview.cost_impact != null ? Math.abs(deletionPreview.cost_impact).toFixed(2) : '0.00'}
+                    </div>
+                    <div className="text-sm text-gray-600 dark:text-gray-400">
+                      {deletionPreview.cost_impact != null && deletionPreview.cost_impact < 0 ? 'Cost Savings' : 'Cost Impact'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Warning */}
+              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+                <div className="flex">
+                  <AlertTriangle className="h-5 w-5 text-red-400 flex-shrink-0 mt-0.5" />
+                  <div className="ml-3">
+                    <h5 className="text-sm font-medium text-red-800 dark:text-red-200">
+                      Permanent Deletion Warning
+                    </h5>
+                    <p className="text-sm text-red-700 dark:text-red-300 mt-1">
+                      All associated operations, logs, and metrics data will be permanently removed from the system.
+                      This action cannot be undone.
+                    </p>
+                  </div>
+                </div>
               </div>
               
               <div className="flex justify-end space-x-3">

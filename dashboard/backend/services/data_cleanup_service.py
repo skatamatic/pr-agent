@@ -15,15 +15,16 @@ logger = logging.getLogger(__name__)
 class DataCleanupService:
     """Service for cleaning up old data from all systems"""
     
-    def __init__(self, database_manager, metrics_service: MetricsService = None, retention_service: RetentionService = None):
+    def __init__(self, database_manager, metrics_service: MetricsService = None, retention_service: RetentionService = None, cached_job_service=None):
         self.database_manager = database_manager
         self.metrics_service = metrics_service or MetricsService()
         self.retention_service = retention_service or RetentionService(database_manager)
+        self.cached_job_service = cached_job_service
     
     async def get_cleanup_preview(self, cutoff_date: datetime, repository: str = None) -> Dict[str, Any]:
         """Get preview of what will be cleaned up with cost and storage impact"""
         try:
-            with self.database_manager.get_session() as db:
+            with self.database_manager.SessionLocal() as db:
                 # Count records to be deleted (using correct date fields for each table)
                 operations_query = db.query(OperationDB).filter(OperationDB.started_at < cutoff_date)
                 if repository:
@@ -115,7 +116,7 @@ class DataCleanupService:
             if not backup_result.get('success'):
                 raise Exception(f"Failed to create backup before cleanup: {backup_result.get('error')}")
             
-            with self.database_manager.get_session() as db:
+            with self.database_manager.SessionLocal() as db:
                 # Track what was deleted
                 deleted_counts = {}
                 
@@ -149,7 +150,30 @@ class DataCleanupService:
                     
                     # Recalculate global metrics after cleanup
                     await self.metrics_service.recalculate_metrics_from_operations(db)
-                    
+
+                    # Clear caches after cleanup
+                    if self.cached_job_service:
+                        try:
+                            # Clear all caches since cleanup can affect any data type
+                            if hasattr(self.cached_job_service.cache, 'jobs_cache'):
+                                await self.cached_job_service.cache.jobs_cache.clear()
+                            if hasattr(self.cached_job_service.cache, 'operations_cache'):
+                                await self.cached_job_service.cache.operations_cache.clear()
+                            if hasattr(self.cached_job_service.cache, 'logs_cache'):
+                                await self.cached_job_service.cache.logs_cache.clear()
+                            if hasattr(self.cached_job_service.cache, 'metrics_cache'):
+                                await self.cached_job_service.cache.metrics_cache.clear()
+
+                            # Clear indexes
+                            if hasattr(self.cached_job_service.cache, 'logs_by_job'):
+                                self.cached_job_service.cache.logs_by_job.clear()
+                            if hasattr(self.cached_job_service.cache, 'operations_by_job'):
+                                self.cached_job_service.cache.operations_by_job.clear()
+
+                            logger.info("Cleared all caches after data cleanup")
+                        except Exception as e:
+                            logger.warning(f"Failed to clear caches after cleanup: {e}")
+
                 except Exception as e:
                     db.rollback()
                     logger.error(f"Database error during cleanup: {e}")
@@ -183,34 +207,42 @@ class DataCleanupService:
             config = await self.metrics_service.get_or_create_config(db)
             total_cost = 0.0
             
-            # Calculate cost from operations
-            operations = db.query(OperationDB)
+            # Calculate cost from operations (only load necessary columns for performance)
+            operations_query = db.query(
+                OperationDB.total_input_tokens,
+                OperationDB.total_output_tokens,
+                OperationDB.input_tokens,
+                OperationDB.output_tokens,
+                OperationDB.ai_models_used,
+                OperationDB.model_used,
+                OperationDB.estimated_dev_hours_saved
+            )
             if repository:
-                operations = operations.filter(OperationDB.repo == repository)
-            operations = operations.all()
-            
-            for operation in operations:
+                operations_query = operations_query.filter(OperationDB.repo == repository)
+            operations = operations_query.all()
+
+            for op_data in operations:
                 # Use multi-model data if available, otherwise fall back to legacy
-                final_input_tokens = operation.total_input_tokens if operation.total_input_tokens else (operation.input_tokens or 0)
-                final_output_tokens = operation.total_output_tokens if operation.total_output_tokens else (operation.output_tokens or 0)
-                
+                final_input_tokens = op_data.total_input_tokens if op_data.total_input_tokens else (op_data.input_tokens or 0)
+                final_output_tokens = op_data.total_output_tokens if op_data.total_output_tokens else (op_data.output_tokens or 0)
+
                 if final_input_tokens and final_output_tokens:
                     # Handle multi-model data (preferred)
-                    if operation.ai_models_used and isinstance(operation.ai_models_used, dict):
-                        for model_name, model_tokens in operation.ai_models_used.items():
+                    if op_data.ai_models_used and isinstance(op_data.ai_models_used, dict):
+                        for model_name, model_tokens in op_data.ai_models_used.items():
                             model_costs = config.model_costs.get(model_name, {})
                             if model_costs:
                                 input_cost = (model_tokens.get('input_tokens', 0) / 1000) * model_costs.get('input', 0)
                                 output_cost = (model_tokens.get('output_tokens', 0) / 1000) * model_costs.get('output', 0)
                                 total_cost += input_cost + output_cost
                     # Handle legacy single-model data (fallback)
-                    elif operation.model_used:
-                        model_costs = config.model_costs.get(operation.model_used, {})
+                    elif op_data.model_used:
+                        model_costs = config.model_costs.get(op_data.model_used, {})
                         if model_costs:
                             input_cost = (final_input_tokens / 1000) * model_costs.get('input', 0)
                             output_cost = (final_output_tokens / 1000) * model_costs.get('output', 0)
                             total_cost += input_cost + output_cost
-            
+
             # Calculate dev hours savings
             dev_hours_saved = sum(op.estimated_dev_hours_saved or 0 for op in operations)
             dev_cost_savings = dev_hours_saved * config.developer_hourly_rate * config.hours_multiplier
@@ -227,34 +259,42 @@ class DataCleanupService:
             config = await self.metrics_service.get_or_create_config(db)
             total_cost = 0.0
             
-            # Calculate cost from remaining operations (after cutoff date)
-            operations = db.query(OperationDB).filter(OperationDB.started_at >= cutoff_date)
+            # Calculate cost from remaining operations (after cutoff date, only load necessary columns)
+            operations_query = db.query(
+                OperationDB.total_input_tokens,
+                OperationDB.total_output_tokens,
+                OperationDB.input_tokens,
+                OperationDB.output_tokens,
+                OperationDB.ai_models_used,
+                OperationDB.model_used,
+                OperationDB.estimated_dev_hours_saved
+            ).filter(OperationDB.started_at >= cutoff_date)
             if repository:
-                operations = operations.filter(OperationDB.repo == repository)
-            operations = operations.all()
-            
-            for operation in operations:
+                operations_query = operations_query.filter(OperationDB.repo == repository)
+            operations = operations_query.all()
+
+            for op_data in operations:
                 # Use multi-model data if available, otherwise fall back to legacy
-                final_input_tokens = operation.total_input_tokens if operation.total_input_tokens else (operation.input_tokens or 0)
-                final_output_tokens = operation.total_output_tokens if operation.total_output_tokens else (operation.output_tokens or 0)
-                
+                final_input_tokens = op_data.total_input_tokens if op_data.total_input_tokens else (op_data.input_tokens or 0)
+                final_output_tokens = op_data.total_output_tokens if op_data.total_output_tokens else (op_data.output_tokens or 0)
+
                 if final_input_tokens and final_output_tokens:
                     # Handle multi-model data (preferred)
-                    if operation.ai_models_used and isinstance(operation.ai_models_used, dict):
-                        for model_name, model_tokens in operation.ai_models_used.items():
+                    if op_data.ai_models_used and isinstance(op_data.ai_models_used, dict):
+                        for model_name, model_tokens in op_data.ai_models_used.items():
                             model_costs = config.model_costs.get(model_name, {})
                             if model_costs:
                                 input_cost = (model_tokens.get('input_tokens', 0) / 1000) * model_costs.get('input', 0)
                                 output_cost = (model_tokens.get('output_tokens', 0) / 1000) * model_costs.get('output', 0)
                                 total_cost += input_cost + output_cost
                     # Handle legacy single-model data (fallback)
-                    elif operation.model_used:
-                        model_costs = config.model_costs.get(operation.model_used, {})
+                    elif op_data.model_used:
+                        model_costs = config.model_costs.get(op_data.model_used, {})
                         if model_costs:
                             input_cost = (final_input_tokens / 1000) * model_costs.get('input', 0)
                             output_cost = (final_output_tokens / 1000) * model_costs.get('output', 0)
                             total_cost += input_cost + output_cost
-            
+
             # Calculate dev hours savings from remaining operations
             dev_hours_saved = sum(op.estimated_dev_hours_saved or 0 for op in operations)
             dev_cost_savings = dev_hours_saved * config.developer_hourly_rate * config.hours_multiplier
@@ -304,10 +344,11 @@ class DataCleanupService:
         """Create automatic backup before cleanup"""
         try:
             if self.retention_service:
-                backup_path = await self.retention_service.create_backup()
+                backup_result = self.retention_service.create_backup()
                 return {
                     "success": True,
-                    "backup_path": backup_path
+                    "backup_path": backup_result.get("path"),
+                    "backup_size": backup_result.get("size")
                 }
             else:
                 logger.warning("No retention service available for backup")
