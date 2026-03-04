@@ -414,13 +414,25 @@ else
   fi
 fi
 
-# ========================== Cloud Build SA permissions ======================
+# ========================== Cloud Build trigger SA (user-managed) ============
 
 echo ""
-echo "=== Granting Cloud Build service account permissions ==="
+echo "=== Creating user-managed service account for Cloud Build triggers ==="
 
 PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
 CB_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
+CB_TRIGGER_SA_NAME="pr-agent-cb-trigger"
+CB_TRIGGER_SA="${CB_TRIGGER_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+CB_TRIGGER_SA_RESOURCE="projects/${PROJECT_ID}/serviceAccounts/${CB_TRIGGER_SA}"
+
+if ! gcloud iam service-accounts describe "$CB_TRIGGER_SA" --format='value(email)' >/dev/null 2>&1; then
+  echo "  Creating service account $CB_TRIGGER_SA_NAME ..."
+  gcloud iam service-accounts create "$CB_TRIGGER_SA_NAME" \
+    --display-name="Cloud Build trigger (PR-Agent dashboard)" \
+    --project="$PROJECT_ID"
+else
+  echo "  Service account $CB_TRIGGER_SA_NAME already exists."
+fi
 
 declare -a CB_ROLES=(
   "roles/run.admin"
@@ -430,10 +442,10 @@ declare -a CB_ROLES=(
   "roles/storage.objectViewer"
 )
 
+echo "  Granting roles to $CB_TRIGGER_SA_NAME ..."
 for role in "${CB_ROLES[@]}"; do
-  echo "  Granting $role to Cloud Build SA ..."
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:${CB_SA}" \
+    --member="serviceAccount:${CB_TRIGGER_SA}" \
     --role="$role" \
     --condition=None \
     --quiet >/dev/null 2>&1 || true
@@ -548,7 +560,6 @@ if [[ -n "$EXISTING_TRIGGER" ]]; then
     --region="$REGION" --quiet 2>/dev/null || true
 fi
 
-CB_SA_RESOURCE="projects/${PROJECT_ID}/serviceAccounts/${CB_SA}"
 if ! gcloud builds triggers create github \
   --name="$TRIGGER_NAME" \
   --region="$REGION" \
@@ -557,7 +568,7 @@ if ! gcloud builds triggers create github \
   --build-config="cloudbuild-deploy.yaml" \
   --included-files="dashboard/**,terraform/gcp/**,cloudbuild-deploy.yaml" \
   --substitutions="_REGION=${REGION},_REPO_ID=${REPO_ID},_PREFIX=${PREFIX}" \
-  --service-account="$CB_SA_RESOURCE"; then
+  --service-account="$CB_TRIGGER_SA_RESOURCE"; then
   echo "Error: Failed to create Cloud Build trigger '$TRIGGER_NAME'."
   exit 1
 fi
@@ -589,7 +600,7 @@ if ! gcloud builds triggers create github \
   --build-config="cloudbuild-pr-agent.yaml" \
   --included-files="pr_agent/**,docker/Dockerfile.github_action_runner,requirements.txt,.dockerignore.pr-agent,cloudbuild-pr-agent.yaml" \
   --substitutions="_REGION=${REGION},_REPO_ID=${REPO_ID},_PREFIX=${PREFIX}" \
-  --service-account="$CB_SA_RESOURCE"; then
+  --service-account="$CB_TRIGGER_SA_RESOURCE"; then
   echo "Error: Failed to create Cloud Build trigger '$AGENT_TRIGGER_NAME'."
   exit 1
 fi

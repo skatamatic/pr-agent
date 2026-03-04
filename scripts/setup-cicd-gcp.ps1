@@ -382,10 +382,24 @@ try {
     # ========================== Cloud Build SA permissions ======================
 
     Write-Host ""
-    Write-Host "=== Granting Cloud Build service account permissions ==="
+    Write-Host "=== Creating user-managed service account for Cloud Build triggers ==="
 
     $ProjectNumber = gcloud projects describe $Project --format='value(projectNumber)'
     $CbSa = "$ProjectNumber@cloudbuild.gserviceaccount.com"
+    $CbTriggerSaName = "pr-agent-cb-trigger"
+    $CbTriggerSa = "${CbTriggerSaName}@${Project}.iam.gserviceaccount.com"
+    $CbTriggerSaResource = "projects/$Project/serviceAccounts/$CbTriggerSa"
+
+    $SaExists = gcloud iam service-accounts describe $CbTriggerSa --format='value(email)' 2>$null
+    if (-not $SaExists) {
+        Write-Host "  Creating service account $CbTriggerSaName ..."
+        gcloud iam service-accounts create $CbTriggerSaName `
+            --display-name="Cloud Build trigger (PR-Agent dashboard)" `
+            --project=$Project
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create service account $CbTriggerSaName." }
+    } else {
+        Write-Host "  Service account $CbTriggerSaName already exists."
+    }
 
     $CbRoles = @(
         "roles/run.admin",
@@ -395,10 +409,10 @@ try {
         "roles/storage.objectViewer"
     )
 
+    Write-Host "  Granting roles to $CbTriggerSaName ..."
     foreach ($role in $CbRoles) {
-        Write-Host "  Granting $role to Cloud Build SA ..."
         gcloud projects add-iam-policy-binding $Project `
-            --member="serviceAccount:$CbSa" `
+            --member="serviceAccount:$CbTriggerSa" `
             --role=$role `
             --condition=None `
             --quiet 2>$null | Out-Null
@@ -531,7 +545,6 @@ try {
         gcloud builds triggers delete $TriggerName --region=$Region --quiet 2>$null
     }
 
-    $CbSaResource = "projects/$Project/serviceAccounts/$CbSa"
     gcloud builds triggers create github `
         --name=$TriggerName `
         --region=$Region `
@@ -540,7 +553,7 @@ try {
         --build-config="cloudbuild-deploy.yaml" `
         --included-files="dashboard/**,terraform/gcp/**,cloudbuild-deploy.yaml" `
         --substitutions="_REGION=$Region,_REPO_ID=$RepoId,_PREFIX=$Prefix" `
-        --service-account=$CbSaResource
+        --service-account=$CbTriggerSaResource
     if ($LASTEXITCODE -ne 0) { throw "Failed to create Cloud Build trigger '$TriggerName'." }
 
     Write-Host "  Trigger '$TriggerName' created."
@@ -572,7 +585,7 @@ try {
         --build-config="cloudbuild-pr-agent.yaml" `
         --included-files="pr_agent/**,docker/Dockerfile.github_action_runner,requirements.txt,.dockerignore.pr-agent,cloudbuild-pr-agent.yaml" `
         --substitutions="_REGION=$Region,_REPO_ID=$RepoId,_PREFIX=$Prefix" `
-        --service-account=$CbSaResource
+        --service-account=$CbTriggerSaResource
     if ($LASTEXITCODE -ne 0) { throw "Failed to create Cloud Build trigger '$AgentTriggerName'." }
 
     Write-Host "  Trigger '$AgentTriggerName' created."
