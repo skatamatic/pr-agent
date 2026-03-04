@@ -124,7 +124,8 @@ class HealthService:
             
             # Send directly to dashboard backend
             try:
-                requests.post('http://localhost:8000/logs/immediate', json=log_data, timeout=2)
+                backend_url = getattr(settings, 'backend_base_url', 'http://localhost:8000')
+                requests.post(f'{backend_url.rstrip("/")}/logs/immediate', json=log_data, timeout=2)
             except Exception:
                 # If dashboard is not available, log normally - but don't fail
                 try:

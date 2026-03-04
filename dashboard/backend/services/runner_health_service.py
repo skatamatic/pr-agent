@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sys
 from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime, timedelta
 import aiohttp
@@ -15,8 +16,17 @@ from models import RepositoryDB
 
 logger = logging.getLogger(__name__)
 
+# Throttle full runner/agent API checks when returning repository health (avoid rate limits)
+REPOSITORY_HEALTH_REFRESH_INTERVAL = timedelta(seconds=120)
+_last_repository_health_refresh: Optional[datetime] = None
+
+# Cloud/Linux: local Windows service checks are not available; use API-based health only.
+def _is_windows() -> bool:
+    return sys.platform == "win32"
+
+
 class RunnerHealthService:
-    """Service for checking the health of GitHub self-hosted runners and Azure DevOps agents"""
+    """Service for checking the health of GitHub self-hosted runners and Azure DevOps agents (local and remote/API)."""
     
     def __init__(self):
         self.session = None
@@ -282,10 +292,18 @@ class RunnerHealthService:
                     "last_seen": None
                 }
             
-            # Check local service status if service name is configured
+            # Check local Windows service status only on Windows when service name is configured
             service_runner_result = None
-            if repo.runner_service_name:
+            if repo.runner_service_name and _is_windows():
                 service_runner_result = await self._check_local_runner_service(repo)
+            elif repo.runner_service_name and not _is_windows():
+                service_runner_result = {
+                    "status": "cloud_only",
+                    "error": "Local runner service check is only available on Windows. On Linux/Cloud Run, health is from GitHub API above.",
+                    "last_seen": None,
+                    "health_impact": "healthy",
+                    "details": "Use API-based runner status (cloud_runner) on this platform.",
+                }
             
             # Combine results - prioritize service status for overall health
             overall_status = cloud_runner_result.get("status", "unknown")
@@ -600,7 +618,14 @@ class RunnerHealthService:
             }
     
     async def _check_local_runner_service(self, repo: RepositoryDB) -> Dict[str, Any]:
-        """Check local Windows service runner status"""
+        """Check local Windows service runner status (Windows only; call only when _is_windows())."""
+        if not _is_windows():
+            return {
+                "status": "cloud_only",
+                "error": "Local service check is only available on Windows.",
+                "last_seen": None,
+                "health_impact": "healthy",
+            }
         try:
             from services.runner_service_monitor import RunnerServiceMonitor
             monitor = RunnerServiceMonitor()
@@ -653,13 +678,24 @@ class RunnerHealthService:
             }
     
     async def check_all_repositories(self, db: Session) -> Dict[str, Any]:
-        """Check runner health for all active repositories with runner services configured"""
+        """Check runner health for all active repositories with runner/agent config (local service or API token)."""
         try:
-            # Only check repositories that have runner services configured
+            # Include repos that have local runner/agent service name OR provider token (API-based health)
+            from sqlalchemy import or_, and_
             repositories = db.query(RepositoryDB).filter(
                 RepositoryDB.is_active == True,
-                RepositoryDB.runner_service_name.isnot(None),
-                RepositoryDB.runner_service_name != ""
+                or_(
+                    and_(
+                        RepositoryDB.runner_service_name.isnot(None),
+                        RepositoryDB.runner_service_name != ""
+                    ),
+                    and_(
+                        RepositoryDB.azure_agent_service_name.isnot(None),
+                        RepositoryDB.azure_agent_service_name != ""
+                    ),
+                    and_(RepositoryDB.github_token.isnot(None), RepositoryDB.github_token != ""),
+                    and_(RepositoryDB.azure_pat.isnot(None), RepositoryDB.azure_pat != "")
+                )
             ).all()
             
             results = {
@@ -675,11 +711,15 @@ class RunnerHealthService:
             for repo in repositories:
                 health_result = await self.check_repository_runner_health(db, repo)
                 
-                # Update repository with health status
+                # Update repository with health status (from cloud API and/or local service)
                 repo.runner_status = health_result["status"]
                 repo.runner_error = health_result["error"]
                 if health_result["last_seen"]:
                     repo.runner_last_seen = health_result["last_seen"]
+                # For ADO, also set azure_agent_status from cloud result so summary reflects API-based health
+                if repo.provider == "azure_devops" and health_result.get("cloud_runner"):
+                    repo.azure_agent_status = health_result["cloud_runner"].get("status")
+                    repo.azure_agent_error = health_result["cloud_runner"].get("error")
                 
                 # Update counters
                 if health_result["status"] == "running":
@@ -708,61 +748,67 @@ class RunnerHealthService:
             db.rollback()
             raise Exception(f"Failed to check repository health: {str(e)}")
     
+    async def get_repository_health_summary_with_refresh(self, db: Session) -> Dict[str, Any]:
+        """Get repository health summary; refresh runner/agent status via API if last refresh was > REFRESH_INTERVAL ago."""
+        global _last_repository_health_refresh
+        now = datetime.utcnow()
+        if _last_repository_health_refresh is None or (now - _last_repository_health_refresh) > REPOSITORY_HEALTH_REFRESH_INTERVAL:
+            try:
+                await self.check_all_repositories(db)
+                _last_repository_health_refresh = now
+            except Exception as e:
+                logger.warning(f"Background runner health refresh failed: {e}")
+        return await self.get_repository_health_summary(db)
+    
     async def get_repository_health_summary(self, db: Session) -> Dict[str, Any]:
-        """Get a summary of repository health status"""
+        """Get a summary of repository health status (local runner service and/or API-based remote runner/agent)."""
         try:
-            # Consider active repositories that have either GitHub runner services OR Azure agent services configured
+            # Include repos that have runner/agent config: local service name OR provider token (API-based health)
             from sqlalchemy import or_, and_
             repositories = db.query(RepositoryDB).filter(
                 RepositoryDB.is_active == True,
                 or_(
-                    # GitHub runner service configured
                     and_(
                         RepositoryDB.runner_service_name.isnot(None),
                         RepositoryDB.runner_service_name != ""
                     ),
-                    # Azure agent service configured  
                     and_(
                         RepositoryDB.azure_agent_service_name.isnot(None),
                         RepositoryDB.azure_agent_service_name != ""
-                    )
+                    ),
+                    and_(RepositoryDB.github_token.isnot(None), RepositoryDB.github_token != ""),
+                    and_(RepositoryDB.azure_pat.isnot(None), RepositoryDB.azure_pat != "")
                 )
             ).all()
             
             total = len(repositories)
-            # Count healthy repos - consider both GitHub runners and Azure agents
+            # Healthy = runner_status or (for ADO) azure_agent_status is 'running' (from API or local check)
             healthy = 0
             for r in repositories:
-                github_healthy = r.runner_status == "running" if r.runner_service_name else None
-                azure_healthy = r.azure_agent_status == "running" if r.azure_agent_service_name else None
-                
-                # Repo is healthy if at least one service is running (or if no services are configured)
-                if github_healthy or azure_healthy:
-                    healthy += 1
-                elif github_healthy is None and azure_healthy is None:
-                    # No services configured, consider healthy
+                runner_ok = r.runner_status == "running"
+                azure_ok = r.azure_agent_status == "running" if r.provider == "azure_devops" else None
+                if runner_ok or azure_ok:
                     healthy += 1
             
             unhealthy = total - healthy
             
-            # Get error details - for repos with configured runner/agent services
+            # Error details for repos that are not healthy
             error_repos = []
             for repo in repositories:
-                github_healthy = repo.runner_status == "running" if repo.runner_service_name else None
-                azure_healthy = repo.azure_agent_status == "running" if repo.azure_agent_service_name else None
-                
-                # Add to errors if any configured service is not running
-                if github_healthy is False or azure_healthy is False:
-                    service_name = repo.runner_service_name or repo.azure_agent_service_name
-                    status = repo.runner_status or repo.azure_agent_status or "unknown"
-                    error = repo.runner_error or repo.azure_agent_error
-                    
-                    error_repos.append({
-                        "name": repo.name,
-                        "status": status,
-                        "error": error,
-                        "service_name": service_name
-                    })
+                runner_ok = repo.runner_status == "running"
+                azure_ok = repo.azure_agent_status == "running" if repo.provider == "azure_devops" else None
+                if runner_ok or azure_ok:
+                    continue
+                status = repo.runner_status or repo.azure_agent_status or "unknown"
+                error = repo.runner_error or repo.azure_agent_error
+                service_name = repo.runner_service_name or repo.azure_agent_service_name or "API (remote)"
+                error_repos.append({
+                    "name": repo.name,
+                    "status": status,
+                    "error": error,
+                    "service_name": service_name,
+                    "provider": repo.provider,
+                })
             
             # If no repositories have runner/agent services configured, that's not an error
             if total == 0:

@@ -36,6 +36,19 @@ npm start
 
 The dashboard will be available at `http://localhost:3000`
 
+### Run with Docker (local)
+
+From the **repository root**, rebuild and run both containers:
+
+```bash
+python dashboard/run_docker_local.py
+```
+
+- Backend: `http://localhost:8000` (SQLite data in a Docker volume)
+- Frontend: `http://localhost:3000`
+
+Options: `--no-rebuild` to use existing images; `--stop` to stop and remove the containers.
+
 ## Features
 
 ### 📊 **Overview Dashboard**

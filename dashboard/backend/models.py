@@ -101,6 +101,22 @@ class OperationDB(Base):
     # Relationship
     job = relationship("JobDB", backref=backref("operations", order_by="OperationDB.started_at"))
 
+class ActionRunnerConnectionDB(Base):
+    """One per ADO org (or org+project) or GitHub org; groups repos that share one self-hosted runner."""
+    __tablename__ = "action_runner_connections"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    provider = Column(String, nullable=False)  # "github" or "azure_devops"
+    organization = Column(String, nullable=False)
+    project = Column(String, nullable=True)  # ADO project; null for GitHub (org-level)
+    display_name = Column(String, nullable=True)  # e.g. "MyOrg (ADO)" or "my-org"
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # GCP-provisioned runner VM (when dashboard creates the VM)
+    gcp_instance_name = Column(String, nullable=True)  # GCE instance name
+    gcp_zone = Column(String, nullable=True)  # e.g. us-central1-a
+
+
 class RepositoryDB(Base):
     __tablename__ = "repositories"
     
@@ -109,6 +125,7 @@ class RepositoryDB(Base):
     provider = Column(String)  # "github" or "azure_devops"
     url = Column(String)
     is_active = Column(Boolean, default=True)
+    action_runner_connection_id = Column(Integer, ForeignKey("action_runner_connections.id"), nullable=True)
     
     # Provider-specific configuration
     config = Column(JSON, nullable=True)  # Store provider-specific settings
@@ -183,6 +200,9 @@ class RepositoryDB(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_activity = Column(DateTime, nullable=True)
+    
+    # Optional: link to shared runner connection (one runner per ADO org or GitHub org)
+    action_runner_connection = relationship("ActionRunnerConnectionDB", backref="repositories", foreign_keys=[action_runner_connection_id])
 
 class LogEntryDB(Base):
     __tablename__ = "log_entries"
@@ -576,7 +596,8 @@ class Repository(BaseModel):
     provider: RepositoryProvider
     url: str = Field(..., description="Repository URL")
     is_active: bool = Field(default=True, description="Whether monitoring is active")
-    
+    action_runner_connection_id: Optional[int] = Field(default=None, description="Shared runner connection (one per ADO org or GitHub org)")
+
     # Provider-specific configuration
     config: Optional[Dict[str, Any]] = Field(default=None, description="Provider-specific settings")
     
@@ -657,15 +678,40 @@ class Repository(BaseModel):
     class Config:
         from_attributes = True
 
+class ActionRunnerConnectionCreate(BaseModel):
+    provider: str = Field(..., description="github or azure_devops")
+    organization: str = Field(..., description="Org name (GitHub org or ADO org)")
+    project: Optional[str] = Field(default=None, description="ADO project; null for GitHub")
+    display_name: Optional[str] = None
+
+
+class ActionRunnerConnectionResponse(BaseModel):
+    id: int
+    provider: str
+    organization: str
+    project: Optional[str]
+    display_name: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+    repository_count: int = 0
+    runner_status: Optional[str] = None  # Aggregated from repos in this connection
+    gcp_instance_name: Optional[str] = None
+    gcp_zone: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class RepositoryCreate(BaseModel):
     name: str = Field(..., description="Repository name in format 'owner/repo-name'")
     provider: RepositoryProvider
     url: str = Field(..., description="Repository URL")
     is_active: bool = Field(default=True)
-    
+    action_runner_connection_id: Optional[int] = Field(default=None, description="Optional: link to shared runner connection (one per ADO org or GitHub org)")
+
     # Provider-specific configuration
     config: Optional[Dict[str, Any]] = None
-    
+
     # Access tokens for health checks
     github_token: Optional[str] = None
     azure_pat: Optional[str] = None
@@ -682,12 +728,13 @@ class RepositoryUpdate(BaseModel):
     provider: Optional[RepositoryProvider] = None
     url: Optional[str] = None
     is_active: Optional[bool] = None
+    action_runner_connection_id: Optional[int] = None
     config: Optional[Dict[str, Any]] = None
-    
+
     # Access tokens for health checks
     github_token: Optional[str] = None
     azure_pat: Optional[str] = None
-    
+
     monitor_prs: Optional[bool] = None
     monitor_issues: Optional[bool] = None
     auto_review: Optional[bool] = None

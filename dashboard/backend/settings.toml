@@ -17,6 +17,10 @@ developer_mode = true
 database_url = "sqlite:///./dashboard.db"
 database_echo = false
 
+# Base URLs for internal callbacks and frontend (override via DASHBOARD_BACKEND_BASE_URL, DASHBOARD_FRONTEND_BASE_URL)
+backend_base_url = "http://localhost:8000"
+frontend_base_url = "http://localhost:3000"
+
 # CORS settings
 cors_origins = [
     "http://localhost:3000",

@@ -1,0 +1,33 @@
+# Copy to terraform.tfvars and fill in. Do not commit terraform.tfvars.
+
+project_id = "my-gcp-project"
+region     = "us-central1"
+prefix     = "pr-agent-dash"
+
+# Optional: set after first deploy (from outputs backend_url / frontend_url), then apply again
+# backend_base_url  = "https://pr-agent-dash-backend-xxxx.run.app"
+# frontend_base_url = "https://pr-agent-dash-frontend-xxxx.run.app"
+
+# Leave empty to auto-generate; or set for reproducibility
+# db_user_password = ""
+# cron_secret      = ""
+# dashboard_api_key = ""   # Leave empty to auto-generate (deploy script prints it for PR-Agent / pipelines)
+
+# Set after building and pushing images (see scripts/build-push-gcp.ps1)
+# backend_image  = "us-central1-docker.pkg.dev/my-gcp-project/pr-agent-dash-repo/backend:latest"
+# frontend_image = "us-central1-docker.pkg.dev/my-gcp-project/pr-agent-dash-repo/frontend:latest"
+
+# Optional
+# backend_max_instances   = 1
+# backend_timeout_seconds = 3600
+# job_timeout_schedule    = "*/10 * * * *"
+
+# VPC (private Cloud SQL); connector CIDR must not overlap with peering range
+# vpc_connector_cidr     = "10.8.0.0/28"
+# vpc_peering_cidr_prefix = 16
+
+# Optional: one Terraform-managed runner VM (legacy). Prefer false and use dashboard "Provision runner VM" for on-demand VMs.
+# enable_runner_vm   = false
+# runner_machine_type = "e2-medium"
+# runner_zone        = "us-central1-a"
+# runner_subnet_cidr = "10.0.1.0/24"

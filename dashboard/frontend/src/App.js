@@ -112,6 +112,11 @@ function Dashboard() {
       setConnectionState(prev => ({ ...prev, websocket: 'error' }));
     };
 
+    const handleWebSocketReconnected = () => {
+      // Refetch data after reconnection so UI is not stale
+      fetchData(false);
+    };
+
     const handleLogUpdate = (logData) => {
       // Add logs directly to the logs array for immediate display
       setLogs(prevLogs => [logData, ...prevLogs]);
@@ -187,6 +192,7 @@ function Dashboard() {
     webSocketService.on('connected', handleWebSocketConnected);
     webSocketService.on('disconnected', handleWebSocketDisconnected);
     webSocketService.on('error', handleWebSocketError);
+    webSocketService.on('reconnected', handleWebSocketReconnected);
     webSocketService.on('log', handleLogUpdate);
     webSocketService.on('operation_update', handleOperationUpdate);
     webSocketService.on('job_update', handleJobUpdate);
@@ -212,6 +218,7 @@ function Dashboard() {
       webSocketService.off('connected', handleWebSocketConnected);
       webSocketService.off('disconnected', handleWebSocketDisconnected);
       webSocketService.off('error', handleWebSocketError);
+      webSocketService.off('reconnected', handleWebSocketReconnected);
       webSocketService.off('log', handleLogUpdate);
       webSocketService.off('operation_update', handleOperationUpdate);
       webSocketService.off('job_update', handleJobUpdate);

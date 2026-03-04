@@ -54,8 +54,10 @@ const RepositoryManager = () => {
     auto_describe: true,
     auto_improve: false,
     github_token: '',
-    azure_pat: ''
+    azure_pat: '',
+    action_runner_connection_id: null
   });
+  const [actionRunnerConnections, setActionRunnerConnections] = useState([]);
   const [originalFormData, setOriginalFormData] = useState(null);
   const [errors, setErrors] = useState({});
   const [checkingHealth, setCheckingHealth] = useState(new Set());
@@ -123,6 +125,16 @@ const RepositoryManager = () => {
   const [testingTokens, setTestingTokens] = useState(new Set());
   const [tokenTestResults, setTokenTestResults] = useState({});
 
+  // GCP runner VM provision/deprovision
+  const [provisioningConnectionId, setProvisioningConnectionId] = useState(null);
+  const [deprovisioningConnectionId, setDeprovisioningConnectionId] = useState(null);
+  const [lastProvisionResult, setLastProvisionResult] = useState(null);
+  // Inline create connection (when no connections for provider)
+  const [newConnectionOrg, setNewConnectionOrg] = useState('');
+  const [newConnectionProject, setNewConnectionProject] = useState('');
+  const [newConnectionDisplayName, setNewConnectionDisplayName] = useState('');
+  const [creatingConnection, setCreatingConnection] = useState(false);
+
   const fetchRepositories = useCallback(async () => {
     try {
       setLoading(true);
@@ -138,6 +150,16 @@ const RepositoryManager = () => {
   useEffect(() => {
     fetchRepositories();
   }, [fetchRepositories]);
+
+  const fetchActionRunnerConnections = useCallback(() => {
+    return api.getActionRunnerConnections()
+      .then((res) => setActionRunnerConnections(res.data?.data || []))
+      .catch(() => setActionRunnerConnections([]));
+  }, []);
+
+  useEffect(() => {
+    if (showAddForm) fetchActionRunnerConnections();
+  }, [showAddForm, fetchActionRunnerConnections]);
 
   // Auto-check runner service when github-runner-install tab becomes active
   useEffect(() => {
@@ -396,7 +418,8 @@ const RepositoryManager = () => {
       auto_describe: true,
       auto_improve: false,
       github_token: '',
-      azure_pat: ''
+      azure_pat: '',
+      action_runner_connection_id: null
     });
     setOriginalFormData(null);
     setEditingRepo(null);
@@ -1953,6 +1976,209 @@ const RepositoryManager = () => {
                   className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
                   required
                 />
+              </div>
+
+              {/* Runner connection (one per ADO org or GitHub org) */}
+              <div className="bg-amber-50/50 dark:bg-amber-900/10 rounded-lg p-4 border border-amber-200 dark:border-amber-800">
+                <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-2 flex items-center">
+                  <Server className="h-4 w-4 mr-2 text-amber-600 dark:text-amber-400" />
+                  Action runner connection (optional)
+                </h4>
+                <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
+                  One self-hosted runner per {formData.provider === 'azure_devops' ? 'ADO org/project' : 'GitHub org'}. Link this repo to an existing connection so runner health is shared, or leave unset and add a connection later.
+                </p>
+                <select
+                  value={formData.action_runner_connection_id ?? ''}
+                  onChange={(e) => {
+                    const id = e.target.value ? parseInt(e.target.value, 10) : null;
+                    setFormData({ ...formData, action_runner_connection_id: id });
+                    if (!id) setLastProvisionResult(null);
+                  }}
+                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                >
+                  <option value="">None</option>
+                  {actionRunnerConnections
+                    .filter((c) => c.provider === formData.provider)
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.display_name || `${c.organization}${c.project ? ` / ${c.project}` : ''}`}
+                        {c.runner_status ? ` (${c.runner_status})` : ''}
+                        {c.gcp_instance_name ? ' [VM]' : ''}
+                        {c.repository_count > 0 ? ` · ${c.repository_count} repo(s)` : ''}
+                      </option>
+                    ))}
+                </select>
+                {actionRunnerConnections.filter((c) => c.provider === formData.provider).length === 0 && (
+                  <div className="mt-3 p-3 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-600 text-sm">
+                    <p className="text-gray-600 dark:text-gray-400 mb-2">No runner connections for {formData.provider === 'azure_devops' ? 'Azure DevOps' : 'GitHub'} yet. Create one to share a self-hosted runner across repos.</p>
+                    <div className="flex flex-wrap items-end gap-2">
+                      <input
+                        type="text"
+                        placeholder={formData.provider === 'azure_devops' ? 'Organization' : 'Organization'}
+                        value={newConnectionOrg}
+                        onChange={(e) => setNewConnectionOrg(e.target.value)}
+                        className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm w-40"
+                      />
+                      {formData.provider === 'azure_devops' && (
+                        <input
+                          type="text"
+                          placeholder="Project (optional)"
+                          value={newConnectionProject}
+                          onChange={(e) => setNewConnectionProject(e.target.value)}
+                          className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm w-32"
+                        />
+                      )}
+                      <input
+                        type="text"
+                        placeholder="Display name (optional)"
+                        value={newConnectionDisplayName}
+                        onChange={(e) => setNewConnectionDisplayName(e.target.value)}
+                        className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm w-40"
+                      />
+                      <button
+                        type="button"
+                        disabled={!newConnectionOrg.trim() || creatingConnection}
+                        onClick={() => {
+                          setCreatingConnection(true);
+                          api.createActionRunnerConnection({
+                            provider: formData.provider,
+                            organization: newConnectionOrg.trim(),
+                            project: formData.provider === 'azure_devops' ? (newConnectionProject.trim() || null) : null,
+                            display_name: newConnectionDisplayName.trim() || undefined,
+                          })
+                            .then((res) => {
+                              const created = res.data?.data;
+                              if (created?.id) {
+                                showSuccess('Connection created', 'Link this repo to the new connection.');
+                                setNewConnectionOrg('');
+                                setNewConnectionProject('');
+                                setNewConnectionDisplayName('');
+                                fetchActionRunnerConnections().then(() => {
+                                  setFormData((f) => ({ ...f, action_runner_connection_id: created.id }));
+                                });
+                              }
+                            })
+                            .catch((err) => showError('Create connection failed', err.response?.data?.detail || err.message))
+                            .finally(() => setCreatingConnection(false));
+                        }}
+                        className="px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 text-xs disabled:opacity-50"
+                      >
+                        {creatingConnection ? 'Creating…' : 'Create connection'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {formData.action_runner_connection_id && (() => {
+                  const conn = actionRunnerConnections.find((c) => c.id === formData.action_runner_connection_id);
+                  if (!conn) return null;
+                  const hasVm = !!(conn.gcp_instance_name && conn.gcp_zone);
+                  const provisioning = provisioningConnectionId === conn.id;
+                  const deprovisioning = deprovisioningConnectionId === conn.id;
+                  const installInfo = lastProvisionResult?.install_instructions || (hasVm ? { ssh_command: `gcloud compute ssh ${conn.gcp_instance_name} --zone=${conn.gcp_zone} --project=<your-project>`, steps: 'SSH to the VM and install the runner/agent per your provider docs.', docs_url: '' } : null);
+                  return (
+                    <div className="mt-3 p-3 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-600 text-sm">
+                      <div className="font-medium text-gray-800 dark:text-gray-200 mb-2">GCP Runner VM</div>
+                      {hasVm ? (
+                        <div className="space-y-2">
+                          <div className="text-gray-600 dark:text-gray-400">
+                            {conn.gcp_instance_name} ({conn.gcp_zone})
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {installInfo?.ssh_command && (
+                              <button
+                                type="button"
+                                onClick={() => { navigator.clipboard.writeText(installInfo.ssh_command); showSuccess('Copied', 'SSH command copied to clipboard'); }}
+                                className="px-2 py-1 rounded bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-xs"
+                              >
+                                Copy SSH command
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              disabled={deprovisioning}
+                              onClick={() => {
+                                setDeprovisioningConnectionId(conn.id);
+                                api.deprovisionRunnerVm(conn.id)
+                                  .then((res) => {
+                                    showSuccess('Runner VM', res.data?.data?.message || 'VM removal started.');
+                                    setActionRunnerConnections((prev) => prev.map((c) => c.id === conn.id ? { ...c, gcp_instance_name: null, gcp_zone: null } : c));
+                                    setLastProvisionResult(null);
+                                  })
+                                  .catch((err) => showError('Deprovision failed', err.response?.data?.detail || err.message))
+                                  .finally(() => {
+                                    setDeprovisioningConnectionId(null);
+                                    fetchActionRunnerConnections();
+                                  });
+                              }}
+                              className="px-2 py-1 rounded bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-900/50 text-xs disabled:opacity-50"
+                            >
+                              {deprovisioning ? 'Removing…' : 'Remove VM'}
+                            </button>
+                          </div>
+                          {installInfo && (
+                            <details className="mt-2">
+                              <summary className="cursor-pointer text-gray-600 dark:text-gray-400">Install instructions</summary>
+                              <pre className="mt-1 p-2 bg-gray-200 dark:bg-gray-700 rounded text-xs overflow-x-auto">{installInfo.ssh_command}</pre>
+                              <p className="mt-1 text-gray-600 dark:text-gray-400">{installInfo.steps}</p>
+                              {installInfo.docs_url && (
+                                <a href={installInfo.docs_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 text-xs">Docs</a>
+                              )}
+                            </details>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <p className="text-gray-600 dark:text-gray-400">No VM provisioned for this connection. Provision a GCP VM to run the runner/agent (then install via SSH using provider instructions).</p>
+                          <button
+                            type="button"
+                            disabled={provisioning}
+                            onClick={() => {
+                              setProvisioningConnectionId(conn.id);
+                              setLastProvisionResult(null);
+                              api.provisionRunnerVm(conn.id)
+                                .then((res) => {
+                                  const data = res.data?.data;
+                                  if (data?.success) {
+                                    showSuccess('Runner VM', data.message || 'VM creation started.');
+                                    setLastProvisionResult(data);
+                                    setActionRunnerConnections((prev) => prev.map((c) => c.id === conn.id ? { ...c, gcp_instance_name: data.instance_name, gcp_zone: data.zone } : c));
+                                    fetchActionRunnerConnections();
+                                  } else {
+                                    const msg = data?.error || res.data?.detail || 'Unknown error';
+                                    const isGcpNotConfigured = /GCP|configured|GCP_RUNNER/i.test(msg);
+                                    showError('Provision failed', isGcpNotConfigured
+                                      ? 'GCP runner provisioning is not configured. Set GCP_RUNNER_PROJECT_ID (and optionally GCP_RUNNER_REGION, GCP_RUNNER_ZONE) on the backend, or use an existing self-hosted runner.'
+                                      : msg);
+                                  }
+                                })
+                                .catch((err) => {
+                                  const msg = err.response?.data?.detail || err.message;
+                                  const isGcpNotConfigured = /GCP|configured|GCP_RUNNER/i.test(msg);
+                                  showError('Provision failed', isGcpNotConfigured
+                                    ? 'GCP runner provisioning is not configured. Set GCP_RUNNER_PROJECT_ID (and optionally GCP_RUNNER_REGION, GCP_RUNNER_ZONE) on the backend, or use an existing self-hosted runner.'
+                                    : msg);
+                                })
+                                .finally(() => setProvisioningConnectionId(null));
+                            }}
+                            className="px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 text-xs disabled:opacity-50"
+                          >
+                            {provisioning ? 'Provisioning…' : 'Provision runner VM'}
+                          </button>
+                          {lastProvisionResult?.install_instructions && (
+                            <details className="mt-2" open>
+                              <summary className="cursor-pointer text-gray-600 dark:text-gray-400">Install instructions</summary>
+                              <pre className="mt-1 p-2 bg-gray-200 dark:bg-gray-700 rounded text-xs overflow-x-auto">{lastProvisionResult.install_instructions.ssh_command}</pre>
+                              <p className="mt-1 text-gray-600 dark:text-gray-400">{lastProvisionResult.install_instructions.steps}</p>
+                              {lastProvisionResult.install_instructions.docs_url && (
+                                <a href={lastProvisionResult.install_instructions.docs_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 text-xs">Docs</a>
+                              )}
+                            </details>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Access Token Configuration */}

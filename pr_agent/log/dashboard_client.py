@@ -1,9 +1,11 @@
 """
 Dashboard Client - Interface for PR-Agent to communicate with the Dashboard API
-Provides simple methods for job and operation management
+Provides simple methods for job and operation management.
+Environment overrides: DASHBOARD_URL, DASHBOARD_API_KEY (for GCP/container deployment).
 """
 import asyncio
 import json
+import os
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 
@@ -24,8 +26,16 @@ class DashboardClient:
     """Client for communicating with the PR-Agent Dashboard API"""
     
     def __init__(self, dashboard_url: Optional[str] = None, api_key: Optional[str] = None):
-        self.dashboard_url = dashboard_url or get_settings().get("DASHBOARD.URL")
-        self.api_key = api_key or get_settings().get("DASHBOARD.API_KEY")
+        self.dashboard_url = (
+            dashboard_url
+            or os.getenv("DASHBOARD_URL")
+            or get_settings().get("DASHBOARD.URL")
+        )
+        self.api_key = (
+            api_key
+            or os.getenv("DASHBOARD_API_KEY")
+            or get_settings().get("DASHBOARD.API_KEY")
+        )
         self.session = None
         self._enabled = bool(self.dashboard_url)
         

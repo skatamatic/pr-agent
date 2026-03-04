@@ -109,8 +109,12 @@ const apiService = {
   // Dashboard configuration
   getConfig: () => api.get('/api/config'),
   updateConfig: (config) => api.post('/api/config', { config }),
+  bulkUploadConfig: (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post('/api/config/bulk-upload', formData);
+  },
 
-  
   // Repository management
   getRepositories: (params = {}) => api.get('/api/repositories', { params }),
   getRepository: (id) => api.get(`/api/repositories/${id}`),
@@ -119,6 +123,10 @@ const apiService = {
   deleteRepository: (id) => api.delete(`/api/repositories/${id}`),
   getRepositoryNames: (params = {}) => api.get('/api/repositories/names', { params }),
   getRepositoryHealth: () => api.get('/api/repositories/health'),
+  getActionRunnerConnections: () => api.get('/api/action-runner-connections'),
+  createActionRunnerConnection: (data) => api.post('/api/action-runner-connections', data),
+  provisionRunnerVm: (connectionId) => api.post(`/api/action-runner-connections/${connectionId}/provision`),
+  deprovisionRunnerVm: (connectionId) => api.post(`/api/action-runner-connections/${connectionId}/deprovision`),
   
   // Repository health actions
   checkRepositoryHealth: (id) => api.post(`/api/repositories/${id}/check-health`),

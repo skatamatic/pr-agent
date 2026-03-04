@@ -1,6 +1,73 @@
+# -----------------------------------------------------------------------------
+# Reduce Docker build context: we build from repo root; only dashboard/* is
+# needed for dashboard images. Exclude everything else so context is small.
+# -----------------------------------------------------------------------------
+
+# Version control and IDE
+.git/
+.gitignore
+.github/
+
+# Python (backend image copies only dashboard/backend/; no need for repo venv or pr_agent)
 .venv/
 venv/
-pr_agent/settings/.secrets.toml
+env/
+.pr_agent.venv/
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+*.egg-info/
+*.egg
+pr_agent/
+*.md
+!dashboard/**/*.md
+
+# Node (frontend runs npm ci in container; no need for host node_modules)
+**/node_modules/
+dashboard/frontend/node_modules/
+npm-debug.log*
+
+# Infra and docs (not needed inside dashboard images)
+terraform/
+docs/
 pics/
-pr_agent.egg-info/
+*.tf
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Secrets and local config (never ship)
+**/.secrets.toml
+**/secrets.toml
+pr_agent/settings/.secrets.toml
+.env
+.env.*
+!.env.example
+
+# Build artifacts and caches
 build/
+dist/
+*.db
+*.sqlite
+dashboard/backend/backups/
+dashboard/backend/.coverage
+dashboard/backend/.coveragerc
+htmlcov/
+.coverage
+coverage/
+
+# Optional: tests (not needed in production image; uncomment to shrink further)
+# dashboard/backend/tests/
+
+# Misc
+*.log
+.DS_Store
+docker/
+github-bot-filter-extension/
+scripts/
+tests/
+codecov.yml

@@ -32,51 +32,52 @@ const renderWithToastContext = (component) => {
 describe('DataCleanup Component', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    // Mock successful API responses by default
+    // Mock successful API responses (component uses response.data?.data, repo.name)
     api.getRepositories.mockResolvedValue({
-      data: [
-        { repo_name: 'test/repo1' },
-        { repo_name: 'test/repo2' }
-      ]
-    });
-    
-    // Mock preview cleanup response
-    api.previewCleanup.mockResolvedValue({
       data: {
-        cutoff_date: '2024-01-15T00:00:00.000Z',
-        repository: null,
-        before_cleanup: {
-          operations: 15,
-          jobs: 5,
-          logs: 25,
-          notification_events: 8,
-          cost_savings: 100.50
-        },
-        after_cleanup: {
-          operations: 5,
-          jobs: 3,
-          logs: 5,
-          notification_events: 3,
-          cost_savings: 85.00
-        },
-        deleted_counts: {
-          operations: 10,
-          jobs: 2,
-          logs: 20,
-          notification_events: 5
-        },
-        to_be_deleted: {
-          operations: 10,
-          jobs: 2,
-          logs: 20,
-          notification_events: 5
-        },
-        cost_impact: -15.50,
-        storage_impact_mb: 10.2,
-        message: 'Preview generated successfully'
+        data: [
+          { id: 1, name: 'test/repo1' },
+          { id: 2, name: 'test/repo2' }
+        ]
       }
     });
     
+    // Mock preview cleanup response (component uses response.data?.data)
+    const mockPreviewData = {
+      cutoff_date: '2024-01-15T00:00:00.000Z',
+      repository: null,
+      before_cleanup: {
+        operations: 15,
+        jobs: 5,
+        logs: 25,
+        notification_events: 8,
+        cost_savings: 100.50
+      },
+      after_cleanup: {
+        operations: 5,
+        jobs: 3,
+        logs: 5,
+        notification_events: 3,
+        cost_savings: 85.00
+      },
+      deleted_counts: {
+        operations: 10,
+        jobs: 2,
+        logs: 20,
+        notification_events: 5
+      },
+      to_be_deleted: {
+        operations: 10,
+        jobs: 2,
+        logs: 20,
+        notification_events: 5
+      },
+      cost_impact: -15.50,
+      storage_impact_mb: 10.2,
+      message: 'Preview generated successfully'
+    };
+    api.previewCleanup.mockResolvedValue({ data: { data: mockPreviewData } });
+
     // Mock execute cleanup response
     api.executeCleanup.mockResolvedValue({
       data: {
@@ -98,40 +99,32 @@ describe('DataCleanup Component', () => {
     renderWithToastContext(<DataCleanup />);
     
     expect(screen.getByText('Data Cleanup')).toBeInTheDocument();
-    expect(screen.getByText('Cleanup Scope')).toBeInTheDocument();
+    expect(screen.getByText('Repository Scope')).toBeInTheDocument();
     expect(screen.getByText('Cleanup Date')).toBeInTheDocument();
-    expect(screen.getByText('Data Types to Clean')).toBeInTheDocument();
+    expect(screen.getByText('Preview Cleanup')).toBeInTheDocument();
   });
 
-  test('allows selecting cleanup scope', () => {
+  test('allows selecting cleanup scope', async () => {
     renderWithToastContext(<DataCleanup />);
     
-    const allReposRadio = screen.getByLabelText('All Repositories (Global cleanup)');
-    const specificRepoRadio = screen.getByLabelText('Specific Repository');
+    const allReposButton = screen.getByText('All Repositories');
+    expect(allReposButton).toBeInTheDocument();
     
-    expect(allReposRadio).toBeChecked();
-    expect(specificRepoRadio).not.toBeChecked();
-    
-    fireEvent.click(specificRepoRadio);
-    expect(specificRepoRadio).toBeChecked();
-    expect(allReposRadio).not.toBeChecked();
+    await waitFor(() => {
+      expect(screen.getByText('test/repo1')).toBeInTheDocument();
+    });
+    const repoLabel = screen.getByText('test/repo1');
+    const repoButton = repoLabel.closest('button');
+    fireEvent.click(repoButton);
+    expect(repoButton).toHaveClass('bg-blue-600');
   });
 
-  test('allows selecting data types', () => {
+  test('renders date and preview button', () => {
     renderWithToastContext(<DataCleanup />);
     
-    const operationsCheckbox = screen.getByLabelText('Operations');
-    const jobsCheckbox = screen.getByLabelText('Jobs');
-    const logsCheckbox = screen.getByLabelText('Logs');
-    const notificationEventsCheckbox = screen.getByLabelText('Notification events');
-    
-    expect(operationsCheckbox).toBeChecked();
-    expect(jobsCheckbox).toBeChecked();
-    expect(logsCheckbox).toBeChecked();
-    expect(notificationEventsCheckbox).toBeChecked();
-    
-    fireEvent.click(operationsCheckbox);
-    expect(operationsCheckbox).not.toBeChecked();
+    expect(screen.getByLabelText('Date')).toBeInTheDocument();
+    expect(screen.getByLabelText('Time (UTC)')).toBeInTheDocument();
+    expect(screen.getByText('Preview Cleanup')).toBeInTheDocument();
   });
 
   test('shows preview button when date is selected', () => {
@@ -179,15 +172,14 @@ describe('DataCleanup Component', () => {
     
     await waitFor(() => {
       expect(screen.getByText('Cleanup Impact Preview')).toBeInTheDocument();
-      expect(screen.getByText('Before Cleanup:')).toBeInTheDocument();
-      expect(screen.getByText('After Cleanup:')).toBeInTheDocument();
+      expect(screen.getByText('Before Cleanup')).toBeInTheDocument();
+      expect(screen.getByText('After Cleanup')).toBeInTheDocument();
     });
   });
 
-  test('shows execute button after preview', async () => {
+  test('shows proceed button after preview', async () => {
     renderWithToastContext(<DataCleanup />);
     
-    // Set date and get preview
     const dateInput = screen.getByLabelText('Date');
     fireEvent.change(dateInput, { target: { value: '2024-01-15' } });
     
@@ -195,14 +187,13 @@ describe('DataCleanup Component', () => {
     fireEvent.click(previewButton);
     
     await waitFor(() => {
-      expect(screen.getByText('Execute Cleanup')).toBeInTheDocument();
-    });
+      expect(screen.getByText('Proceed with Cleanup')).toBeInTheDocument();
+    }, { timeout: 5000 });
   });
 
-  test('shows confirmation dialog when execute is clicked', async () => {
+  test('shows confirmation dialog when proceed is clicked', async () => {
     renderWithToastContext(<DataCleanup />);
     
-    // Set date and get preview
     const dateInput = screen.getByLabelText('Date');
     fireEvent.change(dateInput, { target: { value: '2024-01-15' } });
     
@@ -210,22 +201,21 @@ describe('DataCleanup Component', () => {
     fireEvent.click(previewButton);
     
     await waitFor(() => {
-      expect(screen.getByText('Execute Cleanup')).toBeInTheDocument();
-    });
+      expect(screen.getByText('Proceed with Cleanup')).toBeInTheDocument();
+    }, { timeout: 5000 });
     
-    // Click execute button
-    const executeButton = screen.getByText('Execute Cleanup');
-    fireEvent.click(executeButton);
+    const proceedButton = screen.getByText('Proceed with Cleanup');
+    fireEvent.click(proceedButton);
     
     await waitFor(() => {
       expect(screen.getByText('Confirmation Required')).toBeInTheDocument();
     });
+    expect(screen.getByText('Execute Cleanup')).toBeInTheDocument();
   });
 
   test('executes cleanup when all confirmations are checked', async () => {
     renderWithToastContext(<DataCleanup />);
     
-    // Set date and get preview
     const dateInput = screen.getByLabelText('Date');
     fireEvent.change(dateInput, { target: { value: '2024-01-15' } });
     
@@ -233,12 +223,10 @@ describe('DataCleanup Component', () => {
     fireEvent.click(previewButton);
     
     await waitFor(() => {
-      expect(screen.getByText('Execute Cleanup')).toBeInTheDocument();
-    });
+      expect(screen.getByText('Proceed with Cleanup')).toBeInTheDocument();
+    }, { timeout: 5000 });
     
-    // Click execute button
-    const executeButton = screen.getByText('Execute Cleanup');
-    fireEvent.click(executeButton);
+    fireEvent.click(screen.getByText('Proceed with Cleanup'));
     
     await waitFor(() => {
       expect(screen.getByText('Confirmation Required')).toBeInTheDocument();
@@ -253,11 +241,8 @@ describe('DataCleanup Component', () => {
     fireEvent.click(backedUpCheckbox);
     fireEvent.click(proceedCheckbox);
     
-    // Click final execute button (the one in the confirmation dialog)
-    // Use getAllByRole to get all buttons and select the second one (confirmation dialog)
-    const executeButtons = screen.getAllByRole('button', { name: /Execute Cleanup/i });
-    const finalExecuteButton = executeButtons[1]; // Second button is in the confirmation dialog
-    fireEvent.click(finalExecuteButton);
+    const executeButton = screen.getByText('Execute Cleanup');
+    fireEvent.click(executeButton);
     
     await waitFor(() => {
       expect(api.executeCleanup).toHaveBeenCalledWith({

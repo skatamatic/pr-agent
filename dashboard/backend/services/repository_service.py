@@ -19,6 +19,7 @@ class RepositoryService:
             provider=repo.provider,
             url=repo.url,
             is_active=repo.is_active,
+            action_runner_connection_id=repo.action_runner_connection_id,
             config=repo.config,
             # Don't include actual tokens for security
             github_token=None,
@@ -101,6 +102,7 @@ class RepositoryService:
                 provider=repo_data.provider.value,
                 url=repo_data.url,
                 is_active=repo_data.is_active,
+                action_runner_connection_id=repo_data.action_runner_connection_id,
                 config=repo_data.config,
                 github_token=repo_data.github_token,
                 azure_pat=repo_data.azure_pat,

@@ -1,72 +1,136 @@
 """
 Configuration Service - Responsible for managing PR-Agent configuration
 Follows Single Responsibility Principle
+
+Config location from env only (no DB):
+- PR_AGENT_CONFIG_PATH: local directory; dashboard and PR-Agent both use it.
+- PR_AGENT_CONFIG_GCS_BUCKET + PREFIX: GCS; both use same bucket so dashboard edits apply to next PR-Agent run.
 """
+import logging
+import os
 import toml
-import shutil
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 from config import settings
 from .system_settings_service import SystemSettingsService
+from .config_backend import (
+    get_config_backend,
+    LocalConfigBackend,
+    GCSConfigBackend,
+    CONFIG_KEY,
+    SECRETS_KEY,
+    CSHARP_CONFIG_KEY,
+    CSHARP_SECRETS_KEY,
+    IGNORE_KEY,
+    BACKUP_KEY,
+    BACKUP_PREFIX,
+    MAX_BACKUPS,
+)
+
+
+def _get_config_base_path() -> Path:
+    """Resolve config directory from env (local only). For GCS, use get_config_backend()."""
+    path_env = os.getenv("PR_AGENT_CONFIG_PATH", "").strip()
+    if path_env:
+        return Path(path_env).resolve()
+    svc = SystemSettingsService()
+    default_root = Path(svc.get_effective_pr_agent_path())
+    return default_root / "pr_agent" / "settings"
 
 
 class ConfigService:
-    """Service for managing PR-Agent configuration files"""
+    """Service for managing PR-Agent configuration files (local or GCS backend)."""
     
     def __init__(self, database_manager=None):
-        # Store database manager (optional for now)
         self.database_manager = database_manager
-        
-        # Initialize system settings service
         self.system_settings = SystemSettingsService(database_manager)
-        
-        # Initialize all configuration file paths using effective PR-agent path
+        self.backend = get_config_backend()
         self._initialize_paths()
     
     def _initialize_paths(self):
-        """Initialize all configuration file paths using the effective PR-agent install path"""
-        # Get the effective PR-agent path (custom or default)
-        pr_agent_path = self.system_settings.get_effective_pr_agent_path()
-        base_path = Path(pr_agent_path) / "pr_agent" / "settings"
-        
-        # Initialize all configuration file paths
+        """Set path attributes for display/compat; actual I/O uses self.backend."""
+        base_path = _get_config_base_path()
         self.config_path = base_path / "configuration.toml"
         self.backup_path = base_path / "configuration.toml.backup"
-        self.secrets_path = base_path / "secrets.toml"
+        self.secrets_path = base_path / ".secrets.toml"
         self.ignore_path = base_path / "ignore.toml"
         self.csharp_context_config_path = base_path / "csharp_code_context.config.toml"
-        self.csharp_context_secrets_path = base_path / "csharp_code_context_secrets.toml"
+        self.csharp_context_secrets_path = base_path / "csharp_code_context.secrets.toml"
     
     def refresh_paths(self):
-        """Refresh all configuration paths (useful when PR-agent path changes)"""
+        self.backend = get_config_backend()
         self._initialize_paths()
     
+    def get_config_source(self) -> Dict[str, Any]:
+        """Current config location from env (no DB)."""
+        path_env = os.getenv("PR_AGENT_CONFIG_PATH", "").strip()
+        gcs_bucket = os.getenv("PR_AGENT_CONFIG_GCS_BUCKET", "").strip()
+        if path_env:
+            return {"config_path": str(Path(path_env).resolve()), "source": "env", "env_var": "PR_AGENT_CONFIG_PATH"}
+        if gcs_bucket:
+            prefix = os.getenv("PR_AGENT_CONFIG_GCS_PREFIX", "pr-agent-config/").strip()
+            return {"config_path": f"gs://{gcs_bucket}/{prefix}", "source": "gcs", "env_var": "PR_AGENT_CONFIG_GCS_BUCKET"}
+        base = _get_config_base_path()
+        return {"config_path": str(base), "source": "default", "env_var": None}
+    
     def validate_current_path(self) -> Dict[str, Any]:
-        """Validate the current PR-agent install path"""
-        current_path = self.system_settings.get_effective_pr_agent_path()
-        return self.system_settings.validate_pr_agent_path(current_path)
+        if isinstance(self.backend, GCSConfigBackend):
+            return {"valid": True, "details": {"backend": "gcs", "bucket": self.backend.bucket_name, "prefix": self.backend.prefix}}
+        return self.validate_config_path(_get_config_base_path())
+
+    def validate_config_path(self, path: Any) -> Dict[str, Any]:
+        path_obj = Path(path).resolve()
+        if not path_obj.exists():
+            return {"valid": False, "error": "Path does not exist", "details": str(path_obj)}
+        if not path_obj.is_dir():
+            return {"valid": False, "error": "Not a directory", "details": str(path_obj)}
+        return {"valid": True, "details": {"config_path": str(path_obj), "config_file_exists": (path_obj / "configuration.toml").exists()}}
     
     def is_path_valid(self) -> bool:
-        """Check if the current PR-agent path is valid"""
-        validation = self.validate_current_path()
-        return validation.get('valid', False)
+        return self.validate_current_path().get("valid", False)
+
+    def _create_rotated_backup(self) -> None:
+        """Create a named/dated backup of all config keys and keep at most MAX_BACKUPS."""
+        now = datetime.now(timezone.utc)
+        backup_id = now.strftime("%Y-%m-%dT%H-%M-%S") + f"-{now.microsecond:06d}"
+        keys_to_backup = [CONFIG_KEY, SECRETS_KEY, CSHARP_CONFIG_KEY, CSHARP_SECRETS_KEY, IGNORE_KEY]
+        for key in keys_to_backup:
+            content = self.backend.get(key)
+            if content:
+                self.backend.put_backup(backup_id, key, content)
+        ids = self.backend.list_backup_ids()
+        if len(ids) > MAX_BACKUPS:
+            for bid in ids[:-MAX_BACKUPS]:
+                self.backend.delete_backup(bid)
+                logger.info("Rotated config backup: removed %s", bid)
+    
+    def _load_toml_from_backend(self, key: str) -> Dict[str, Any]:
+        """Load TOML from backend by key. Returns {} if missing or on error."""
+        content = self.backend.get(key)
+        if not content:
+            return {}
+        try:
+            return toml.loads(content)
+        except Exception as e:
+            logger.error("Failed to parse TOML for %s: %s", key, e)
+            return {}
     
     def _load_toml_file(self, file_path: Optional[Path]) -> Dict[str, Any]:
-        """Load a TOML file safely, returning empty dict if file doesn't exist or has errors"""
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        try:
-            if file_path and file_path.exists():
-                logger.debug(f"Loading TOML file: {file_path}")
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    config = toml.load(f)
-                logger.debug(f"Successfully loaded TOML file: {file_path}")
-                return config
-            else:
-                logger.debug(f"TOML file does not exist: {file_path}")
-        except Exception as e:
-            logger.error(f"Failed to load TOML file {file_path}: {str(e)}")
+        """Load TOML from path; used by tests. Production uses _load_toml_from_backend."""
+        if file_path is None:
+            return {}
+        if isinstance(self.backend, LocalConfigBackend):
+            key = next((k for k, v in LocalConfigBackend.KEY_TO_FILENAME.items() if self.backend._path_for(k) == Path(file_path)), None)
+            if key:
+                return self._load_toml_from_backend(key)
+        if Path(file_path).exists():
+            try:
+                return toml.load(file_path)
+            except Exception:
+                pass
         return {}
     
     def _get_default_config(self) -> Dict[str, Any]:
@@ -134,18 +198,13 @@ class ConfigService:
         }
     
     async def get_config(self) -> Dict[str, Any]:
-        """Get current PR-Agent configuration from multiple TOML files"""
+        """Get current PR-Agent configuration from backend (local or GCS)."""
         try:
-            # Start with default configuration
             config = self._get_default_config()
-            
-            # Load main configuration
-            main_config = self._load_toml_file(self.config_path)
+            main_config = self._load_toml_from_backend(CONFIG_KEY)
             if main_config:
                 config = self._deep_merge(config, main_config)
-            
-            # Load secrets configuration (overwrites any secrets in main config)
-            secrets_config = self._load_toml_file(self.secrets_path)
+            secrets_config = self._load_toml_from_backend(SECRETS_KEY)
             if secrets_config:
                 # Merge API keys and other secrets
                 if 'api_keys' in secrets_config:
@@ -155,8 +214,7 @@ class ConfigService:
                     if key != 'api_keys':
                         config[key] = self._deep_merge(config.get(key, {}), value) if isinstance(value, dict) else value
             
-            # Load C# context service configuration
-            context_config = self._load_toml_file(self.csharp_context_config_path)
+            context_config = self._load_toml_from_backend(CSHARP_CONFIG_KEY)
             if context_config:
                 # Merge the context service configuration
                 if 'csharp_code_context_service' in context_config:
@@ -171,22 +229,33 @@ class ConfigService:
                         context_config
                     )
             
-            # Load C# context service secrets
-            context_secrets = self._load_toml_file(self.csharp_context_secrets_path)
+            context_secrets = self._load_toml_from_backend(CSHARP_SECRETS_KEY)
             if context_secrets:
-                # Merge context service secrets
-                config.setdefault('csharp_code_context_service', {}).update(context_secrets)
+                # Merge context service secrets (file may be [csharp_code_context_service] or flat)
+                inner = context_secrets.get("csharp_code_context_service", context_secrets)
+                if isinstance(inner, dict):
+                    config.setdefault("csharp_code_context_service", {}).update(inner)
             
-            # Load ignore patterns (for completeness, though not typically shown in UI)
-            ignore_config = self._load_toml_file(self.ignore_path)
+            ignore_config = self._load_toml_from_backend(IGNORE_KEY)
             if ignore_config:
                 config['ignore'] = ignore_config
+
+            # Mask all secrets for API response (do not expose actual values)
+            if config.get('api_keys') and isinstance(config['api_keys'], dict):
+                for key in config['api_keys']:
+                    if config['api_keys'][key]:
+                        config['api_keys'][key] = '***'
+            if config.get('csharp_code_context_service'):
+                ctx = config['csharp_code_context_service']
+                if ctx.get('username'):
+                    ctx['username'] = '***'
+                if ctx.get('password'):
+                    ctx['password'] = '***'
             
             return config
             
         except Exception as e:
-            # On any error, return default config
-            print(f"Warning: Failed to load configuration: {str(e)}")
+            logger.error("Failed to load configuration: %s", e, exc_info=True)
             return self._get_default_config()
     
     def _deep_merge(self, default: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -203,31 +272,38 @@ class ConfigService:
     
     async def update_config(self, config_data: Dict[str, Any]) -> Dict[str, str]:
         """Update PR-Agent configuration by distributing settings to appropriate files"""
-        import logging
-        logger = logging.getLogger(__name__)
-        
         try:
-            logger.info(f"Starting configuration update with {len(config_data)} sections")
-            
-            # Log the current paths being used
-            logger.info(f"Config paths - Main: {self.config_path}, Secrets: {self.secrets_path}, Context: {self.csharp_context_config_path}")
-            
+            logger.info("Starting configuration update with %s sections", len(config_data))
+            self._create_rotated_backup()
+
             # Separate configuration into different files
             main_config = {}
             secrets_config = {}
             context_config = {}
-            
+            context_secrets = {}  # username, password -> csharp_code_context.secrets.toml
+
             # Distribute settings to appropriate files
             for section_key, section_value in config_data.items():
-                logger.debug(f"Processing section: {section_key}")
+                logger.debug("Processing section: %s", section_key)
                 if section_key == 'api_keys':
-                    # API keys go to secrets file
-                    secrets_config['api_keys'] = section_value
-                    logger.debug(f"Added {section_key} to secrets config")
+                    if isinstance(section_value, dict):
+                        filtered = {k: v for k, v in section_value.items() if v not in (None, '', '***')}
+                        if filtered:
+                            secrets_config['api_keys'] = filtered
+                    logger.debug("Added %s to secrets config", section_key)
                 elif section_key == 'csharp_code_context_service':
-                    # Context service config goes to its own file
-                    context_config['csharp_code_context_service'] = section_value
-                    logger.debug(f"Added {section_key} to context config")
+                    # Split context: non-secret -> config file, username/password -> secrets file
+                    ctx = section_value if isinstance(section_value, dict) else {}
+                    context_config['csharp_code_context_service'] = {
+                        k: v for k, v in ctx.items()
+                        if k not in ('username', 'password')
+                    }
+                    if ctx.get('username') is not None or ctx.get('password') is not None:
+                        if ctx.get('username') not in (None, '', '***'):
+                            context_secrets['username'] = ctx['username']
+                        if ctx.get('password') not in (None, '', '***'):
+                            context_secrets['password'] = ctx['password']
+                    logger.debug("Added csharp_code_context_service to context config and secrets")
                 elif section_key in ['ignore']:
                     # Skip ignore patterns for now
                     logger.debug(f"Skipping {section_key} section")
@@ -239,20 +315,23 @@ class ConfigService:
                     main_config['config'][section_key] = section_value
                     logger.debug(f"Added {section_key} to main config")
             
-            # Update main configuration file
-            if main_config and self.config_path:
-                logger.info(f"Updating main config file: {self.config_path}")
-                await self._update_single_config_file(self.config_path, main_config, self.backup_path)
-            
-            # Update secrets file if we have API keys
-            if secrets_config and self.secrets_path:
-                logger.info(f"Updating secrets file: {self.secrets_path}")
-                await self._update_single_config_file(self.secrets_path, secrets_config)
-            
-            # Update context service config if we have those settings
-            if context_config and self.csharp_context_config_path:
-                logger.info(f"Updating context config file: {self.csharp_context_config_path}")
-                await self._update_single_config_file(self.csharp_context_config_path, context_config)
+            if main_config:
+                logger.info("Updating main config")
+                await self._update_single_config_backend(CONFIG_KEY, main_config)
+            if secrets_config:
+                logger.info("Updating secrets config")
+                await self._update_single_config_backend(SECRETS_KEY, secrets_config)
+            if context_config:
+                logger.info("Updating context config")
+                await self._update_single_config_backend(CSHARP_CONFIG_KEY, context_config)
+            if context_secrets:
+                logger.info("Updating context secrets")
+                existing_secrets = self._load_toml_from_backend(CSHARP_SECRETS_KEY)
+                existing_ctx = existing_secrets.get('csharp_code_context_service', existing_secrets)
+                if not isinstance(existing_ctx, dict):
+                    existing_ctx = {}
+                merged_ctx = {**existing_ctx, **context_secrets}
+                self.backend.put(CSHARP_SECRETS_KEY, toml.dumps({'csharp_code_context_service': merged_ctx}))
             
             logger.info("Configuration update completed successfully")
             return {"status": "success", "message": "Configuration updated successfully across multiple files"}
@@ -261,53 +340,12 @@ class ConfigService:
             logger.error(f"Configuration update failed: {str(e)}")
             return {"status": "error", "message": f"Failed to update configuration: {str(e)}"}
     
-    async def _update_single_config_file(self, file_path: Path, config_data: Dict[str, Any], backup_path: Optional[Path] = None):
-        """Update a single configuration file surgically, preserving structure and only changing modified values"""
-        # Ensure directory exists
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Create backup if config exists and backup path provided
-        if file_path.exists() and backup_path:
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(file_path, backup_path)
-        
-        # Use surgical update approach
-        await self._surgical_update_toml(file_path, config_data)
-    
-    async def _surgical_update_toml(self, file_path: Path, new_data: Dict[str, Any]):
-        """Update a TOML file by loading, merging, and saving - avoiding duplicate keys"""
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        try:
-            # Ensure parent directory exists
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            if not file_path.exists():
-                # If file doesn't exist, create it with the new data
-                logger.info(f"Creating new TOML file: {file_path}")
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    toml.dump(new_data, f)
-                return
-            
-            # Load existing config
-            existing_config = self._load_toml_file(file_path)
-            if not existing_config:
-                existing_config = {}
-            
-            # Deep merge the configurations
-            merged_config = self._deep_merge(existing_config, new_data)
-            
-            # Write the merged config back to the file
-            logger.info(f"Updating TOML file: {file_path}")
-            with open(file_path, 'w', encoding='utf-8') as f:
-                toml.dump(merged_config, f)
-            
-            logger.info(f"Successfully updated TOML file: {file_path}")
-            
-        except Exception as e:
-            logger.error(f"Failed to update TOML file {file_path}: {str(e)}")
-            raise
+    async def _update_single_config_backend(self, key: str, config_data: Dict[str, Any]):
+        """Update a single config by key (backend handles local or GCS).
+        Rotated backup is already created by _create_rotated_backup() before this is called."""
+        existing = self._load_toml_from_backend(key)
+        merged = self._deep_merge(existing, config_data)
+        self.backend.put(key, toml.dumps(merged))
     
     def _find_config_changes(self, existing: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
         """Find what has actually changed between existing and new config"""
@@ -328,20 +366,55 @@ class ConfigService:
         
         return changes
     
-    async def restore_backup(self) -> Dict[str, str]:
-        """Restore configuration from backup"""
+    # Filename to logical key for bulk upload (accept both .secrets.toml and secrets.toml)
+    BULK_UPLOAD_FILENAMES = {
+        "configuration.toml": CONFIG_KEY,
+        ".secrets.toml": SECRETS_KEY,
+        "secrets.toml": SECRETS_KEY,
+        "csharp_code_context.config.toml": CSHARP_CONFIG_KEY,
+        "csharp_code_context.secrets.toml": CSHARP_SECRETS_KEY,
+        "ignore.toml": IGNORE_KEY,
+    }
+
+    async def bulk_upload_config(self, key_to_content: Dict[str, str]) -> Dict[str, Any]:
+        """
+        Overwrite backend config with provided file contents (extracted from upload; no ZIP is stored).
+        key_to_content: logical key (CONFIG_KEY, SECRETS_KEY, etc.) -> full file content as string.
+        Creates a rotated backup before overwriting, then writes each content to the backend.
+        """
         try:
-            if not self.backup_path or not self.backup_path.exists():
-                return {"status": "error", "message": "No backup file found"}
-            
-            if not self.config_path:
-                return {"status": "error", "message": "Configuration path not available"}
-            
-            shutil.copy2(self.backup_path, self.config_path)
-            return {"status": "success", "message": "Configuration restored from backup"}
-            
+            if not key_to_content:
+                return {"status": "error", "message": "No config files provided"}
+            allowed = {CONFIG_KEY, SECRETS_KEY, CSHARP_CONFIG_KEY, CSHARP_SECRETS_KEY, IGNORE_KEY}
+            to_write = {k: v for k, v in key_to_content.items() if k in allowed}
+            if not to_write:
+                return {"status": "error", "message": "No recognised config files in upload"}
+            for key, content in to_write.items():
+                try:
+                    toml.loads(content)
+                except toml.TomlDecodeError as e:
+                    return {"status": "error", "message": f"Invalid TOML in {key}: {e}"}
+            self._create_rotated_backup()
+            for key, content in to_write.items():
+                self.backend.put(key, content)
+            logger.info("Bulk config upload completed: %s keys written", len(to_write))
+            return {"status": "success", "message": f"Uploaded {len(to_write)} config file(s). Backup created."}
         except Exception as e:
-            return {"status": "error", "message": f"Failed to restore backup: {str(e)}"}
+            logger.error("Bulk config upload failed: %s", e)
+            return {"status": "error", "message": str(e)}
+
+    async def restore_backup(self) -> Dict[str, str]:
+        """Restore configuration from backup (backend)."""
+        try:
+            if not self.backend.exists(BACKUP_KEY):
+                return {"status": "error", "message": "No backup file found"}
+            content = self.backend.get(BACKUP_KEY)
+            if not content:
+                return {"status": "error", "message": "No backup content"}
+            self.backend.put(CONFIG_KEY, content)
+            return {"status": "success", "message": "Configuration restored from backup"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
     
     async def validate_config(self, config_data: Dict[str, Any]) -> Dict[str, Any]:
         """Validate configuration data"""

@@ -1,11 +1,13 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, status, Request
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+
 from pathlib import Path
 import asyncio
+import os
 import logging
 from datetime import datetime, timedelta
 
@@ -24,7 +26,7 @@ from services.robust_cached_job_service import get_robust_cached_job_service
 from services.auth_service import AuthService
 from services.github_action_config_service import GitHubActionConfigService
 from services.system_settings_service import SystemSettingsService
-from database import DatabaseManager, SessionLocal
+from database import DatabaseManager, SessionLocal, engine as db_engine
 from services.notification_service import NotificationService
 from services.retention_service import RetentionService
 from services.robust_cache_service import initialize_robust_cache_service, shutdown_robust_cache_service
@@ -137,7 +139,7 @@ class DashboardApplication:
         return get_current_user
 
     def require_auth_dependency(self):
-        """Create a dependency function that requires authentication"""
+        """Create a dependency function that requires authentication (user JWT only)."""
         get_current_user = self.get_current_user_dependency()
         
         async def require_auth(current_user: UserDB = Depends(get_current_user)):
@@ -149,6 +151,26 @@ class DashboardApplication:
                 )
             return current_user
         return require_auth
+
+    def require_auth_or_api_key_dependency(self):
+        """Require either a valid user JWT or the dashboard API key (for PR-Agent / programmatic access)."""
+        get_current_user = self.get_current_user_dependency()
+        
+        async def require_auth_or_api_key(
+            credentials: Optional[HTTPAuthorizationCredentials] = Depends(self.security),
+            current_user: Optional[UserDB] = Depends(get_current_user),
+        ):
+            api_key = getattr(settings, "dashboard_api_key", "") or ""
+            if api_key and credentials and credentials.credentials == api_key:
+                return
+            if current_user:
+                return
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required (Bearer token or API key)",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return require_auth_or_api_key
     
     def check_maintenance_mode_dependency(self):
         """Create a dependency that checks for maintenance mode"""
@@ -186,6 +208,7 @@ class DashboardApplication:
         # Create dependency functions
         get_current_user = self.get_current_user_dependency()
         require_auth = self.require_auth_dependency()
+        require_auth_or_api_key = self.require_auth_or_api_key_dependency()
         check_maintenance_mode = self.check_maintenance_mode_dependency()
         
         # Authentication endpoints (no auth required)
@@ -293,11 +316,11 @@ class DashboardApplication:
             return await self.health_service.get_simple_status()
         
         @self.app.get("/api/developer-mode")
-        async def get_developer_mode():
+        async def get_developer_mode(current_user: UserDB = Depends(require_auth)):
             return {"enabled": settings.developer_mode}
         
         @self.app.get("/api/debug/paths")
-        async def debug_paths():
+        async def debug_paths(current_user: UserDB = Depends(require_auth)):
             """Debug endpoint to check path resolution"""
             import os
             from pathlib import Path
@@ -328,13 +351,13 @@ class DashboardApplication:
             return APIResponse(data={"operations": operations}, total=len(operations))
         
         @self.app.get("/api/operations/{operation_id}")
-        async def get_operation(operation_id: str, db: Session = Depends(get_db)):
+        async def get_operation(operation_id: str, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             operation = await self.cached_job_service.get_operation(operation_id)
             if not operation:
                 raise HTTPException(status_code=404, detail="Operation not found")
             return APIResponse(data=operation)
         
-        # Jobs endpoints
+        # Jobs endpoints (auth required)
         @self.app.get("/api/jobs")
         async def get_jobs(
             limit: int = 50,
@@ -344,6 +367,7 @@ class DashboardApplication:
             repository: Optional[str] = None,
             ensure_counts: bool = True,
             request: Request = None,
+            current_user: UserDB = Depends(require_auth),
             _: None = Depends(check_maintenance_mode)
         ):
             jobs = await self.cached_job_service.get_jobs(
@@ -357,20 +381,20 @@ class DashboardApplication:
             return APIResponse(data=jobs, total=len(jobs))
         
         @self.app.get("/api/jobs/{job_id}")
-        async def get_job(job_id: str, include_operations: bool = True):
+        async def get_job(job_id: str, include_operations: bool = True, current_user: UserDB = Depends(require_auth)):
             job = await self.cached_job_service.get_job(job_id, include_operations=include_operations)
             if not job:
                 raise HTTPException(status_code=404, detail="Job not found")
             return APIResponse(data=job)
         
         @self.app.get("/api/jobs/{job_id}/operations")
-        async def get_job_operations(job_id: str):
+        async def get_job_operations(job_id: str, current_user: UserDB = Depends(require_auth)):
             """Get operations for a specific job"""
             operations = await self.cached_job_service.get_operations(job_id=job_id)
             return APIResponse(data={"operations": operations})
         
         @self.app.get("/api/jobs/{job_id}/deletion-preview")
-        async def get_job_deletion_preview(job_id: str):
+        async def get_job_deletion_preview(job_id: str, current_user: UserDB = Depends(require_auth)):
             """Get preview of what will be deleted with a specific job"""
             logger.info(f"Getting deletion preview for job {job_id}")
             try:
@@ -387,7 +411,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail="Failed to get deletion preview")
         
         @self.app.delete("/api/jobs/{job_id}")
-        async def delete_job(job_id: str):
+        async def delete_job(job_id: str, current_user: UserDB = Depends(require_auth)):
             """Delete a specific job and all related data"""
             try:
                 from services.job_deletion_service import JobDeletionService
@@ -400,9 +424,9 @@ class DashboardApplication:
                 logger.error(f"Error deleting job: {e}")
                 raise HTTPException(status_code=500, detail="Failed to delete job")
 
-        # Data Cleanup endpoints
+        # Data Cleanup endpoints (auth required)
         @self.app.post("/api/admin/cleanup/preview")
-        async def preview_cleanup(request: dict):
+        async def preview_cleanup(request: dict, current_user: UserDB = Depends(require_auth)):
             """Preview cleanup impact before execution"""
             try:
                 from services.data_cleanup_service import DataCleanupService
@@ -441,7 +465,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail="Failed to get cleanup preview")
         
         @self.app.post("/api/admin/cleanup/execute")
-        async def execute_cleanup(request: dict):
+        async def execute_cleanup(request: dict, current_user: UserDB = Depends(require_auth)):
             """Execute data cleanup with automatic backup"""
             try:
                 from services.data_cleanup_service import DataCleanupService
@@ -480,9 +504,9 @@ class DashboardApplication:
                 logger.error(f"Error executing cleanup: {e}")
                 raise HTTPException(status_code=500, detail="Failed to execute cleanup")
 
-        # NEW: Job and Operation Management API Endpoints for PR-Agent Integration
+        # Job and Operation API: allow user JWT or dashboard API key (PR-Agent uses API key)
         @self.app.post("/api/jobs/create")
-        async def create_job(job_data: dict):
+        async def create_job(job_data: dict, _: None = Depends(require_auth_or_api_key)):
             """Create a new job from PR-Agent"""
             try:
                 from models import JobType, JobStatus
@@ -557,7 +581,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=f"Failed to create job: {str(e)}")
 
         @self.app.post("/api/jobs/{job_id}/status")
-        async def update_job_status(job_id: str, status_data: dict):
+        async def update_job_status(job_id: str, status_data: dict, _: None = Depends(require_auth_or_api_key)):
             """Update job status from PR-Agent"""
             try:
                 from models import JobStatus
@@ -632,7 +656,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=f"Failed to update job status: {str(e)}")
 
         @self.app.post("/api/operations/create")
-        async def create_operation(operation_data: dict):
+        async def create_operation(operation_data: dict, _: None = Depends(require_auth_or_api_key)):
             """Create a new operation from PR-Agent"""
             try:
                 from models import OperationStatus
@@ -694,7 +718,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=f"Failed to create operation: {str(e)}")
 
         @self.app.post("/api/operations/{operation_id}/status")
-        async def update_operation_status(operation_id: str, status_data: dict):
+        async def update_operation_status(operation_id: str, status_data: dict, _: None = Depends(require_auth_or_api_key)):
             """Update operation status from PR-Agent"""
             try:
                 from models import OperationStatus
@@ -779,7 +803,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=f"Failed to update operation status: {str(e)}")
 
         @self.app.post("/api/operations/{operation_id}/ai-metrics")
-        async def update_operation_ai_metrics(operation_id: str, metrics_data: dict, db: Session = Depends(get_db)):
+        async def update_operation_ai_metrics(operation_id: str, metrics_data: dict, db: Session = Depends(get_db), _: None = Depends(require_auth_or_api_key)):
             """Update operation AI metrics from PR-Agent"""
             
             try:
@@ -827,7 +851,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=f"Failed to update AI metrics: {str(e)}")
         
         @self.app.post("/api/operations/{operation_id}/multi-model-ai-metrics")
-        async def update_operation_multi_model_ai_metrics(operation_id: str, metrics_data: dict, db: Session = Depends(get_db)):
+        async def update_operation_multi_model_ai_metrics(operation_id: str, metrics_data: dict, db: Session = Depends(get_db), _: None = Depends(require_auth_or_api_key)):
             """Update operation multi-model AI metrics from PR-Agent"""
             
             try:
@@ -854,7 +878,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=f"Failed to update multi-model AI metrics: {str(e)}")
 
         @self.app.post("/api/operations/{operation_id}/step")
-        async def update_operation_step(operation_id: str, step_data: dict, db: Session = Depends(get_db)):
+        async def update_operation_step(operation_id: str, step_data: dict, db: Session = Depends(get_db), _: None = Depends(require_auth_or_api_key)):
             """Update operation current step from PR-Agent"""
             
             try:
@@ -886,7 +910,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=f"Failed to update operation step: {str(e)}")
 
         @self.app.put("/api/operations/{operation_id}/insights")
-        async def update_operation_insights(operation_id: str, insights_data: dict, db: Session = Depends(get_db)):
+        async def update_operation_insights(operation_id: str, insights_data: dict, db: Session = Depends(get_db), _: None = Depends(require_auth_or_api_key)):
             """Update operation insights from PR-Agent AI analysis"""
             
             try:
@@ -909,7 +933,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=f"Failed to update operation insights: {str(e)}")
 
         @self.app.get("/api/operations/{operation_id}/insights")
-        async def get_operation_insights(operation_id: str, db: Session = Depends(get_db)):
+        async def get_operation_insights(operation_id: str, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Get operation insights"""
             
             try:
@@ -952,6 +976,7 @@ class DashboardApplication:
             operation_id: Optional[str] = None,
             db: Session = Depends(get_db),
             request: Request = None,
+            current_user: UserDB = Depends(require_auth),
             _: None = Depends(check_maintenance_mode)
         ):
             logs = await self.cached_job_service.get_logs(
@@ -964,18 +989,18 @@ class DashboardApplication:
             return APIResponse(data={"logs": logs}, message=f"Retrieved {len(logs)} logs")
         
         @self.app.get("/api/logs/job/{job_id}")
-        async def get_logs_by_job(job_id: str, db: Session = Depends(get_db)):
+        async def get_logs_by_job(job_id: str, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             logs = await self.cached_job_service.get_logs(job_id=job_id, limit=10000)
             return APIResponse(data={"logs": logs}, message=f"Retrieved {len(logs)} logs for job {job_id}")
         
         @self.app.get("/api/logs/operation/{operation_id}")
-        async def get_logs_by_operation(operation_id: str, db: Session = Depends(get_db)):
+        async def get_logs_by_operation(operation_id: str, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             logs = await self.cached_job_service.get_logs(operation_id=operation_id, limit=10000)
             return APIResponse(data={"logs": logs}, message=f"Retrieved {len(logs)} logs for operation {operation_id}")
         
-        # Log ingestion endpoints
+        # Log ingestion endpoints (PR-Agent uses API key)
         @self.app.post("/logs/immediate")
-        async def receive_immediate_log(log_data: dict, db: Session = Depends(get_db)):
+        async def receive_immediate_log(log_data: dict, db: Session = Depends(get_db), _: None = Depends(require_auth_or_api_key)):
             try:
                 # Use robust cached job service for logs too
                 log_id = await self.cached_job_service.create_log_entry(
@@ -1029,7 +1054,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=f"Failed to process log: {str(e)}")
         
         @self.app.post("/logs/batch")
-        async def receive_batch_logs(batch_data: dict, db: Session = Depends(get_db)):
+        async def receive_batch_logs(batch_data: dict, db: Session = Depends(get_db), _: None = Depends(require_auth_or_api_key)):
             try:
                 logs = batch_data.get('logs', [])
                 received_log_ids = []
@@ -1095,7 +1120,7 @@ class DashboardApplication:
         
         # System status endpoints
         @self.app.get("/api/status/realtime")
-        async def get_realtime_status(db: Session = Depends(get_db)):
+        async def get_realtime_status(db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Get real-time system status"""
             try:
                 # Get system health status
@@ -1150,7 +1175,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.get("/api/system/alerts")
-        async def get_system_alerts(db: Session = Depends(get_db)):
+        async def get_system_alerts(db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Get system alerts and warnings"""
             try:
                 alerts = []
@@ -1192,7 +1217,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.get("/api/system/performance")
-        async def get_system_performance(db: Session = Depends(get_db)):
+        async def get_system_performance(db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Get system performance metrics"""
             try:
                 from datetime import timedelta
@@ -1234,45 +1259,81 @@ class DashboardApplication:
         
         # Configuration endpoints
         @self.app.get("/api/config")
-        async def get_config():
+        async def get_config(current_user: UserDB = Depends(require_auth)):
             config = await self.config_service.get_config()
             return APIResponse(data=config)
         
         @self.app.post("/api/config")
-        async def update_config(config_update: ConfigUpdate):
+        async def update_config(config_update: ConfigUpdate, current_user: UserDB = Depends(require_auth)):
             result = await self.config_service.update_config(config_update.config)
             return result
-        
+
+        @self.app.post("/api/config/bulk-upload")
+        async def bulk_upload_config(
+            file: UploadFile = File(..., description="ZIP file containing config directory"),
+            current_user: UserDB = Depends(require_auth),
+        ):
+            """Upload a ZIP of config files. The ZIP is extracted and each file is stored individually
+            in the config backend (overwrite). No ZIP is stored; only the extracted file contents are written.
+            Creates a rotated backup before overwriting (max 10 kept)."""
+            if not file.filename or not file.filename.lower().endswith(".zip"):
+                raise HTTPException(status_code=400, detail="A .zip file is required")
+            import zipfile
+            import io
+            try:
+                body = await file.read()
+                key_to_content = {}
+                name_to_key = ConfigService.BULK_UPLOAD_FILENAMES
+                with zipfile.ZipFile(io.BytesIO(body), "r") as zf:
+                    for name in zf.namelist():
+                        if name.endswith("/"):
+                            continue
+                        base = name.split("/")[-1].split("\\")[-1]
+                        if base in name_to_key:
+                            key_to_content[name_to_key[base]] = zf.read(name).decode("utf-8", errors="replace")
+                if not key_to_content:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="ZIP must contain at least one of: configuration.toml, secrets.toml, .secrets.toml, "
+                               "csharp_code_context.config.toml, csharp_code_context.secrets.toml, ignore.toml"
+                    )
+                result = await self.config_service.bulk_upload_config(key_to_content)
+                if result.get("status") == "error":
+                    raise HTTPException(status_code=400, detail=result.get("message", "Upload failed"))
+                return APIResponse(data=result, message=result.get("message", "Bulk upload completed"))
+            except zipfile.BadZipFile:
+                raise HTTPException(status_code=400, detail="Invalid ZIP file")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.exception("Bulk config upload failed")
+                raise HTTPException(status_code=500, detail=str(e))
+
         # PR-Agent Path Management Endpoints
         @self.app.get("/api/config/pr-agent-path")
-        async def get_pr_agent_path():
-            """Get the current PR-agent install path configuration"""
+        async def get_pr_agent_path(current_user: UserDB = Depends(require_auth)):
+            """Get the current config location (from PR_AGENT_CONFIG_PATH env or default). No DB."""
             try:
-                custom_path = self.config_service.system_settings.get_pr_agent_install_path()
-                effective_path = self.config_service.system_settings.get_effective_pr_agent_path()
-                default_path = self.config_service.system_settings.get_default_pr_agent_path()
+                source = self.config_service.get_config_source()
                 validation = self.config_service.validate_current_path()
-                
                 return APIResponse(data={
-                    "custom_path": custom_path,
-                    "effective_path": effective_path,
-                    "default_path": default_path,
-                    "using_custom": custom_path is not None,
-                    "validation": validation
+                    "config_path": source["config_path"],
+                    "source": source["source"],
+                    "env_var": source["env_var"],
+                    "validation": validation,
                 })
             except Exception as e:
-                logger.error(f"Error getting PR-agent path: {str(e)}")
-                raise HTTPException(status_code=500, detail=f"Failed to get PR-agent path: {str(e)}")
+                logger.error(f"Error getting config path: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to get config path: {str(e)}")
         
         @self.app.post("/api/config/pr-agent-path/validate")
-        async def validate_pr_agent_path(path_data: dict):
-            """Validate a PR-agent install path"""
+        async def validate_pr_agent_path(path_data: dict, current_user: UserDB = Depends(require_auth)):
+            """Validate a candidate PR_AGENT_CONFIG_PATH (directory that should contain configuration.toml)."""
             try:
                 path = path_data.get("path", "").strip()
                 if not path:
                     raise HTTPException(status_code=400, detail="Path is required")
-                
-                validation = self.config_service.system_settings.validate_pr_agent_path(path)
+                validation = self.config_service.validate_config_path(path)
                 return APIResponse(data=validation)
             except HTTPException:
                 raise
@@ -1281,69 +1342,29 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=f"Failed to validate path: {str(e)}")
         
         @self.app.post("/api/config/pr-agent-path")
-        async def set_pr_agent_path(path_data: dict):
-            """Set the PR-agent install path"""
-            try:
-                path = path_data.get("path", "").strip()
-                
-                # If empty path, clear the custom setting (use default)
-                if not path:
-                    success = self.config_service.system_settings.delete_setting("pr_agent_install_path")
-                    if success:
-                        # Refresh paths in config service
-                        self.config_service.refresh_paths()
-                        validation = self.config_service.validate_current_path()
-                        return APIResponse(data={
-                            "success": True,
-                            "message": "PR-agent path reset to default",
-                            "effective_path": self.config_service.system_settings.get_effective_pr_agent_path(),
-                            "validation": validation
-                        })
-                    else:
-                        raise HTTPException(status_code=500, detail="Failed to reset PR-agent path")
-                
-                # Validate the path first
-                validation = self.config_service.system_settings.validate_pr_agent_path(path)
-                if not validation.get("valid", False):
-                    raise HTTPException(
-                        status_code=400, 
-                        detail=f"Invalid PR-agent path: {validation.get('error', 'Unknown error')}"
-                    )
-                
-                # Set the path
-                success = self.config_service.system_settings.set_pr_agent_install_path(path)
-                if success:
-                    # Refresh paths in config service
-                    self.config_service.refresh_paths()
-                    validation = self.config_service.validate_current_path()
-                    return APIResponse(data={
-                        "success": True,
-                        "message": "PR-agent path updated successfully",
-                        "effective_path": path,
-                        "validation": validation
-                    })
-                else:
-                    raise HTTPException(status_code=500, detail="Failed to update PR-agent path")
-                    
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"Error setting PR-agent path: {str(e)}")
-                raise HTTPException(status_code=500, detail=f"Failed to set PR-agent path: {str(e)}")
+        async def set_pr_agent_path(path_data: dict, current_user: UserDB = Depends(require_auth)):
+            """Config path is set via PR_AGENT_CONFIG_PATH env only (no DB). This endpoint is deprecated."""
+            raise HTTPException(
+                status_code=400,
+                detail="Config path is set via PR_AGENT_CONFIG_PATH environment variable. "
+                       "Set that env to the directory containing configuration.toml (and .secrets.toml, etc.) "
+                       "for both dashboard and PR-Agent, then restart. No database override."
+            )
 
         
-        # Repository endpoints
+        # Repository endpoints (auth required)
         @self.app.get("/api/repositories")
         async def get_repositories(
             limit: int = 100,
             provider: Optional[str] = None,
             active_only: bool = False,
-            db: Session = Depends(get_db)
+            db: Session = Depends(get_db),
+            current_user: UserDB = Depends(require_auth),
         ):
             return await self.repository_service.get_repositories(db, limit, provider, active_only)
         
         @self.app.post("/api/repositories")
-        async def create_repository(repo_data: RepositoryCreate, db: Session = Depends(get_db)):
+        async def create_repository(repo_data: RepositoryCreate, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             try:
                 repository = await self.repository_service.create_repository(db, repo_data)
                 return APIResponse(data=repository, message="Repository created successfully")
@@ -1351,20 +1372,19 @@ class DashboardApplication:
                 raise HTTPException(status_code=400, detail=str(e))
         
         @self.app.get("/api/repositories/names")
-        async def get_repository_names(active_only: bool = True, db: Session = Depends(get_db)):
+        async def get_repository_names(active_only: bool = True, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             names = await self.repository_service.get_repository_names(db, active_only)
             return APIResponse(data=names, message=f"Found {len(names)} repository names")
         
         @self.app.get("/api/repositories/health")
-        async def get_repositories_health(db: Session = Depends(get_db)):
-            """Get health status of all repositories with runner services configured"""
+        async def get_repositories_health(db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """Get health status of all repositories (runner/agent: local service or API-based remote). Refreshes via provider API periodically."""
             try:
                 from services.runner_health_service import RunnerHealthService
                 
                 runner_service = RunnerHealthService()
                 try:
-                    # Use the proper runner health service that only considers repositories with runner services
-                    health_summary = await runner_service.get_repository_health_summary(db)
+                    health_summary = await runner_service.get_repository_health_summary_with_refresh(db)
                     
                     # Build response in expected format
                     response_data = {
@@ -1381,8 +1401,167 @@ class DashboardApplication:
                 logger.error(f"Error getting repository health: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
         
+        @self.app.get("/api/action-runner-connections")
+        async def list_action_runner_connections(db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """List action runner connections (one per ADO org or GitHub org). Runner health is from linked repos."""
+            try:
+                from models import ActionRunnerConnectionDB, ActionRunnerConnectionResponse, RepositoryDB
+                conns = db.query(ActionRunnerConnectionDB).order_by(ActionRunnerConnectionDB.organization, ActionRunnerConnectionDB.project).all()
+                out = []
+                for c in conns:
+                    repos = db.query(RepositoryDB).filter(RepositoryDB.action_runner_connection_id == c.id, RepositoryDB.is_active == True).all()
+                    # Aggregate runner status from first repo with status (repos share one runner per connection)
+                    runner_status = None
+                    for r in repos:
+                        if r.runner_status or (c.provider == "azure_devops" and r.azure_agent_status):
+                            runner_status = r.runner_status or r.azure_agent_status
+                            break
+                    out.append(ActionRunnerConnectionResponse(
+                        id=c.id,
+                        provider=c.provider,
+                        organization=c.organization,
+                        project=c.project,
+                        display_name=c.display_name or f"{c.organization}" + (f" / {c.project}" if c.project else ""),
+                        created_at=c.created_at,
+                        updated_at=c.updated_at,
+                        repository_count=len(repos),
+                        runner_status=runner_status,
+                        gcp_instance_name=c.gcp_instance_name,
+                        gcp_zone=c.gcp_zone,
+                    ))
+                return APIResponse(data=out, message="Action runner connections retrieved")
+            except Exception as e:
+                logger.error(f"Error listing action runner connections: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/api/action-runner-connections")
+        async def create_action_runner_connection(body: dict, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """Create an action runner connection (one per ADO org or GitHub org). Link repos when adding them."""
+            try:
+                from models import ActionRunnerConnectionDB, ActionRunnerConnectionCreate, ActionRunnerConnectionResponse
+                data = ActionRunnerConnectionCreate(**body)
+                q = db.query(ActionRunnerConnectionDB).filter(
+                    ActionRunnerConnectionDB.provider == data.provider,
+                    ActionRunnerConnectionDB.organization == data.organization,
+                )
+                if data.project:
+                    q = q.filter(ActionRunnerConnectionDB.project == data.project)
+                else:
+                    q = q.filter(ActionRunnerConnectionDB.project.is_(None))
+                existing = q.first()
+                if existing:
+                    return APIResponse(data=ActionRunnerConnectionResponse(
+                        id=existing.id, provider=existing.provider, organization=existing.organization,
+                        project=existing.project, display_name=existing.display_name,
+                        created_at=existing.created_at, updated_at=existing.updated_at,
+                        repository_count=len(existing.repositories), runner_status=None,
+                        gcp_instance_name=existing.gcp_instance_name, gcp_zone=existing.gcp_zone,
+                    ), message="Connection already exists")
+                conn = ActionRunnerConnectionDB(
+                    provider=data.provider,
+                    organization=data.organization,
+                    project=data.project,
+                    display_name=data.display_name,
+                )
+                db.add(conn)
+                db.commit()
+                db.refresh(conn)
+                return APIResponse(data=ActionRunnerConnectionResponse(
+                    id=conn.id, provider=conn.provider, organization=conn.organization,
+                    project=conn.project, display_name=conn.display_name or f"{conn.organization}" + (f" / {conn.project}" if conn.project else ""),
+                    created_at=conn.created_at, updated_at=conn.updated_at,
+                    repository_count=0, runner_status=None,
+                    gcp_instance_name=conn.gcp_instance_name, gcp_zone=conn.gcp_zone,
+                ), message="Action runner connection created")
+            except Exception as e:
+                logger.error(f"Error creating action runner connection: {e}")
+                db.rollback()
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/action-runner-connections/{connection_id}/provision")
+        async def provision_runner_vm(connection_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """Provision a GCP Compute Engine VM for this runner connection. Requires GCP_RUNNER_PROJECT_ID (and optionally region/zone) to be set."""
+            try:
+                from models import ActionRunnerConnectionDB
+                from config import settings
+                from services.gcp_runner_service import GCPRunnerService
+                conn = db.query(ActionRunnerConnectionDB).filter(ActionRunnerConnectionDB.id == connection_id).first()
+                if not conn:
+                    raise HTTPException(status_code=404, detail="Action runner connection not found")
+                project_id = getattr(settings, 'gcp_runner_project_id', '') or ''
+                if not project_id:
+                    raise HTTPException(status_code=400, detail="GCP runner not configured. Set GCP_RUNNER_PROJECT_ID (and optionally GCP_RUNNER_REGION, GCP_RUNNER_ZONE).")
+                region = getattr(settings, 'gcp_runner_region', 'us-central1') or 'us-central1'
+                zone = getattr(settings, 'gcp_runner_zone', '') or ''
+                machine_type = getattr(settings, 'gcp_runner_machine_type', 'e2-medium') or 'e2-medium'
+                subnet = getattr(settings, 'gcp_runner_subnet', '') or ''
+                prefix = getattr(settings, 'gcp_runner_prefix', 'pr-agent-runner') or 'pr-agent-runner'
+                dashboard_url = getattr(settings, 'backend_base_url', '') or ''
+                config_bucket = getattr(settings, 'pr_agent_config_gcs_bucket', '') or ''
+                config_prefix = getattr(settings, 'pr_agent_config_gcs_prefix', 'pr-agent-config/') or 'pr-agent-config/'
+                pr_agent_repo_url = getattr(settings, 'gcp_runner_pr_agent_repo_url', 'https://github.com/Codium-ai/pr-agent.git') or 'https://github.com/Codium-ai/pr-agent.git'
+                pr_agent_runner_image = getattr(settings, 'gcp_runner_pr_agent_image', '') or ''
+                svc = GCPRunnerService(
+                    project_id=project_id,
+                    region=region,
+                    zone=zone or None,
+                    machine_type=machine_type,
+                    subnet=subnet or None,
+                    name_prefix=prefix,
+                    dashboard_url=dashboard_url,
+                    config_bucket=config_bucket,
+                    config_prefix=config_prefix,
+                    pr_agent_repo_url=pr_agent_repo_url,
+                    pr_agent_runner_image=pr_agent_runner_image,
+                )
+                result = svc.provision(conn.id, conn.provider, conn.organization, conn.project)
+                if not result.get('success'):
+                    raise HTTPException(status_code=400, detail=result.get('error', 'Provision failed'))
+                conn.gcp_instance_name = result.get('instance_name')
+                conn.gcp_zone = result.get('zone')
+                db.commit()
+                return APIResponse(data=result, message=result.get('message', 'Runner VM provision started'))
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.exception("Error provisioning runner VM: %s", e)
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/action-runner-connections/{connection_id}/deprovision")
+        async def deprovision_runner_vm(connection_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """Remove the GCP Compute Engine VM for this runner connection (if one was provisioned)."""
+            try:
+                from models import ActionRunnerConnectionDB
+                from config import settings
+                from services.gcp_runner_service import GCPRunnerService
+                conn = db.query(ActionRunnerConnectionDB).filter(ActionRunnerConnectionDB.id == connection_id).first()
+                if not conn:
+                    raise HTTPException(status_code=404, detail="Action runner connection not found")
+                if not conn.gcp_instance_name or not conn.gcp_zone:
+                    return APIResponse(data={"success": True, "message": "No VM was provisioned for this connection."}, message="Nothing to deprovision")
+                project_id = getattr(settings, 'gcp_runner_project_id', '') or ''
+                if not project_id:
+                    raise HTTPException(status_code=400, detail="GCP runner not configured.")
+                svc = GCPRunnerService(
+                    project_id=project_id,
+                    region=getattr(settings, 'gcp_runner_region', 'us-central1') or 'us-central1',
+                    zone=getattr(settings, 'gcp_runner_zone', '') or None,
+                    name_prefix=getattr(settings, 'gcp_runner_prefix', 'pr-agent-runner') or 'pr-agent-runner',
+                )
+                result = svc.deprovision(conn.gcp_instance_name, conn.gcp_zone)
+                if result.get('success'):
+                    conn.gcp_instance_name = None
+                    conn.gcp_zone = None
+                    db.commit()
+                return APIResponse(data=result, message=result.get('message', 'Deprovision completed'))
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.exception("Error deprovisioning runner VM: %s", e)
+                raise HTTPException(status_code=500, detail=str(e))
+        
         @self.app.post("/api/repositories/update-configs")
-        async def update_all_repository_configs(db: Session = Depends(get_db)):
+        async def update_all_repository_configs(db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Update configuration status for all repositories"""
             try:
                 from services.runner_health_service import RunnerHealthService
@@ -1399,7 +1578,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.get("/api/repositories/token-permissions")
-        async def get_token_permission_requirements():
+        async def get_token_permission_requirements(current_user: UserDB = Depends(require_auth)):
             """Get information about required GitHub token permissions"""
             return APIResponse(data={
                 "github": {
@@ -1450,14 +1629,14 @@ class DashboardApplication:
         
         # Parameterized routes come after specific routes
         @self.app.get("/api/repositories/{repo_id}")
-        async def get_repository(repo_id: int, db: Session = Depends(get_db)):
+        async def get_repository(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             repository = await self.repository_service.get_repository(db, repo_id)
             if not repository:
                 raise HTTPException(status_code=404, detail="Repository not found")
             return APIResponse(data=repository)
         
         @self.app.put("/api/repositories/{repo_id}")
-        async def update_repository(repo_id: int, repo_update: RepositoryUpdate, db: Session = Depends(get_db)):
+        async def update_repository(repo_id: int, repo_update: RepositoryUpdate, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             try:
                 # Check if tokens are being updated
                 token_updated = hasattr(repo_update, 'github_token') and repo_update.github_token is not None
@@ -1515,7 +1694,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=400, detail=str(e))
         
         @self.app.delete("/api/repositories/{repo_id}")
-        async def delete_repository(repo_id: int, db: Session = Depends(get_db)):
+        async def delete_repository(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             try:
                 deleted = await self.repository_service.delete_repository(db, repo_id)
                 if not deleted:
@@ -1525,7 +1704,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=400, detail=str(e))
         
         @self.app.post("/api/repositories/{repo_id}/check-health")
-        async def check_repository_health(repo_id: int, db: Session = Depends(get_db)):
+        async def check_repository_health(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Trigger health check for a specific repository"""
             try:
                 from services.runner_health_service import RunnerHealthService
@@ -1558,7 +1737,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.post("/api/repositories/{repo_id}/check-config")
-        async def check_repository_config(repo_id: int, db: Session = Depends(get_db)):
+        async def check_repository_config(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Check repository configuration and update effective config"""
             try:
                 from services.runner_health_service import RunnerHealthService
@@ -1629,7 +1808,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.get("/api/repositories/{repo_id}/effective-config")
-        async def get_repository_effective_config(repo_id: int, db: Session = Depends(get_db)):
+        async def get_repository_effective_config(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Get the comprehensive effective configuration for a repository"""
             try:
                 from services.runner_health_service import RunnerHealthService
@@ -1745,7 +1924,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.get("/api/repositories/{repo_id}/best-practices")
-        async def get_repository_best_practices(repo_id: int, force_refresh: bool = False, db: Session = Depends(get_db)):
+        async def get_repository_best_practices(repo_id: int, force_refresh: bool = False, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Get best practices file content from repository"""
             try:
                 # Get repository
@@ -1859,7 +2038,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=f"Error retrieving best practices: {str(e)}")
         
         @self.app.put("/api/repositories/{repo_id}/best-practices")
-        async def update_repository_best_practices(repo_id: int, content_data: dict, db: Session = Depends(get_db)):
+        async def update_repository_best_practices(repo_id: int, content_data: dict, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Create or update best practices file via pull request"""
             try:
                 # Get repository
@@ -2021,8 +2200,8 @@ This PR {'creates' if not repo.has_best_practices else 'updates'} the `best_prac
                 logger.error(f"Error updating best practices for repository {repo_id}: {e}")
                 raise HTTPException(status_code=500, detail=f"Error updating best practices: {str(e)}")
         
-        @self.app.post("/api/repositories/{repo_id}/best-practices/check-pr-status") 
-        async def check_best_practices_pr_status(repo_id: int, db: Session = Depends(get_db)):
+        @self.app.post("/api/repositories/{repo_id}/best-practices/check-pr-status")
+        async def check_best_practices_pr_status(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Check if pending best practices PR has been merged and update status"""
             try:
                 # Get repository
@@ -2088,7 +2267,7 @@ This PR {'creates' if not repo.has_best_practices else 'updates'} the `best_prac
                 raise HTTPException(status_code=500, detail=f"Error checking PR status: {str(e)}")
 
         @self.app.get("/api/repositories/{repo_id}/pr-agent-config")
-        async def get_repository_pr_agent_config(repo_id: int, force_refresh: bool = False, db: Session = Depends(get_db)):
+        async def get_repository_pr_agent_config(repo_id: int, force_refresh: bool = False, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Get PR-Agent config file content from repository"""
             try:
                 from datetime import datetime, timedelta
@@ -2190,7 +2369,7 @@ This PR {'creates' if not repo.has_best_practices else 'updates'} the `best_prac
                 raise HTTPException(status_code=500, detail=f"Error retrieving PR-Agent config: {str(e)}")
 
         @self.app.put("/api/repositories/{repo_id}/pr-agent-config")
-        async def update_repository_pr_agent_config(repo_id: int, content_data: dict, db: Session = Depends(get_db)):
+        async def update_repository_pr_agent_config(repo_id: int, content_data: dict, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Create or update PR-Agent config file via pull request"""
             try:
                 # Get repository
@@ -2378,8 +2557,8 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 logger.error(f"Error updating PR-Agent config for repository {repo_id}: {e}")
                 raise HTTPException(status_code=500, detail=f"Error updating PR-Agent config: {str(e)}")
 
-        @self.app.post("/api/repositories/{repo_id}/pr-agent-config/check-pr-status") 
-        async def check_pr_agent_config_pr_status(repo_id: int, db: Session = Depends(get_db)):
+        @self.app.post("/api/repositories/{repo_id}/pr-agent-config/check-pr-status")
+        async def check_pr_agent_config_pr_status(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Check if pending PR-Agent config PR has been merged and update status"""
             try:
                 # Get repository
@@ -2445,7 +2624,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
         
         # GitHub Action Config endpoints
         @self.app.get("/api/repositories/{repo_id}/github-action-config")
-        async def get_repository_github_action_config(repo_id: int, force_refresh: bool = False, db: Session = Depends(get_db)):
+        async def get_repository_github_action_config(repo_id: int, force_refresh: bool = False, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Get GitHub Action configuration for a repository"""
             try:
                 # Get repository (using same approach as PR-Agent config endpoint)
@@ -2527,7 +2706,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=f"Error retrieving configuration: {str(e)}")
 
         @self.app.put("/api/repositories/{repo_id}/github-action-config")
-        async def update_repository_github_action_config(repo_id: int, content_data: dict, db: Session = Depends(get_db)):
+        async def update_repository_github_action_config(repo_id: int, content_data: dict, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Update GitHub Action configuration for a repository"""
             try:
                 # Get repository (using same approach as PR-Agent config endpoint)
@@ -2574,7 +2753,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=f"Error updating configuration: {str(e)}")
 
         @self.app.post("/api/repositories/{repo_id}/github-action-config/check-pr-status")
-        async def check_github_action_config_pr_status(repo_id: int, request_data: dict, db: Session = Depends(get_db)):
+        async def check_github_action_config_pr_status(repo_id: int, request_data: dict, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Check the status of a GitHub Action config pull request"""
             try:
                 # Get repository (using same approach as PR-Agent config endpoint)
@@ -2632,7 +2811,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=f"Error checking PR status: {str(e)}")
 
         @self.app.get("/api/repositories/{repo_id}/github-action-config/env-vars")
-        async def get_github_action_env_vars(repo_id: int):
+        async def get_github_action_env_vars(repo_id: int, current_user: UserDB = Depends(require_auth)):
             """Get available GitHub Action environment variables"""
             try:
                 env_vars = self.github_action_config_service.get_github_action_env_vars()
@@ -2645,7 +2824,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.get("/api/repositories/{repo_id}/github-action-config/template")
-        async def get_github_action_config_template(repo_id: int):
+        async def get_github_action_config_template(repo_id: int, current_user: UserDB = Depends(require_auth)):
             """Get GitHub Action config template for a repository"""
             try:
                 from .services.github_action_config_service import GitHubActionConfigService
@@ -2662,7 +2841,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
 
         # Azure Pipeline config endpoints
         @self.app.get("/api/repositories/{repo_id}/azure-pipeline-config")
-        async def get_repository_azure_pipeline_config(repo_id: int, force_refresh: bool = False, db: Session = Depends(get_db)):
+        async def get_repository_azure_pipeline_config(repo_id: int, force_refresh: bool = False, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Get Azure Pipeline configuration for a repository"""
             try:
                 # Get repository
@@ -2695,7 +2874,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=f"Error retrieving configuration: {str(e)}")
 
         @self.app.put("/api/repositories/{repo_id}/azure-pipeline-config")
-        async def update_repository_azure_pipeline_config(repo_id: int, content_data: dict, db: Session = Depends(get_db)):
+        async def update_repository_azure_pipeline_config(repo_id: int, content_data: dict, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Update Azure Pipeline configuration for a repository"""
             try:
                 # Get repository
@@ -2742,7 +2921,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=f"Error updating configuration: {str(e)}")
 
         @self.app.get("/api/repositories/{repo_id}/azure-pipeline-config/env-vars")
-        async def get_azure_pipeline_env_vars(repo_id: int):
+        async def get_azure_pipeline_env_vars(repo_id: int, current_user: UserDB = Depends(require_auth)):
             """Get list of available environment variables for Azure Pipeline configuration"""
             try:
                 env_vars = self.azure_pipeline_config_service.get_azure_pipeline_env_vars()
@@ -2752,7 +2931,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=f"Error retrieving environment variables: {str(e)}")
 
         @self.app.get("/api/repositories/{repo_id}/azure-pipeline-config/template")
-        async def get_azure_pipeline_config_template(repo_id: int):
+        async def get_azure_pipeline_config_template(repo_id: int, current_user: UserDB = Depends(require_auth)):
             """Get Azure Pipeline configuration template"""
             try:
                 template = self.azure_pipeline_config_service.get_default_config_template()
@@ -2762,7 +2941,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=f"Error retrieving template: {str(e)}")
 
         @self.app.get("/api/repositories/{repo_id}/azure-pipeline-config/check")
-        async def check_azure_pipeline_config(repo_id: int, db: Session = Depends(get_db)):
+        async def check_azure_pipeline_config(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Check Azure pipeline configuration status for a repository"""
             try:
                 from services.azure_pipeline_config_service import AzurePipelineConfigService
@@ -2797,7 +2976,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.get("/api/repositories/{repo_id}/azure-pipeline-config/installation-guide")
-        async def get_azure_pipeline_installation_guide(repo_id: int, db: Session = Depends(get_db)):
+        async def get_azure_pipeline_installation_guide(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Get Azure Pipeline installation guide for a repository"""
             try:
                 # Get repository
@@ -2911,7 +3090,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
 
         # Runner service management endpoints
         @self.app.post("/api/repositories/{repo_id}/runner-service/check")
-        async def check_runner_service(repo_id: int, request_data: dict, db: Session = Depends(get_db)):
+        async def check_runner_service(repo_id: int, request_data: dict, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Check the status of a GitHub Actions runner service"""
             try:
                 # Get repository
@@ -2927,31 +3106,32 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 from services.runner_service_monitor import RunnerServiceMonitor
                 monitor = RunnerServiceMonitor()
                 
-                # Check service status
+                # Check service status (on non-Windows returns not_available; use API health there)
                 service_status = monitor.check_service_status(service_name)
                 logger.info(f"Service status response from monitor: {service_status}")
-                
-                # Update repository with runner service information  
+                is_local_available = service_status.get('status') != 'not_available'
+
                 repo.runner_service_name = service_name
-                repo.runner_service_status = service_status.get('status', 'unknown')
                 repo.runner_service_last_checked = datetime.utcnow()
                 repo.runner_service_details = service_status
-                
-                # Map service status to repository health impact
-                health_impact = monitor.get_service_health_impact(service_status)
-                logger.info(f"Health impact determined: {health_impact}")
-                
-                # Update overall runner status based on service health impact
-                if health_impact == 'healthy':
-                    repo.runner_status = 'running'
-                    repo.runner_error = None
-                elif health_impact == 'warning':
-                    repo.runner_status = 'warning'
-                    repo.runner_error = f"Service {service_status.get('status')}: {service_status.get('status_display', 'Unknown')}"
-                else:  # error
-                    repo.runner_status = 'error'
-                    repo.runner_error = service_status.get('error') or f"Service {service_status.get('status')}: {service_status.get('status_display', 'Unknown')}"
-                
+                repo.runner_service_status = service_status.get('status', 'unknown')
+
+                if is_local_available:
+                    health_impact = monitor.get_service_health_impact(service_status)
+                    logger.info(f"Health impact determined: {health_impact}")
+                    if health_impact == 'healthy':
+                        repo.runner_status = 'running'
+                        repo.runner_error = None
+                    elif health_impact == 'warning':
+                        repo.runner_status = 'warning'
+                        repo.runner_error = f"Service {service_status.get('status')}: {service_status.get('status_display', 'Unknown')}"
+                    else:
+                        repo.runner_status = 'error'
+                        repo.runner_error = service_status.get('error') or f"Service {service_status.get('status')}: {service_status.get('status_display', 'Unknown')}"
+                else:
+                    # Linux/Cloud: leave runner_status from API-based health; don't overwrite with error
+                    repo.runner_error = service_status.get('status_display') or service_status.get('error')
+
                 db.commit()
                 
                 # Trigger a health system refresh to update overall status
@@ -2969,7 +3149,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.put("/api/repositories/{repo_id}/runner-service/name")
-        async def save_runner_service_name(repo_id: int, request_data: dict, db: Session = Depends(get_db)):
+        async def save_runner_service_name(repo_id: int, request_data: dict, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Save the GitHub Actions runner service name for a repository"""
             try:
                 # Get repository
@@ -2992,7 +3172,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.get("/api/repositories/{repo_id}/runner-service/list")
-        async def list_github_runner_services(repo_id: int, db: Session = Depends(get_db)):
+        async def list_github_runner_services(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """List all GitHub Actions runner services on the system"""
             try:
                 # Get repository (for auth check)
@@ -3014,7 +3194,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.get("/api/system/runner-services")
-        async def list_all_runner_services():
+        async def list_all_runner_services(current_user: UserDB = Depends(require_auth)):
             """List all GitHub Actions runner services on the system (for debugging)"""
             try:
                 from services.runner_service_monitor import RunnerServiceMonitor
@@ -3077,7 +3257,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
 
         # Azure DevOps agent service management endpoints
         @self.app.post("/api/repositories/{repo_id}/azure-agent-service/check")
-        async def check_azure_agent_service(repo_id: int, request_data: dict, db: Session = Depends(get_db)):
+        async def check_azure_agent_service(repo_id: int, request_data: dict, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Check the status of an Azure DevOps agent service"""
             try:
                 # Get repository
@@ -3093,31 +3273,31 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 from services.azure_agent_service_monitor import AzureAgentServiceMonitor
                 monitor = AzureAgentServiceMonitor()
                 
-                # Check service status
+                # Check service status (on non-Windows returns not_available; use API health there)
                 service_status = monitor.check_service_status(service_name)
                 logger.info(f"Azure agent service status response: {service_status}")
-                
-                # Update repository with Azure agent service information  
+                is_local_available = service_status.get('status') != 'not_available'
+
                 repo.azure_agent_service_name = service_name
-                repo.azure_agent_service_status = service_status.get('status', 'unknown')
                 repo.azure_agent_service_last_checked = datetime.utcnow()
                 repo.azure_agent_service_details = service_status
-                
-                # Map service status to repository health impact
-                health_impact = monitor.get_service_health_impact(service_status)
-                logger.info(f"Azure agent health impact determined: {health_impact}")
-                
-                # Update overall Azure agent status based on service health impact
-                if health_impact == 'healthy':
-                    repo.azure_agent_status = 'running'
-                    repo.azure_agent_error = None
-                elif health_impact == 'warning':
-                    repo.azure_agent_status = 'warning'
-                    repo.azure_agent_error = f"Service {service_status.get('status')}: {service_status.get('status_display', 'Unknown')}"
-                else:  # error
-                    repo.azure_agent_status = 'error'
-                    repo.azure_agent_error = service_status.get('error') or f"Service {service_status.get('status')}: {service_status.get('status_display', 'Unknown')}"
-                
+                repo.azure_agent_service_status = service_status.get('status', 'unknown')
+
+                if is_local_available:
+                    health_impact = monitor.get_service_health_impact(service_status)
+                    logger.info(f"Azure agent health impact determined: {health_impact}")
+                    if health_impact == 'healthy':
+                        repo.azure_agent_status = 'running'
+                        repo.azure_agent_error = None
+                    elif health_impact == 'warning':
+                        repo.azure_agent_status = 'warning'
+                        repo.azure_agent_error = f"Service {service_status.get('status')}: {service_status.get('status_display', 'Unknown')}"
+                    else:
+                        repo.azure_agent_status = 'error'
+                        repo.azure_agent_error = service_status.get('error') or f"Service {service_status.get('status')}: {service_status.get('status_display', 'Unknown')}"
+                else:
+                    repo.azure_agent_error = service_status.get('status_display') or service_status.get('error')
+
                 db.commit()
                 
                 # Trigger a health system refresh to update overall status
@@ -3135,7 +3315,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.put("/api/repositories/{repo_id}/azure-agent-service/name")
-        async def save_azure_agent_service_name(repo_id: int, request_data: dict, db: Session = Depends(get_db)):
+        async def save_azure_agent_service_name(repo_id: int, request_data: dict, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Save the Azure DevOps agent service name for a repository"""
             try:
                 # Get repository
@@ -3158,7 +3338,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.get("/api/repositories/{repo_id}/azure-agent-service/list")
-        async def list_azure_agent_services(repo_id: int, db: Session = Depends(get_db)):
+        async def list_azure_agent_services(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """List all Azure DevOps agent services on the system"""
             try:
                 # Get repository (for auth check)
@@ -3200,7 +3380,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
 
         # Token testing endpoints
         @self.app.post("/api/repositories/{repo_id}/test-token")
-        async def test_repository_token(repo_id: int, db: Session = Depends(get_db)):
+        async def test_repository_token(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Test the repository's access token permissions"""
             try:
                 # Get repository
@@ -3233,7 +3413,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
         
         # Notification endpoints
         @self.app.get("/api/notifications/configs")
-        async def get_notification_configs():
+        async def get_notification_configs(current_user: UserDB = Depends(require_auth)):
             """Get all notification configurations"""
             try:
                 from database import database_manager
@@ -3244,7 +3424,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.post("/api/notifications/configs")
-        async def create_notification_config(config_data: dict):
+        async def create_notification_config(config_data: dict, current_user: UserDB = Depends(require_auth)):
             """Create new notification configuration"""
             try:
                 from database import database_manager
@@ -3255,7 +3435,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.put("/api/notifications/configs/{config_id}")
-        async def update_notification_config(config_id: int, config_data: dict):
+        async def update_notification_config(config_id: int, config_data: dict, current_user: UserDB = Depends(require_auth)):
             """Update notification configuration"""
             try:
                 config_data['id'] = config_id
@@ -3267,7 +3447,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.delete("/api/notifications/configs/{config_id}")
-        async def delete_notification_config(config_id: int):
+        async def delete_notification_config(config_id: int, current_user: UserDB = Depends(require_auth)):
             """Delete notification configuration"""
             try:
                 from database import database_manager
@@ -3281,7 +3461,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.post("/api/notifications/test/{config_id}")
-        async def test_notification_config(config_id: int, test_data: dict = {}):
+        async def test_notification_config(config_id: int, test_data: dict = {}, current_user: UserDB = Depends(require_auth)):
             """Test notification configuration"""
             try:
                 from database import database_manager
@@ -3367,7 +3547,8 @@ This file can override any setting from the global PR-Agent configuration, inclu
             limit: int = 100, 
             offset: int = 0,
             event_type: str = None,
-            repository: str = None
+            repository: str = None,
+            current_user: UserDB = Depends(require_auth)
         ):
             """Get notification events with pagination"""
             try:
@@ -3398,7 +3579,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
         
         # Metrics endpoints
         @self.app.get("/api/metrics/summary")
-        async def get_metrics_summary(db: Session = Depends(get_db)):
+        async def get_metrics_summary(db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Get complete metrics summary with cost calculations"""
             try:
                 summary = await self.metrics_service.get_metrics_summary(db)
@@ -3408,7 +3589,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.get("/api/metrics/config")
-        async def get_metrics_config(db: Session = Depends(get_db)):
+        async def get_metrics_config(db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Get metrics configuration"""
             try:
                 config = await self.metrics_service.get_or_create_config(db)
@@ -3418,7 +3599,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.post("/api/metrics/config")
-        async def update_metrics_config(config_data: dict, db: Session = Depends(get_db)):
+        async def update_metrics_config(config_data: dict, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Update metrics configuration"""
             try:
                 config = await self.metrics_service.update_config(db, config_data)
@@ -3428,7 +3609,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=400, detail=str(e))
         
         @self.app.post("/api/metrics/recalculate")
-        async def recalculate_metrics(db: Session = Depends(get_db)):
+        async def recalculate_metrics(db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Recalculate metrics from existing operations"""
             try:
                 await self.metrics_service.recalculate_metrics_from_operations(db)
@@ -3439,7 +3620,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.get("/api/metrics/operations")
-        async def get_operation_breakdown(db: Session = Depends(get_db)):
+        async def get_operation_breakdown(db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Get operation breakdown with cost calculations"""
             try:
                 breakdown = await self.metrics_service.get_operation_breakdown(db)
@@ -3449,7 +3630,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.get("/api/metrics/repositories")
-        async def get_repository_breakdown(db: Session = Depends(get_db)):
+        async def get_repository_breakdown(db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Get repository breakdown with cost calculations"""
             try:
                 breakdown = await self.metrics_service.get_repository_breakdown(db)
@@ -3460,7 +3641,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
         
         # Admin endpoints
         @self.app.get("/api/admin/retention/config")
-        async def get_retention_config():
+        async def get_retention_config(current_user: UserDB = Depends(require_auth)):
             """Get retention configuration"""
             try:
                 config = self.retention_service.get_retention_config()
@@ -3470,7 +3651,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.post("/api/admin/retention/config")
-        async def update_retention_config(config_data: dict):
+        async def update_retention_config(config_data: dict, current_user: UserDB = Depends(require_auth)):
             """Update retention configuration"""
             try:
                 success = self.retention_service.update_retention_config(config_data)
@@ -3483,7 +3664,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.get("/api/admin/database/stats")
-        async def get_database_stats():
+        async def get_database_stats(current_user: UserDB = Depends(require_auth)):
             """Get database statistics"""
             try:
                 stats = self.retention_service.get_database_stats()
@@ -3493,7 +3674,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.post("/api/admin/database/cleanup")
-        async def perform_cleanup(dry_run: bool = True):
+        async def perform_cleanup(dry_run: bool = True, current_user: UserDB = Depends(require_auth)):
             """Perform database cleanup"""
             try:
                 results = self.retention_service.perform_cleanup(dry_run=dry_run)
@@ -3504,7 +3685,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.post("/api/admin/database/backup")
-        async def create_backup(compressed: bool = True):
+        async def create_backup(compressed: bool = True, current_user: UserDB = Depends(require_auth)):
             """Create database backup"""
             try:
                 result = self.retention_service.create_backup(compressed=compressed)
@@ -3517,7 +3698,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.get("/api/admin/database/backups")
-        async def get_backup_list():
+        async def get_backup_list(current_user: UserDB = Depends(require_auth)):
             """Get list of available backups"""
             try:
                 backups = self.retention_service.get_backup_list()
@@ -3527,7 +3708,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.get("/api/admin/backup/directory")
-        async def get_backup_directory():
+        async def get_backup_directory(current_user: UserDB = Depends(require_auth)):
             """Get current backup directory"""
             try:
                 backup_dir = self.retention_service.backup_dir
@@ -3537,7 +3718,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.post("/api/admin/backup/directory")
-        async def set_backup_directory(directory_data: dict):
+        async def set_backup_directory(directory_data: dict, current_user: UserDB = Depends(require_auth)):
             """Set backup directory"""
             try:
                 new_directory = directory_data.get("backup_directory")
@@ -3733,7 +3914,9 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 else:
                     report['status'] = 'warning'
                     report['message'] = f"Found {report['issues_found']} potential timezone issues"
-                    report['recommendations'].append("Consider that SQLite stores datetimes as strings, so timezone info may not be preserved")
+                    _db_type = (getattr(db_engine.dialect, "name", "sqlite") if db_engine else "sqlite")
+                    if _db_type == "sqlite":
+                        report['recommendations'].append("Consider that SQLite stores datetimes as strings, so timezone info may not be preserved")
                     report['recommendations'].append("Ensure all new timestamps use datetime.utcnow() in the backend")
                 
                 return APIResponse(data=report, message="Timezone validation completed")
@@ -3743,7 +3926,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=f"Timezone validation failed: {str(e)}")
 
         @self.app.get("/api/repositories/{repo_id}/detailed-status")
-        async def get_repository_detailed_status(repo_id: int, db: Session = Depends(get_db)):
+        async def get_repository_detailed_status(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Get detailed repository status including runner info and workflow analysis"""
             try:
                 repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
@@ -3816,11 +3999,60 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 ]
             }, message="GitHub token permissions guide")
 
+        # Cron endpoints for GCP Cloud Scheduler (no developer_mode required)
+        _cron_secret = os.environ.get("DASHBOARD_CRON_SECRET", "").strip()
+
+        @self.app.post("/api/cron/run-cleanup")
+        async def cron_run_cleanup(request: Request):
+            """Trigger retention cleanup (for Cloud Scheduler). Requires DASHBOARD_CRON_SECRET."""
+            if not _cron_secret:
+                raise HTTPException(status_code=503, detail="Cron secret not configured")
+            auth = request.headers.get("X-Cron-Secret") or (request.headers.get("Authorization") or "").replace("Bearer ", "")
+            if auth != _cron_secret:
+                raise HTTPException(status_code=401, detail="Unauthorized")
+            if not getattr(self.retention_service, "_use_sqlite", True):
+                return APIResponse(data={"skipped": True, "reason": "Cloud SQL: use GCP managed retention or manual SQL"}, message="Cleanup skipped (non-SQLite)")
+            result = self.retention_service.perform_cleanup(dry_run=False)
+            return APIResponse(data=result, message=f"Cleanup completed: {result.get('total_deleted', 0)} deleted")
+
+        @self.app.post("/api/cron/run-job-timeout")
+        async def cron_run_job_timeout(request: Request):
+            """Trigger job timeout check (for Cloud Scheduler). Requires DASHBOARD_CRON_SECRET."""
+            if not _cron_secret:
+                raise HTTPException(status_code=503, detail="Cron secret not configured")
+            auth = request.headers.get("X-Cron-Secret") or (request.headers.get("Authorization") or "").replace("Bearer ", "")
+            if auth != _cron_secret:
+                raise HTTPException(status_code=401, detail="Unauthorized")
+            from timezone_utils import get_cutoff_datetime, safe_datetime_compare
+            cutoff_time = get_cutoff_datetime(days=0, hours=1)
+            running_jobs = await self.cached_job_service.get_jobs(status="running", limit=1000)
+            stale_jobs = []
+            for job_data in running_jobs:
+                job_id = job_data.get("job_id")
+                if job_id:
+                    last_activity = await self._get_job_last_activity(job_id, job_data)
+                    if last_activity and safe_datetime_compare(last_activity, cutoff_time):
+                        stale_jobs.append(job_id)
+            from models import JobStatus
+            failed_count = 0
+            for job_id in stale_jobs:
+                try:
+                    await self.cached_job_service.update_job_status(
+                        job_id, JobStatus.FAILED,
+                        error_details="Job timed out - No activity for over 1 hour (cron)"
+                    )
+                    failed_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to mark job {job_id} as failed: {e}")
+            from timezone_utils import utcnow_aware
+            self.database_manager.set_system_setting("last_job_timeout_check_time", utcnow_aware().isoformat())
+            return APIResponse(data={"stale_marked_failed": failed_count, "stale_found": len(stale_jobs)}, message=f"Job timeout check: {failed_count} marked failed")
+
         # Developer endpoints (Open/Closed Principle - easily extensible)
         if settings.developer_mode:
             self._setup_developer_routes()
         
-        # WebSocket endpoint
+        # WebSocket endpoint (for Cloud Run: set service request timeout to 60 min so long-lived WS is not closed)
         @self.app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
             client_info = f"{websocket.client.host}:{websocket.client.port}" if websocket.client else "unknown"
@@ -4472,11 +4704,12 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 logger.info("Database initialized successfully")
                 
                 try:
+                    _db_type = (getattr(db_engine.dialect, "name", "sqlite") if db_engine else "sqlite").replace("postgresql", "PostgreSQL").replace("sqlite", "SQLite")
                     self._log_system_event('INFO', 
                         "Database system initialized - Schema validation completed",
                         {
                             'system_event': 'database_initialized',
-                            'database_type': 'SQLite',
+                            'database_type': _db_type,
                             'schema_version': 'latest'
                         }
                     )
@@ -4600,6 +4833,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
             config = await self.config_service.get_config() if self.config_service else {}
             retention_config = self.retention_service.get_retention_config() if self.retention_service else {}
             
+            _db_type = (getattr(db_engine.dialect, "name", "sqlite") if db_engine else "sqlite").replace("postgresql", "PostgreSQL").replace("sqlite", "SQLite")
             return {
                 'api': {
                     'host': settings.api_host,
@@ -4607,7 +4841,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                     'debug': settings.debug
                 },
                 'database': {
-                    'type': 'SQLite',
+                    'type': _db_type,
                     'max_logs_storage': settings.max_logs_storage,
                     'max_operations_storage': settings.max_operations_storage
                 },
@@ -4999,7 +5233,8 @@ This file can override any setting from the global PR-Agent configuration, inclu
             
             # Send directly to dashboard backend (self-logging)
             try:
-                requests.post('http://localhost:8000/logs/immediate', json=log_data, timeout=1)
+                backend_url = getattr(settings, 'backend_base_url', 'http://localhost:8000')
+                requests.post(f'{backend_url.rstrip("/")}/logs/immediate', json=log_data, timeout=1)
             except Exception:
                 # If dashboard is not available yet, just use standard logging
                 try:
@@ -5012,18 +5247,19 @@ This file can override any setting from the global PR-Agent configuration, inclu
             pass
     
     async def _cleanup_old_data(self):
-        """Background task to cleanup old data using RetentionService"""
+        """Background task to cleanup old data using RetentionService (SQLite only; Cloud SQL use cron endpoints)."""
         from services.retention_service import RetentionService
         
-        # Initialize retention service
         retention_service = RetentionService(self.database_manager)
+        if not getattr(retention_service, "_use_sqlite", True):
+            logger.info("Cleanup background task: Cloud SQL detected, skipping in-process cleanup (use /api/cron/run-cleanup with Cloud Scheduler)")
+            while True:
+                await asyncio.sleep(86400)  # Check once per day
+            return
         
         while True:
             try:
-                # Get retention configuration
                 config = retention_service.get_retention_config()
-                
-                # Check if auto cleanup is enabled
                 if not config.get("auto_cleanup_enabled", True):
                     await asyncio.sleep(3600)  # Check again in 1 hour
                     continue
@@ -5068,14 +5304,15 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 await asyncio.sleep(3600)  # Wait 1 hour before retrying
     
     async def _backup_scheduler(self):
-        """Background task to perform automatic backups"""
+        """Background task to perform automatic backups (SQLite only)."""
+        if not getattr(self.retention_service, "_use_sqlite", True):
+            logger.info("Backup scheduler: Cloud SQL detected, skipping in-process backups (use GCP managed backups)")
+            while True:
+                await asyncio.sleep(86400)
+            return
         while True:
             try:
                 await asyncio.sleep(3600)  # Check every hour
-                
-                # Check for due backups
-                
-                # Perform backup if due
                 result = self.retention_service.perform_automatic_backup()
                 
                 if result.get("success"):

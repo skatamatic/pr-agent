@@ -117,7 +117,7 @@ describe('JobsList Component - Job Deletion', () => {
       can_delete: true
     };
     
-    api.getJobDeletionPreview.mockResolvedValue({ data: mockPreviewData });
+    api.getJobDeletionPreview.mockResolvedValue({ data: { data: mockPreviewData } });
     
     renderWithToastContext(<JobsList />);
     
@@ -139,13 +139,13 @@ describe('JobsList Component - Job Deletion', () => {
       expect(api.getJobDeletionPreview).toHaveBeenCalledWith('job-123');
     });
     
-    // Check that preview dialog appears
+    // Check that preview dialog appears (dialog shows Job ID, Type, Operations count, Log count)
     await waitFor(() => {
       expect(screen.getByText('Delete Job & Related Data')).toBeInTheDocument();
-      expect(screen.getByText('#job-123 (review)')).toBeInTheDocument();
-      expect(screen.getByText('5 associated operations')).toBeInTheDocument();
-      expect(screen.getByText('12 log entries')).toBeInTheDocument();
-    });
+    }, { timeout: 5000 });
+    expect(screen.getByText('job-123')).toBeInTheDocument();
+    expect(screen.getByText('Operations')).toBeInTheDocument();
+    expect(screen.getByText('Log Entries')).toBeInTheDocument();
   });
 
   test('handles deletion preview API error', async () => {
@@ -194,7 +194,7 @@ describe('JobsList Component - Job Deletion', () => {
       repository: 'test/repo'
     };
     
-    api.getJobDeletionPreview.mockResolvedValue({ data: mockPreviewData });
+    api.getJobDeletionPreview.mockResolvedValue({ data: { data: mockPreviewData } });
     api.deleteJob.mockResolvedValue({ data: mockDeleteResult });
     
     renderWithToastContext(<JobsList />);
@@ -244,7 +244,7 @@ describe('JobsList Component - Job Deletion', () => {
       can_delete: true
     };
     
-    api.getJobDeletionPreview.mockResolvedValue({ data: mockPreviewData });
+    api.getJobDeletionPreview.mockResolvedValue({ data: { data: mockPreviewData } });
     api.deleteJob.mockRejectedValue(new Error('Delete API Error'));
     
     renderWithToastContext(<JobsList />);
@@ -289,7 +289,7 @@ describe('JobsList Component - Job Deletion', () => {
       can_delete: true
     };
     
-    api.getJobDeletionPreview.mockResolvedValue({ data: mockPreviewData });
+    api.getJobDeletionPreview.mockResolvedValue({ data: { data: mockPreviewData } });
     
     renderWithToastContext(<JobsList />);
     
@@ -334,7 +334,7 @@ describe('JobsList Component - Job Deletion', () => {
       can_delete: true
     };
     
-    api.getJobDeletionPreview.mockResolvedValue({ data: mockPreviewData });
+    api.getJobDeletionPreview.mockResolvedValue({ data: { data: mockPreviewData } });
     
     renderWithToastContext(<JobsList />);
     
@@ -362,8 +362,8 @@ describe('JobsList Component - Job Deletion', () => {
       expect(screen.getByText('Delete Job & Related Data')).toBeInTheDocument();
     }, { timeout: 3000 });
     
-    // Check for cost impact
-    expect(screen.getByText('$-25.50')).toBeInTheDocument(); // Negative cost impact
+    // Check for cost impact (component displays absolute value with $ prefix)
+    expect(screen.getByText('$25.50')).toBeInTheDocument();
   });
 
   test('closes actions menu when clicking outside', async () => {

@@ -1,0 +1,130 @@
+# Cloud Build CI/CD: build, push, and deploy dashboard backend + frontend to Cloud Run.
+# Referenced by Cloud Build triggers created by scripts/setup-cicd-gcp.sh.
+#
+# Unlike cloudbuild.yaml (build-only), this config also deploys via
+# `gcloud run services update --image`, which swaps the container image while
+# preserving all existing env vars, secrets, VPC connector, and other settings
+# that Terraform originally configured.
+#
+# Substitutions (set by the trigger):
+#   _REGION  - GCP region (e.g. us-central1)
+#   _REPO_ID - Artifact Registry repo ID (e.g. pr-agent-dash-dev-repo)
+#   _PREFIX  - Cloud Run service name prefix (e.g. pr-agent-dash-dev)
+
+substitutions:
+  _REGION: us-central1
+  _REPO_ID: pr-agent-dash-repo
+  _PREFIX: pr-agent-dash
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  # ---------- Resolve backend URL (needed for frontend build arg) ----------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: get-backend-url
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        BACKEND_URL=$(gcloud run services describe ${_PREFIX}-backend \
+          --region=${_REGION} --format='value(status.url)' 2>/dev/null || echo "")
+        if [ -z "$$BACKEND_URL" ]; then
+          echo "Warning: could not resolve backend URL; frontend built with placeholder."
+          BACKEND_URL="https://BACKEND-URL-PLACEHOLDER.run.app"
+        fi
+        echo "$$BACKEND_URL" > /workspace/backend_url.txt
+        echo "Backend URL: $$BACKEND_URL"
+
+  # ---------- Build backend (parallel with URL lookup) ----------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: build-backend
+    args:
+      - build
+      - -f
+      - dashboard/backend/Dockerfile
+      - -t
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/backend:${SHORT_SHA}'
+      - -t
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/backend:latest'
+      - .
+    waitFor: ['-']
+
+  # ---------- Build frontend (needs backend URL) ----------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: build-frontend
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        BACKEND_URL=$(cat /workspace/backend_url.txt)
+        WS_URL="$${BACKEND_URL/https/wss}"
+        WS_URL="$${WS_URL%/}/ws"
+        echo "Building frontend with API=$${BACKEND_URL}  WS=$${WS_URL}"
+        docker build -f dashboard/frontend/Dockerfile \
+          --build-arg "REACT_APP_API_URL=$${BACKEND_URL}" \
+          --build-arg "REACT_APP_WS_URL=$${WS_URL}" \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/frontend:${SHORT_SHA} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/frontend:latest \
+          .
+    waitFor: ['get-backend-url']
+
+  # ---------- Push backend ----------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-backend
+    args:
+      - push
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/backend:${SHORT_SHA}'
+    waitFor: ['build-backend']
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-backend-latest
+    args:
+      - push
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/backend:latest'
+    waitFor: ['build-backend']
+
+  # ---------- Push frontend ----------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-frontend
+    args:
+      - push
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/frontend:${SHORT_SHA}'
+    waitFor: ['build-frontend']
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-frontend-latest
+    args:
+      - push
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/frontend:latest'
+    waitFor: ['build-frontend']
+
+  # ---------- Deploy backend to Cloud Run ----------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy-backend
+    args:
+      - gcloud
+      - run
+      - services
+      - update
+      - '${_PREFIX}-backend'
+      - '--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/backend:${SHORT_SHA}'
+      - '--region=${_REGION}'
+    waitFor: ['push-backend']
+
+  # ---------- Deploy frontend to Cloud Run ----------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy-frontend
+    args:
+      - gcloud
+      - run
+      - services
+      - update
+      - '${_PREFIX}-frontend'
+      - '--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/frontend:${SHORT_SHA}'
+      - '--region=${_REGION}'
+    waitFor: ['push-frontend']
+
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/backend:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/backend:latest'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/frontend:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/frontend:latest'

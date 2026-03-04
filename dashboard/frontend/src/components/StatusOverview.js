@@ -814,7 +814,7 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
             </div>
             <div className="p-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {renderServiceStatus('database', 'Database', Database, 'SQLite storage')}
+                {renderServiceStatus('database', 'Database', Database, 'SQLite or Cloud SQL')}
                 {renderServiceStatus('pr_agent_config', 'PR-Agent Config', Server, 'Configuration file')}
                 {renderServiceStatus('context_service', 'Context Service', Wifi, 'Code context API')}
                 {renderServiceStatus('repositories', 'Runner Services', Monitor, 'GitHub Actions & DevOps runners')}

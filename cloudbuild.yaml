@@ -1,0 +1,85 @@
+# Cloud Build: build and push PR-Agent Dashboard backend + frontend to Artifact Registry.
+# Does not run Terraform; use a separate trigger or manual deploy to update Cloud Run.
+#
+# Substitutions (set in trigger or defaulted):
+#   _REGION          - e.g. us-central1 (default: us-central1)
+#   _REPO_ID         - Artifact Registry repo (default: pr-agent-dash-repo; should match Terraform prefix-repo)
+#   _BACKEND_URL     - Backend URL for frontend REACT_APP_API_URL (optional; if empty, placeholder used)
+#
+# Trigger: Push to main (or branch filter). Set _BACKEND_URL in trigger to your backend Cloud Run URL
+# so the frontend is built with the correct API/WS URLs.
+#
+# To also run Terraform apply after build, add a step that runs terraform with -var=backend_image=...
+# and -var=frontend_image=... (and base URLs). Prefer storing state in GCS and using a SA with minimal roles.
+
+substitutions:
+  _REGION: us-central1
+  _REPO_ID: pr-agent-dash-repo
+  _BACKEND_URL: ''   # Set in trigger to e.g. https://pr-agent-dash-backend-xxxx.run.app
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    id: build-backend
+    args:
+      - build
+      - -f
+      - dashboard/backend/Dockerfile
+      - -t
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/backend:${SHORT_SHA}'
+      - -t
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/backend:latest'
+      - .
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-backend
+    args:
+      - push
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/backend:${SHORT_SHA}'
+    waitFor: ['build-backend']
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-backend-latest
+    args:
+      - push
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/backend:latest'
+    waitFor: ['build-backend']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: build-frontend
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        BACKEND_URL="${_BACKEND_URL}"
+        if [ -z "$$BACKEND_URL" ]; then
+          BACKEND_URL="https://BACKEND-URL.run.app"
+          echo "Warning: _BACKEND_URL not set; frontend built with placeholder. Set in trigger or rebuild after deploy."
+        fi
+        WS_URL="$${BACKEND_URL/https/wss}"
+        WS_URL="$${WS_URL%/}/ws"
+        docker build -f dashboard/frontend/Dockerfile \
+          --build-arg "REACT_APP_API_URL=$$BACKEND_URL" \
+          --build-arg "REACT_APP_WS_URL=$$WS_URL" \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/frontend:${SHORT_SHA} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/frontend:latest \
+          .
+    waitFor: ['-']   # can run in parallel with backend
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-frontend
+    args:
+      - push
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/frontend:${SHORT_SHA}'
+    waitFor: ['build-frontend']
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-frontend-latest
+    args:
+      - push
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/frontend:latest'
+    waitFor: ['build-frontend']
+
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/backend:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/backend:latest'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/frontend:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/frontend:latest'

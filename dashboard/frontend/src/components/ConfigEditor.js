@@ -21,11 +21,27 @@ import {
   Check,
   RefreshCw,
   FolderOpen,
-  Shield
+  Shield,
+  Upload
 } from 'lucide-react';
+import JSZip from 'jszip';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
+
+/** Zip an array of File objects (e.g. from a folder picker) into a single ZIP File for bulk upload. */
+async function zipFolderFiles(files) {
+  const zip = new JSZip();
+  for (const file of files) {
+    if (file.webkitRelativePath?.endsWith('/')) continue;
+    const baseName = file.webkitRelativePath ? file.webkitRelativePath.split('/').pop() : file.name;
+    if (!baseName) continue;
+    const buf = await file.arrayBuffer();
+    zip.file(baseName, buf);
+  }
+  const blob = await zip.generateAsync({ type: 'blob' });
+  return new File([blob], 'config.zip', { type: 'application/zip' });
+}
 
 const ConfigEditor = ({ navigationTarget = null }) => {
   const [config, setConfig] = useState(null);
@@ -42,18 +58,19 @@ const ConfigEditor = ({ navigationTarget = null }) => {
     return localStorage.getItem('dismissedConfigInfo') === 'true';
   });
   
-  // PR-Agent path management state
+  // Config path (from PR_AGENT_CONFIG_PATH env or default; read-only, no DB)
   const [prAgentPath, setPrAgentPath] = useState({
-    custom_path: null,
-    effective_path: '',
-    default_path: '',
-    using_custom: false,
+    config_path: '',
+    source: 'default',
+    env_var: null,
     validation: { valid: true }
   });
   const [prAgentPathLoading, setPrAgentPathLoading] = useState(false);
   const [prAgentPathValidating, setPrAgentPathValidating] = useState(false);
   const [tempPathValue, setTempPathValue] = useState('');
-  
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const bulkUploadInputRef = React.useRef(null);
+
   const { showSuccess, showError } = useContext(ToastContext);
 
   // Available models categorized by type
@@ -175,7 +192,9 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           default_depth: configData.csharp_code_context_service?.default_depth || 1,
           default_mode: configData.csharp_code_context_service?.default_mode || 'Minified',
           timeout: configData.csharp_code_context_service?.timeout || 180,
-          url: configData.csharp_code_context_service?.url || ''
+          url: configData.csharp_code_context_service?.url || '',
+          username: configData.csharp_code_context_service?.username ?? '',
+          password: configData.csharp_code_context_service?.password ?? ''
         },
         
 
@@ -386,6 +405,30 @@ const ConfigEditor = ({ navigationTarget = null }) => {
     }
   };
 
+  const handleBulkUploadWithFiles = async (files) => {
+    if (!files?.length) return;
+    try {
+      setBulkUploading(true);
+      setErrors({});
+      const zipFile = await zipFolderFiles(Array.from(files));
+      const response = await api.bulkUploadConfig(zipFile);
+      const data = response.data?.data || response.data;
+      if (data?.status === 'success') {
+        showSuccess('Bulk upload complete', data.message || 'Config files uploaded. A backup was created.');
+        if (bulkUploadInputRef.current) bulkUploadInputRef.current.value = '';
+        setEditing(false);
+        await fetchConfig();
+      } else {
+        showError('Upload failed', data?.message || 'Bulk upload failed.');
+      }
+    } catch (error) {
+      const msg = error.response?.data?.detail || error.message || 'Bulk upload failed.';
+      showError('Upload failed', msg);
+    } finally {
+      setBulkUploading(false);
+    }
+  };
+
   const validateConfig = (config) => {
     const errors = {};
     
@@ -524,10 +567,10 @@ const ConfigEditor = ({ navigationTarget = null }) => {
       const response = await api.get('/api/config/pr-agent-path');
       const data = response.data?.data || response.data;
       setPrAgentPath(data);
-      setTempPathValue(data.custom_path || '');
+      setTempPathValue(data.config_path || '');
     } catch (error) {
-      console.error('Error fetching PR-agent path:', error);
-      showError('Failed to fetch PR-agent path configuration');
+      console.error('Error fetching config path:', error);
+      showError('Failed to fetch config path');
     } finally {
       setPrAgentPathLoading(false);
     }
@@ -548,82 +591,26 @@ const ConfigEditor = ({ navigationTarget = null }) => {
     }
   };
 
-  const updatePrAgentPath = async (path) => {
-    try {
-      setPrAgentPathLoading(true);
-      const response = await api.post('/api/config/pr-agent-path', { path: path.trim() });
-      const result = response.data?.data || response.data;
-      
-      if (result.success) {
-        await fetchPrAgentPath(); // Refresh the path info
-        showSuccess(result.message || 'PR-agent path updated successfully');
-        return true;
-      } else {
-        showError(result.message || 'Failed to update PR-agent path');
-        return false;
-      }
-    } catch (error) {
-      console.error('Error updating PR-agent path:', error);
-      const errorMessage = error.response?.data?.detail || error.message || 'Failed to update PR-agent path';
-      showError(errorMessage);
-      return false;
-    } finally {
-      setPrAgentPathLoading(false);
-    }
-  };
-
   const handlePrAgentPathChange = async (newPath) => {
     setTempPathValue(newPath);
-    
-    if (newPath.trim() === (prAgentPath.custom_path || '')) {
-      // No change, reset validation to current state
+    if (newPath.trim() === (prAgentPath.config_path || '')) {
       setPrAgentPath(prev => ({ ...prev, validation: prev.validation }));
       return;
     }
-
-    // Validate the new path
     const validation = await validatePrAgentPath(newPath);
-    setPrAgentPath(prev => ({
-      ...prev,
-      validation
-    }));
+    setPrAgentPath(prev => ({ ...prev, validation }));
   };
 
-  const applyPrAgentPath = async () => {
+  const checkPathValidity = async () => {
+    if (!tempPathValue.trim()) return;
     const validation = await validatePrAgentPath(tempPathValue);
-    if (!validation.valid && tempPathValue.trim() !== '') {
-      showError(`Invalid path: ${validation.error}`);
-      return;
-    }
-
-    const success = await updatePrAgentPath(tempPathValue);
-    if (success) {
-      // If the path changed, the config might need to be reloaded
-      if (editing) {
-        // If currently editing config, warn user they need to save/cancel first
-        showError('Configuration editing in progress. Please save or cancel your changes, then retry setting the PR-agent path.');
-      } else {
-        // Reload config to reflect any changes from the new path
-        fetchConfig();
-      }
+    setPrAgentPath(prev => ({ ...prev, validation }));
+    if (validation.valid) {
+      showSuccess('Path is valid. Set PR_AGENT_CONFIG_PATH to this path for both dashboard and PR-Agent, then restart.');
+    } else {
+      showError(validation.error || 'Invalid path');
     }
   };
-
-  const resetPrAgentPath = async () => {
-    if (window.confirm('Reset PR-agent path to default? This will use the relative path from the dashboard location.')) {
-      const success = await updatePrAgentPath(''); // Empty string resets to default
-      if (success) {
-        setTempPathValue('');
-        if (editing) {
-          showError('Configuration editing in progress. Please save or cancel your changes, then retry resetting the PR-agent path.');
-        } else {
-          fetchConfig();
-        }
-      }
-    }
-  };
-
-
 
   // Optimized updateConfig function with useCallback to prevent unnecessary re-renders
   const updateConfig = useCallback((path, value) => {
@@ -808,6 +795,40 @@ const ConfigEditor = ({ navigationTarget = null }) => {
             >
               <X className="h-4 w-4" />
             </button>
+        </div>
+      </div>
+      )}
+
+      {/* Bulk upload config: only in edit mode; single button opens folder picker then uploads */}
+      {editing && (
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 px-6 py-4">
+        <div className="flex items-center gap-3 flex-wrap">
+          <FolderOpen className="h-5 w-5 text-gray-500 dark:text-gray-400" />
+          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Bulk upload config</span>
+          <input
+            ref={bulkUploadInputRef}
+            type="file"
+            className="hidden"
+            directory
+            webkitdirectory
+            multiple
+            onChange={(e) => {
+              const files = e.target.files;
+              if (files?.length) handleBulkUploadWithFiles(files);
+              e.target.value = '';
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => !bulkUploading && bulkUploadInputRef.current?.click()}
+            disabled={bulkUploading}
+            className="px-3 py-1.5 text-sm rounded-lg bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {bulkUploading ? 'Zipping & uploading...' : 'Choose folder & upload'}
+          </button>
+          <span className="text-xs text-gray-500 dark:text-gray-400">
+            Select a folder containing configuration.toml, secrets.toml, etc. It will be zipped in the browser and uploaded; backup created (max 10).
+          </span>
         </div>
       </div>
       )}
@@ -1142,7 +1163,36 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                       <p className="text-sm text-red-600 dark:text-red-400 mt-1">{errors['csharp_code_context_service.url']}</p>
                     )}
                   </div>
-                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Username
+                        <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal">Context service login</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={config.csharp_code_context_service?.username ?? ''}
+                        onChange={(e) => updateConfig('csharp_code_context_service.username', e.target.value)}
+                        placeholder="Leave blank to keep existing"
+                        disabled={!editing}
+                        className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Password
+                        <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal">Context service login</span>
+                      </label>
+                      <input
+                        type="password"
+                        value={config.csharp_code_context_service?.password ?? ''}
+                        onChange={(e) => updateConfig('csharp_code_context_service.password', e.target.value)}
+                        placeholder="Leave blank to keep existing"
+                        disabled={!editing}
+                        className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                      />
+                    </div>
+                  </div>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Analysis Depth</label>
@@ -1836,84 +1886,43 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   </div>
 
                   <div className="space-y-4">
-                    {/* Current Status */}
+                    {/* Current config path (from PR_AGENT_CONFIG_PATH env or default; read-only) */}
                     {!prAgentPathLoading && (
-                      <div className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-md border border-gray-200 dark:border-gray-700">
-                        <div className="flex items-center space-x-2">
-                          <div className={`h-2 w-2 rounded-full ${prAgentPath.validation?.valid ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                          <span className="text-sm text-gray-700 dark:text-gray-300">
-                            Currently using: <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded text-xs">{prAgentPath.effective_path}</code>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-md border border-gray-200 dark:border-gray-700">
+                          <div className="flex items-center space-x-2">
+                            <div className={`h-2 w-2 rounded-full ${prAgentPath.validation?.valid ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                            <span className="text-sm text-gray-700 dark:text-gray-300">
+                              Config directory: <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded text-xs break-all">{prAgentPath.config_path}</code>
+                            </span>
+                          </div>
+                          <span className="text-xs text-gray-500 dark:text-gray-400">
+                            {prAgentPath.source === 'env' ? 'From PR_AGENT_CONFIG_PATH' : prAgentPath.source === 'gcs' ? 'From GCS' : 'Default'}
                           </span>
                         </div>
-                        <div className="flex items-center space-x-1 text-xs">
-                          {prAgentPath.using_custom ? (
-                            <span className="text-blue-600 dark:text-blue-400 font-medium">Custom Path</span>
-                          ) : (
-                            <span className="text-gray-500 dark:text-gray-400">Default Path</span>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Path Input */}
-                    <div className="space-y-2">
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                        Custom Install Path
-                        <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                          Absolute path to PR-Agent installation directory (leave empty for default)
-                        </span>
-                      </label>
-                      <div className="flex space-x-2">
-                        <div className="flex-1 relative">
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          Set <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">PR_AGENT_CONFIG_PATH</code> to the same directory for both dashboard and PR-Agent so they share config. Restart both after changing.
+                        </p>
+                        <div className="flex items-center gap-2">
                           <input
                             type="text"
                             value={tempPathValue}
                             onChange={(e) => handlePrAgentPathChange(e.target.value)}
                             disabled={prAgentPathLoading || editing}
-                            placeholder={prAgentPath.default_path || "Default path will be used"}
-                            className={`w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed ${
-                              prAgentPath.validation?.valid 
-                                ? 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white' 
-                                : 'border-red-300 dark:border-red-600 bg-red-50 dark:bg-red-900/20 text-red-900 dark:text-red-200'
-                            }`}
+                            placeholder="Path to validate (e.g. /mnt/config)"
+                            className="flex-1 border border-gray-300 dark:border-gray-600 rounded-md px-3 py-2 text-sm bg-white dark:bg-gray-800"
                           />
-                          {prAgentPathValidating && (
-                            <div className="absolute right-3 top-2.5">
-                              <RefreshCw className="h-4 w-4 animate-spin text-gray-400" />
-                            </div>
-                          )}
-                        </div>
-                        <button
-                          onClick={applyPrAgentPath}
-                          disabled={prAgentPathLoading || prAgentPathValidating || editing || (tempPathValue.trim() === (prAgentPath.custom_path || ''))}
-                          className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                            prAgentPathLoading || prAgentPathValidating || editing || (tempPathValue.trim() === (prAgentPath.custom_path || ''))
-                              ? 'bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-not-allowed'
-                              : prAgentPath.validation?.valid
-                                ? 'bg-blue-600 text-white hover:bg-blue-700'
-                                : 'bg-red-600 text-white hover:bg-red-700'
-                          }`}
-                        >
-                          {prAgentPathLoading ? (
-                            <RefreshCw className="h-4 w-4 animate-spin" />
-                          ) : prAgentPath.validation?.valid ? (
-                            <Check className="h-4 w-4" />
-                          ) : (
-                            'Apply'
-                          )}
-                        </button>
-                        {prAgentPath.using_custom && (
                           <button
-                            onClick={resetPrAgentPath}
-                            disabled={prAgentPathLoading || editing}
-                            className="px-3 py-2 rounded-md text-sm font-medium text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                            title="Reset to default path"
+                            type="button"
+                            onClick={checkPathValidity}
+                            disabled={prAgentPathLoading || prAgentPathValidating || !tempPathValue.trim()}
+                            className="px-3 py-2 rounded-md text-sm font-medium bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50"
                           >
-                            <RotateCcw className="h-4 w-4" />
+                            {prAgentPathValidating ? <RefreshCw className="h-4 w-4 animate-spin" /> : 'Validate path'}
                           </button>
-                        )}
+                        </div>
                       </div>
-                    </div>
+                    )}
 
                     {/* Validation Status */}
                     {!prAgentPath.validation?.valid && prAgentPath.validation?.error && (

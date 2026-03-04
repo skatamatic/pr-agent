@@ -19,20 +19,19 @@ class RetentionService:
     def __init__(self, database_manager, db_path: str = None):
         self.database_manager = database_manager
         # Use the database URL from settings instead of hardcoded path
+        from config import settings
+        database_url = os.getenv("DATABASE_URL") or os.getenv("DASHBOARD_DATABASE_URL") or getattr(settings, "database_url", "sqlite:///./dashboard.db")
         if db_path is None:
-            from config import settings
-            import os
-            # Extract the database path from the database URL
-            database_url = os.getenv("DATABASE_URL", settings.database_url)
             if database_url.startswith("sqlite:///"):
                 # Remove sqlite:/// prefix and handle relative/absolute paths
                 db_path = database_url[10:]  # Remove "sqlite:///"
                 if db_path.startswith("./"):
                     db_path = db_path[2:]  # Remove "./" prefix for relative paths
             else:
-                # Fallback for non-SQLite databases or malformed URLs
-                db_path = "dashboard.db"
+                # Non-SQLite (e.g. Cloud SQL): no file path
+                db_path = ""
         self.db_path = db_path
+        self._use_sqlite = database_url.startswith("sqlite")
         
         # Initialize last backup time from database
         self.last_backup_time = None
@@ -43,16 +42,16 @@ class RetentionService:
         except Exception as e:
             logger.warning(f"Could not load last backup time: {e}")
         
-        # Get configurable backup directory
+        # Get configurable backup directory (only used for SQLite file-based backups)
         backup_dir = self.database_manager.get_system_setting("backup_directory")
         if backup_dir:
             self.backup_dir = Path(backup_dir)
-        else:
-            # Default to a backups folder in the same directory as the database
+        elif self._use_sqlite and self.db_path:
             self.backup_dir = Path(self.db_path).parent / "backups"
-        
-        # Ensure backup directory exists
-        self.backup_dir.mkdir(exist_ok=True)
+        else:
+            self.backup_dir = Path("/tmp/dashboard_backups")  # fallback for non-SQLite (e.g. Cloud SQL; backups disabled)
+        if self._use_sqlite:
+            self.backup_dir.mkdir(parents=True, exist_ok=True)
         
         # Industry standard defaults for SQLite databases
         self.default_config = {
@@ -306,7 +305,9 @@ class RetentionService:
             
             # Send directly to dashboard backend
             try:
-                requests.post('http://localhost:8000/logs/immediate', json=log_data, timeout=2)
+                from config import settings
+                backend_url = getattr(settings, 'backend_base_url', 'http://localhost:8000')
+                requests.post(f'{backend_url.rstrip("/")}/logs/immediate', json=log_data, timeout=2)
             except Exception:
                 # If dashboard is not available, log normally - but don't fail
                 try:
@@ -349,7 +350,9 @@ class RetentionService:
             return False
     
     def perform_automatic_backup(self, force: bool = False) -> Dict[str, Any]:
-        """Perform automatic backup if enabled and due, or force if requested"""
+        """Perform automatic backup if enabled and due, or force if requested (SQLite only)."""
+        if not self._use_sqlite:
+            return {"success": False, "reason": "Automatic backup is only available for SQLite. For Cloud SQL use GCP managed backups."}
         try:
             config = self.get_retention_config()
             
@@ -455,7 +458,7 @@ class RetentionService:
             return {"success": False, "error": error_msg}
     
     def get_database_stats(self) -> Dict[str, Any]:
-        """Get comprehensive database statistics"""
+        """Get comprehensive database statistics (SQLite file stats, or Cloud SQL table counts only)"""
         try:
             stats = {
                 "size_bytes": 0,
@@ -469,8 +472,28 @@ class RetentionService:
                 "next_cleanup": None,
                 "warnings": []
             }
-            
-            # Get file size
+            if not self._use_sqlite:
+                # Cloud SQL: use SQLAlchemy engine for counts only (no file size)
+                from database import engine
+                from sqlalchemy import text
+                table_queries = [
+                    ("jobs", "jobs", "started_at"),
+                    ("logs", "log_entries", "timestamp"),
+                    ("operations", "operations", "started_at"),
+                    ("notification_events", "notification_events", "created_at"),
+                ]
+                for logical_name, table_name, ts_col in table_queries:
+                    try:
+                        with engine.connect() as conn:
+                            r = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}")).scalar()
+                            stats[f"{logical_name}_count"] = r or 0
+                            stats["table_stats"][logical_name] = {"count": r or 0, "oldest_record": None, "newest_record": None, "actual_table": table_name, "timestamp_column": ts_col}
+                    except Exception as e:
+                        logger.warning(f"Could not get count for {table_name}: {e}")
+                        stats[f"{logical_name}_count"] = 0
+                stats["warnings"] = ["File-based stats and backup/restore are not available for Cloud SQL."]
+                return stats
+            # SQLite: file size and full stats
             if os.path.exists(self.db_path):
                 file_size = os.path.getsize(self.db_path)
                 stats["size_bytes"] = file_size
@@ -595,7 +618,15 @@ class RetentionService:
             return {"error": str(e)}
     
     def perform_cleanup(self, dry_run: bool = False) -> Dict[str, Any]:
-        """Perform database cleanup based on retention policy"""
+        """Perform database cleanup based on retention policy (SQLite only; Cloud SQL use scheduled jobs or manual SQL)."""
+        if not self._use_sqlite:
+            return {
+                "dry_run": dry_run,
+                "tables_processed": {},
+                "total_deleted": 0,
+                "space_reclaimed_mb": 0,
+                "errors": ["Cleanup is only available for SQLite. For Cloud SQL use GCP scheduled jobs or manual retention."],
+            }
         config = self.get_retention_config()
         results = {
             "dry_run": dry_run,
@@ -775,7 +806,9 @@ class RetentionService:
         return deleted_count
     
     def create_backup(self, compressed: bool = True) -> Dict[str, Any]:
-        """Create a manual database backup"""
+        """Create a manual database backup (SQLite only). For Cloud SQL use GCP managed backups."""
+        if not self._use_sqlite:
+            return {"success": False, "error": "File-based backup is only available for SQLite. For Cloud SQL use GCP managed backups."}
         try:
             if not self.backup_dir.exists():
                 self.backup_dir.mkdir(parents=True, exist_ok=True)
@@ -851,7 +884,9 @@ class RetentionService:
             return {"success": False, "error": error_msg}
     
     def create_safety_backup(self, compressed: bool = True) -> Dict[str, Any]:
-        """Create a safety database backup before restore operations"""
+        """Create a safety backup before restore (SQLite only)."""
+        if not self._use_sqlite:
+            return {"success": False, "error": "Safety backup is only available for SQLite."}
         try:
             if not self.backup_dir.exists():
                 self.backup_dir.mkdir(parents=True, exist_ok=True)
@@ -947,7 +982,9 @@ class RetentionService:
             self._log_to_system("ERROR", f"Failed to cleanup old backups: {str(e)}")
     
     def export_data(self, format: str = "json", table_filter: List[str] = None) -> Dict[str, Any]:
-        """Export database data - returns data for download instead of writing to file"""
+        """Export database data (SQLite only; Cloud SQL use pg_dump or application export)."""
+        if not self._use_sqlite:
+            return {"success": False, "error": "Export is only available for SQLite. For Cloud SQL use pg_dump or application-level export."}
         try:
             if table_filter is None:
                 table_filter = []
@@ -1187,6 +1224,9 @@ class RetentionService:
             }
     
     def restore_backup(self, filename: str, progress_callback=None) -> Dict[str, Any]:
+        """Restore database from a backup file (SQLite only)."""
+        if not self._use_sqlite:
+            return {"success": False, "error": "Restore is only available for SQLite. For Cloud SQL use GCP managed restore."}
         """Restore database from a backup file with safety backup creation"""
         try:
             backup_path = self.backup_dir / filename

@@ -1,5 +1,6 @@
 import json
 import asyncio
+import os
 from typing import Dict, Any, Optional
 from datetime import datetime
 import logging
@@ -31,8 +32,16 @@ class DashboardSink:
                  api_key: Optional[str] = None,
                  batch_size: int = 10,
                  flush_interval: float = 5.0):
-        self.dashboard_url = dashboard_url or (get_settings().get("DASHBOARD.URL") if get_settings else None)
-        self.api_key = api_key or (get_settings().get("DASHBOARD.API_KEY") if get_settings else None)
+        self.dashboard_url = (
+            dashboard_url
+            or os.getenv("DASHBOARD_URL")
+            or (get_settings().get("DASHBOARD.URL") if get_settings else None)
+        )
+        self.api_key = (
+            api_key
+            or os.getenv("DASHBOARD_API_KEY")
+            or (get_settings().get("DASHBOARD.API_KEY") if get_settings else None)
+        )
         self.batch_size = batch_size
         self.flush_interval = flush_interval
         self.log_buffer = []

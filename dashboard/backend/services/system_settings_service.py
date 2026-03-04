@@ -28,17 +28,28 @@ class SystemSettingsService:
                 return None
     
     def set_setting(self, key: str, value: str) -> bool:
-        """Set a system setting value"""
+        """Set a system setting value (SQLite and PostgreSQL/Cloud SQL compatible)."""
+        from database import engine
         with SessionLocal() as db:
             try:
-                # Use UPSERT (INSERT OR REPLACE for SQLite)
-                db.execute(
-                    text("""
-                        INSERT OR REPLACE INTO system_settings (key, value, updated_at) 
-                        VALUES (:key, :value, CURRENT_TIMESTAMP)
-                    """),
-                    {"key": key, "value": value}
-                )
+                dialect = getattr(engine.dialect, "name", "sqlite")
+                if dialect == "postgresql":
+                    db.execute(
+                        text("""
+                            INSERT INTO system_settings (key, value, updated_at)
+                            VALUES (:key, :value, CURRENT_TIMESTAMP)
+                            ON CONFLICT (key) DO UPDATE SET value = :value, updated_at = CURRENT_TIMESTAMP
+                        """),
+                        {"key": key, "value": value}
+                    )
+                else:
+                    db.execute(
+                        text("""
+                            INSERT OR REPLACE INTO system_settings (key, value, updated_at)
+                            VALUES (:key, :value, CURRENT_TIMESTAMP)
+                        """),
+                        {"key": key, "value": value}
+                    )
                 db.commit()
                 return True
             except Exception as e:
@@ -191,14 +202,11 @@ class SystemSettingsService:
         return str(pr_agent_root)
     
     def get_effective_pr_agent_path(self) -> str:
-        """Get the effective PR-agent path (settings.toml or default)"""
-        # Check settings.toml for pr_agent_path
+        """Get the default PR-agent path (settings.toml or repo root). Used only when PR_AGENT_CONFIG_PATH is not set."""
         try:
             from config import settings
             if hasattr(settings, 'pr_agent_path') and settings.pr_agent_path:
                 return str(settings.pr_agent_path)
         except Exception as e:
             print(f"Warning: Could not read pr_agent_path from settings.toml: {e}")
-        
-        # Fall back to default path
         return self.get_default_pr_agent_path() 

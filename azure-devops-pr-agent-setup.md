@@ -19,8 +19,12 @@ In your Azure DevOps project, go to **Pipelines > Library** and create a new var
 - `OPENAI_KEY` - Your OpenAI API key (mark as secret)
 - `ANTHROPIC_KEY` - Your Anthropic API key (mark as secret)
 
+#### Optional Variables (for dashboard reporting):
+- `DASHBOARD_URL` - Dashboard backend URL (e.g. `https://your-dashboard-backend.run.app`) so PR-Agent reports jobs, operations, and logs
+- `DASHBOARD_API_KEY` - Optional API key if your dashboard requires it (mark as secret)
+
 #### Optional Variables (if using C# Context Service):
-- `CONTEXT_PASSWORD` - Password for your C# context service (mark as secret)
+- `CSHARP_CODE_CONTEXT_SERVICE__PASSWORD` or `CONTEXT_PASSWORD` - Password for your C# context service (mark as secret)
 
 ### 2. Create the Pipeline
 

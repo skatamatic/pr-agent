@@ -12,7 +12,12 @@ class WebSocketService {
     this.lastPingTime = null;
   }
 
-  connect(url = 'ws://localhost:8000/ws') {
+  connect(url) {
+    // REACT_APP_WS_URL or derive from REACT_APP_API_URL (http->ws, https->wss, then append /ws)
+    const base = url || process.env.REACT_APP_WS_URL || (() => {
+      const api = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+      return api.replace(/^http/, 'ws').replace(/\/?$/, '') + '/ws';
+    })();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       return Promise.resolve();
     }
@@ -31,15 +36,17 @@ class WebSocketService {
 
     return new Promise((resolve, reject) => {
       try {
-        this.ws = new WebSocket(url);
+        this.ws = new WebSocket(base);
 
         this.ws.onopen = () => {
-          console.log('WebSocket connected');
+          const wasReconnect = this.reconnectAttempts > 0;
+          console.log('WebSocket connected' + (wasReconnect ? ' (reconnected)' : ''));
           this.reconnectAttempts = 0;
           this.isConnecting = false;
           this.shouldReconnect = true;
           this.startHeartbeat();
           this.emit('connected');
+          if (wasReconnect) this.emit('reconnected');
           resolve();
         };
 
@@ -53,12 +60,15 @@ class WebSocketService {
         };
 
         this.ws.onclose = (event) => {
+          // Ignore close from a socket we've already replaced (e.g. after forceReconnect)
+          if (event.target !== this.ws) return;
+          this.ws = null;
           console.log('WebSocket disconnected:', event.code, event.reason);
           this.isConnecting = false;
           this.stopHeartbeat();
           this.emit('disconnected');
-          
-          // Attempt reconnection if not a normal close and we should reconnect
+
+          // Single path for reconnection: only schedule here (not in connect().catch) to avoid double-schedule
           if (this.shouldReconnect && event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
             this.scheduleReconnect();
           } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
@@ -102,10 +112,7 @@ class WebSocketService {
       if (this.shouldReconnect) {
         this.connect().catch(error => {
           console.error('Reconnection failed:', error);
-          // If connection fails, schedule another attempt
-          if (this.reconnectAttempts < this.maxReconnectAttempts) {
-            this.scheduleReconnect();
-          }
+          // onclose will also fire and will schedule next attempt (single path avoids double-schedule)
         });
       }
     }, delay);
@@ -266,11 +273,14 @@ class WebSocketService {
 
   forceReconnect() {
     console.log('Forcing reconnection...');
-    if (this.ws) {
-      this.ws.close(1000, 'Force reconnect');
-    }
     this.reconnectAttempts = 0;
     this.shouldReconnect = true;
+    if (this.ws) {
+      this.ws.onclose = null;
+      this.ws.onerror = null;
+      this.ws.close(1000, 'Force reconnect');
+      this.ws = null;
+    }
     this.connect();
   }
 }

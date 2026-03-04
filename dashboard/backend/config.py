@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from dynaconf import Dynaconf
 
@@ -27,7 +28,11 @@ if not hasattr(settings, 'api_host'):
     settings.api_host = "0.0.0.0"
 
 if not hasattr(settings, 'api_port'):
-    settings.api_port = 8000
+    settings.api_port = int(os.getenv("PORT", os.getenv("DASHBOARD_API_PORT", "8000")))
+
+# Cloud Run sets PORT; ensure we bind 0.0.0.0 when PORT is set (override production api_host if needed)
+if os.getenv("PORT") and getattr(settings, "api_host", "") == "127.0.0.1":
+    settings.api_host = "0.0.0.0"
 
 if not hasattr(settings, 'developer_mode'):
     settings.developer_mode = True
@@ -45,6 +50,20 @@ if not hasattr(settings, 'cors_origins'):
         "http://localhost:3001",
         "http://127.0.0.1:3001",
     ]
+# GCP: allow comma-separated CORS origins from env (e.g. DASHBOARD_CORS_ORIGINS=https://app.run.app)
+_cors_env = os.getenv("DASHBOARD_CORS_ORIGINS", "").strip()
+if _cors_env:
+    settings.cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+
+# Optional API key for PR-Agent / programmatic access (env: DASHBOARD_API_KEY). If set, Bearer token can be this key instead of user JWT.
+if not hasattr(settings, 'dashboard_api_key'):
+    settings.dashboard_api_key = os.getenv("DASHBOARD_API_KEY", "").strip() or ""
+
+# Base URLs for internal callbacks and frontend links (env: DASHBOARD_BACKEND_URL, DASHBOARD_FRONTEND_URL)
+if not hasattr(settings, 'backend_base_url'):
+    settings.backend_base_url = "http://localhost:8000"
+if not hasattr(settings, 'frontend_base_url'):
+    settings.frontend_base_url = "http://localhost:3000"
 
 # PR-Agent integration paths - Use absolute paths to avoid working directory issues
 def get_pr_agent_path():
@@ -69,6 +88,33 @@ settings.csharp_context_secrets_path = pr_agent_base / "pr_agent" / "settings" /
 # Create backup directory if it doesn't exist
 if not settings.pr_agent_backup_path.parent.exists():
     settings.pr_agent_backup_path.parent.mkdir(parents=True, exist_ok=True)
+
+# GCP Runner VM automation (optional). When set, dashboard can provision/deprovision runner VMs.
+# GOOGLE_APPLICATION_CREDENTIALS or default SA for auth. Env: GCP_RUNNER_PROJECT_ID, GCP_RUNNER_REGION, etc.
+if not hasattr(settings, 'gcp_runner_project_id'):
+    settings.gcp_runner_project_id = os.getenv("GCP_RUNNER_PROJECT_ID", "").strip() or ""
+if not hasattr(settings, 'gcp_runner_region'):
+    settings.gcp_runner_region = os.getenv("GCP_RUNNER_REGION", "us-central1").strip()
+if not hasattr(settings, 'gcp_runner_zone'):
+    settings.gcp_runner_zone = os.getenv("GCP_RUNNER_ZONE", "").strip() or ""  # default region-a if empty
+if not hasattr(settings, 'gcp_runner_machine_type'):
+    settings.gcp_runner_machine_type = os.getenv("GCP_RUNNER_MACHINE_TYPE", "e2-medium").strip()
+if not hasattr(settings, 'gcp_runner_subnet'):
+    # Optional: full URL or short name (e.g. "default" or "projects/PROJECT/regions/REGION/subnetworks/NAME")
+    settings.gcp_runner_subnet = os.getenv("GCP_RUNNER_SUBNET", "").strip() or ""
+if not hasattr(settings, 'gcp_runner_prefix'):
+    settings.gcp_runner_prefix = os.getenv("GCP_RUNNER_PREFIX", "pr-agent-runner").strip()
+if not hasattr(settings, 'gcp_runner_pr_agent_repo_url'):
+    settings.gcp_runner_pr_agent_repo_url = os.getenv("GCP_RUNNER_PR_AGENT_REPO_URL", "https://github.com/Codium-ai/pr-agent.git").strip()
+if not hasattr(settings, 'gcp_runner_pr_agent_image'):
+    settings.gcp_runner_pr_agent_image = os.getenv("GCP_RUNNER_PR_AGENT_IMAGE", "").strip()  # optional pre-pull, e.g. codiumai/pr-agent:0.23-github_action
+
+# GCS config bucket/prefix (Terraform sets these on Cloud Run; used by dashboard for config and passed to runner VM startup script)
+if not hasattr(settings, 'pr_agent_config_gcs_bucket'):
+    settings.pr_agent_config_gcs_bucket = os.getenv("PR_AGENT_CONFIG_GCS_BUCKET", "").strip()
+if not hasattr(settings, 'pr_agent_config_gcs_prefix'):
+    _prefix = os.getenv("PR_AGENT_CONFIG_GCS_PREFIX", "pr-agent-config/").strip()
+    settings.pr_agent_config_gcs_prefix = _prefix if _prefix else "pr-agent-config/"
 
 # Legacy compatibility - keep dashboard_config for backward compatibility
 dashboard_config = settings 

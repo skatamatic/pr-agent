@@ -1,0 +1,43 @@
+# Seed config for GCS; dashboard and PR-Agent use this bucket. Edit in dashboard to persist.
+[config]
+model = "anthropic/claude-3-5-sonnet-20241022"
+model_weak = "gpt-4o-mini"
+fallback_models = ["gpt-4o-mini"]
+max_model_tokens = 94000
+temperature = 0.2
+verbosity_level = 2
+publish_output = true
+ai_timeout = 180
+
+[pr_reviewer]
+enabled = true
+require_tests = false
+auto_review = false
+
+[pr_description]
+enabled = true
+publish_description = true
+
+[pr_code_suggestions]
+enabled = true
+auto_improve = false
+
+[csharp_code_context_service]
+enabled = false
+default_depth = 1
+default_mode = "Minified"
+timeout = 180
+
+[enabled_actions]
+pr_reviewer = true
+pr_description = true
+pr_code_suggestions = true
+pr_questions = true
+pr_test = false
+pr_add_docs = false
+pr_update_changelog = false
+
+[api_keys]
+openai = ""
+anthropic = ""
+google = ""

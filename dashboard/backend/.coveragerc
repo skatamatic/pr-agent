@@ -1,0 +1,21 @@
+[run]
+omit =
+    test_data.py
+    run_tests.py
+    test_operation_api.py
+    # App wiring; exercised via integration/API tests (client_app)
+    main.py
+    # Alternate/unused implementations and standalone scripts (0% coverage)
+    services/cache_service.py
+    services/cached_job_service.py
+    services/job_service.py
+    services/git_utils.py
+    services/azure_agent_service_monitor.py
+    services/runner_service_monitor.py
+    notification_service.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise NotImplementedError

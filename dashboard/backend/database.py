@@ -14,8 +14,8 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# Database configuration - use settings.toml with environment variable override
-DATABASE_URL = os.getenv("DATABASE_URL", settings.database_url)
+# Database configuration - prefer DATABASE_URL or DASHBOARD_DATABASE_URL (Cloud SQL, etc.)
+DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("DASHBOARD_DATABASE_URL") or settings.database_url
 
 # Create engine with appropriate configuration
 if DATABASE_URL.startswith("sqlite"):
@@ -67,15 +67,22 @@ def check_table_exists(engine, table_name):
     inspector = inspect(engine)
     return table_name in inspector.get_table_names()
 
+def _datetime_type():
+    """Return dialect-appropriate datetime column type (SQLite vs PostgreSQL/Cloud SQL)."""
+    dialect = getattr(engine.dialect, "name", "sqlite")
+    return "TIMESTAMP" if dialect == "postgresql" else "DATETIME"
+
+
 def migrate_database():
-    """Perform automatic database migrations"""
+    """Perform automatic database migrations (SQLite and PostgreSQL/Cloud SQL compatible)."""
     print("Checking database schema and performing migrations if needed...")
+    _dt = _datetime_type()
     
     # Check if jobs table exists
     if not check_table_exists(engine, 'jobs'):
         print("Creating jobs table...")
         with engine.connect() as conn:
-            conn.execute(text("""
+            conn.execute(text(f"""
                 CREATE TABLE jobs (
                     id INTEGER PRIMARY KEY,
                     job_id VARCHAR UNIQUE,
@@ -89,9 +96,9 @@ def migrate_database():
                     installation_id VARCHAR,
                     request_id VARCHAR,
                     webhook_payload JSON,
-                    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    completed_at DATETIME,
-                    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    started_at {_dt} DEFAULT CURRENT_TIMESTAMP,
+                    completed_at {_dt},
+                    last_updated {_dt} DEFAULT CURRENT_TIMESTAMP,
                     duration FLOAT,
                     operations_count INTEGER DEFAULT 0,
                     completed_operations INTEGER DEFAULT 0,
@@ -211,6 +218,37 @@ def migrate_database():
                 conn.commit()
             print("Added operation_id column to log_entries table")
     
+    if not check_table_exists(engine, 'action_runner_connections'):
+        print("Creating action_runner_connections table...")
+        with engine.connect() as conn:
+            conn.execute(text(f"""
+                CREATE TABLE action_runner_connections (
+                    id INTEGER PRIMARY KEY,
+                    provider VARCHAR NOT NULL,
+                    organization VARCHAR NOT NULL,
+                    project VARCHAR,
+                    display_name VARCHAR,
+                    created_at {_dt} DEFAULT CURRENT_TIMESTAMP,
+                    updated_at {_dt} DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.commit()
+        print("Created action_runner_connections table")
+
+    if check_table_exists(engine, 'action_runner_connections'):
+        if not check_column_exists(engine, 'action_runner_connections', 'gcp_instance_name'):
+            print("Adding gcp_instance_name column to action_runner_connections table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE action_runner_connections ADD COLUMN gcp_instance_name VARCHAR"))
+                conn.commit()
+            print("Added gcp_instance_name column to action_runner_connections table")
+        if not check_column_exists(engine, 'action_runner_connections', 'gcp_zone'):
+            print("Adding gcp_zone column to action_runner_connections table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE action_runner_connections ADD COLUMN gcp_zone VARCHAR"))
+                conn.commit()
+            print("Added gcp_zone column to action_runner_connections table")
+    
     # Check if repositories table needs new columns for runner health tracking
     if check_table_exists(engine, 'repositories'):
         if not check_column_exists(engine, 'repositories', 'github_token'):
@@ -237,7 +275,7 @@ def migrate_database():
         if not check_column_exists(engine, 'repositories', 'runner_last_seen'):
             print("Adding runner_last_seen column to repositories table...")
             with engine.connect() as conn:
-                conn.execute(text("ALTER TABLE repositories ADD COLUMN runner_last_seen DATETIME"))
+                conn.execute(text(f"ALTER TABLE repositories ADD COLUMN runner_last_seen {_dt}"))
                 conn.commit()
             print("Added runner_last_seen column to repositories table")
         
@@ -258,7 +296,7 @@ def migrate_database():
         if not check_column_exists(engine, 'repositories', 'config_last_checked'):
             print("Adding config_last_checked column to repositories table...")
             with engine.connect() as conn:
-                conn.execute(text("ALTER TABLE repositories ADD COLUMN config_last_checked DATETIME"))
+                conn.execute(text(f"ALTER TABLE repositories ADD COLUMN config_last_checked {_dt}"))
                 conn.commit()
             print("Added config_last_checked column to repositories table")
         
@@ -316,7 +354,7 @@ def migrate_database():
         if not check_column_exists(engine, 'repositories', 'runner_service_last_checked'):
             print("Adding runner_service_last_checked column to repositories table...")
             with engine.connect() as conn:
-                conn.execute(text("ALTER TABLE repositories ADD COLUMN runner_service_last_checked DATETIME"))
+                conn.execute(text(f"ALTER TABLE repositories ADD COLUMN runner_service_last_checked {_dt}"))
                 conn.commit()
             print("Added runner_service_last_checked column to repositories table")
         
@@ -352,7 +390,7 @@ def migrate_database():
         if not check_column_exists(engine, 'repositories', 'azure_agent_service_last_checked'):
             print("Adding azure_agent_service_last_checked column to repositories table...")
             with engine.connect() as conn:
-                conn.execute(text("ALTER TABLE repositories ADD COLUMN azure_agent_service_last_checked DATETIME"))
+                conn.execute(text(f"ALTER TABLE repositories ADD COLUMN azure_agent_service_last_checked {_dt}"))
                 conn.commit()
             print("Added azure_agent_service_last_checked column to repositories table")
         
@@ -377,6 +415,13 @@ def migrate_database():
                 conn.commit()
             print("Added azure_agent_error column to repositories table")
         
+        if not check_column_exists(engine, 'repositories', 'action_runner_connection_id'):
+            print("Adding action_runner_connection_id column to repositories table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE repositories ADD COLUMN action_runner_connection_id INTEGER"))
+                conn.commit()
+            print("Added action_runner_connection_id column to repositories table")
+        
         # Best practices tracking columns
         if not check_column_exists(engine, 'repositories', 'has_best_practices'):
             print("Adding has_best_practices column to repositories table...")
@@ -395,7 +440,7 @@ def migrate_database():
         if not check_column_exists(engine, 'repositories', 'best_practices_last_fetched'):
             print("Adding best_practices_last_fetched column to repositories table...")
             with engine.connect() as conn:
-                conn.execute(text("ALTER TABLE repositories ADD COLUMN best_practices_last_fetched DATETIME"))
+                conn.execute(text(f"ALTER TABLE repositories ADD COLUMN best_practices_last_fetched {_dt}"))
                 conn.commit()
             print("Added best_practices_last_fetched column to repositories table")
         
@@ -438,7 +483,7 @@ def migrate_database():
         if not check_column_exists(engine, 'repositories', 'pr_agent_config_last_fetched'):
             print("Adding pr_agent_config_last_fetched column to repositories table...")
             with engine.connect() as conn:
-                conn.execute(text("ALTER TABLE repositories ADD COLUMN pr_agent_config_last_fetched DATETIME"))
+                conn.execute(text(f"ALTER TABLE repositories ADD COLUMN pr_agent_config_last_fetched {_dt}"))
                 conn.commit()
             print("Added pr_agent_config_last_fetched column to repositories table")
         
@@ -539,7 +584,7 @@ def migrate_database():
         if not check_column_exists(engine, 'repositories', 'last_activity'):
             print("Adding last_activity column to repositories table...")
             with engine.connect() as conn:
-                conn.execute(text("ALTER TABLE repositories ADD COLUMN last_activity DATETIME"))
+                conn.execute(text(f"ALTER TABLE repositories ADD COLUMN last_activity {_dt}"))
                 conn.commit()
             print("Added last_activity column to repositories table")
         
@@ -596,7 +641,7 @@ def migrate_database():
                     total_output_tokens INTEGER DEFAULT 0,
                     total_estimated_dev_hours FLOAT DEFAULT 0.0,
                     model_usage JSON DEFAULT '{}',
-                    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+                    last_updated {_dt} DEFAULT CURRENT_TIMESTAMP
                 )
             """))
             conn.commit()
@@ -612,8 +657,8 @@ def migrate_database():
                     model_costs JSON DEFAULT '{}',
                     developer_hourly_rate FLOAT DEFAULT 75.0,
                     hours_multiplier FLOAT DEFAULT 1.0,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    created_at {_dt} DEFAULT CURRENT_TIMESTAMP,
+                    updated_at {_dt} DEFAULT CURRENT_TIMESTAMP
                 )
             """))
             conn.commit()
@@ -630,8 +675,8 @@ def migrate_database():
                     status VARCHAR,
                     message TEXT,
                     details JSON,
-                    last_checked DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    last_checked {_dt} DEFAULT CURRENT_TIMESTAMP,
+                    updated_at {_dt} DEFAULT CURRENT_TIMESTAMP
                 )
             """))
             conn.commit()
@@ -640,7 +685,7 @@ def migrate_database():
     if not check_table_exists(engine, 'users'):
         print("Creating users table...")
         with engine.connect() as conn:
-            conn.execute(text("""
+            conn.execute(text(f"""
                 CREATE TABLE users (
                     id INTEGER PRIMARY KEY,
                     username VARCHAR UNIQUE NOT NULL,
@@ -648,9 +693,9 @@ def migrate_database():
                     password_hash VARCHAR NOT NULL,
                     is_active BOOLEAN DEFAULT TRUE,
                     is_admin BOOLEAN DEFAULT FALSE,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    last_login DATETIME
+                    created_at {_dt} DEFAULT CURRENT_TIMESTAMP,
+                    updated_at {_dt} DEFAULT CURRENT_TIMESTAMP,
+                    last_login {_dt}
                 )
             """))
             conn.commit()
@@ -674,7 +719,7 @@ def migrate_database():
         if not check_column_exists(engine, 'users', 'updated_at'):
             print("Adding updated_at column to users table...")
             with engine.connect() as conn:
-                conn.execute(text("ALTER TABLE users ADD COLUMN updated_at DATETIME"))
+                conn.execute(text(f"ALTER TABLE users ADD COLUMN updated_at {_dt}"))
                 conn.commit()
             print("Added updated_at column to users table")
     
@@ -696,9 +741,9 @@ def migrate_database():
                     recipient_emails JSON,
                     event_types JSON,
                     repository_filter JSON,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    last_test DATETIME,
+                    created_at {_dt} DEFAULT CURRENT_TIMESTAMP,
+                    updated_at {_dt} DEFAULT CURRENT_TIMESTAMP,
+                    last_test {_dt},
                     test_status VARCHAR
                 )
             """))
@@ -717,8 +762,8 @@ def migrate_database():
                     repository VARCHAR,
                     job_id VARCHAR,
                     operation_id VARCHAR,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    sent_at DATETIME,
+                    created_at {_dt} DEFAULT CURRENT_TIMESTAMP,
+                    sent_at {_dt},
                     status VARCHAR DEFAULT 'pending',
                     error_message TEXT,
                     config_id INTEGER,
@@ -735,8 +780,8 @@ def migrate_database():
             ('repository', 'VARCHAR'),
             ('job_id', 'VARCHAR'),
             ('operation_id', 'VARCHAR'),
-            ('created_at', 'DATETIME'),
-            ('sent_at', 'DATETIME'),
+            ('created_at', _dt),
+            ('sent_at', _dt),
             ('status', 'VARCHAR'),
             ('error_message', 'TEXT'),
             ('config_id', 'INTEGER'),
@@ -1003,24 +1048,37 @@ class DatabaseManager:
             return None
     
     def set_system_setting(self, key: str, value: str) -> bool:
-        """Set a system setting value"""
+        """Set a system setting value (SQLite and PostgreSQL compatible)"""
         try:
+            dialect_name = engine.dialect.name if hasattr(engine, 'dialect') else 'sqlite'
             with self.SessionLocal() as db:
                 # Create system_settings table if it doesn't exist
-                db.execute(text("""
-                    CREATE TABLE IF NOT EXISTS system_settings (
-                        key TEXT PRIMARY KEY,
-                        value TEXT,
-                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                    )
-                """))
-                
-                # Insert or update the setting
-                db.execute(text("""
-                    INSERT OR REPLACE INTO system_settings (key, value, updated_at)
-                    VALUES (:key, :value, CURRENT_TIMESTAMP)
-                """), {"key": key, "value": value})
-                
+                if dialect_name == 'sqlite':
+                    db.execute(text("""
+                        CREATE TABLE IF NOT EXISTS system_settings (
+                            key TEXT PRIMARY KEY,
+                            value TEXT,
+                            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """))
+                    db.execute(text("""
+                        INSERT OR REPLACE INTO system_settings (key, value, updated_at)
+                        VALUES (:key, :value, CURRENT_TIMESTAMP)
+                    """), {"key": key, "value": value})
+                else:
+                    # PostgreSQL and other dialects
+                    db.execute(text("""
+                        CREATE TABLE IF NOT EXISTS system_settings (
+                            key VARCHAR PRIMARY KEY,
+                            value TEXT,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """))
+                    db.execute(text("""
+                        INSERT INTO system_settings (key, value, updated_at)
+                        VALUES (:key, :value, CURRENT_TIMESTAMP)
+                        ON CONFLICT (key) DO UPDATE SET value = :value, updated_at = CURRENT_TIMESTAMP
+                    """), {"key": key, "value": value})
                 db.commit()
                 return True
         except Exception as e:

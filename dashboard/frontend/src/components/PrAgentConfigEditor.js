@@ -105,6 +105,8 @@ const PrAgentConfigEditor = ({
       fields: [
         { key: 'csharp_code_context_service.enabled', label: 'Enable Context Service', type: 'boolean', description: 'Provides additional code context for better suggestions' },
         { key: 'csharp_code_context_service.url', label: 'Service URL', type: 'text', description: 'Base URL for the context service', placeholder: 'https://localhost:7138' },
+        { key: 'csharp_code_context_service.username', label: 'Context Service Username', type: 'text', description: 'Login username for context service', placeholder: 'Leave blank to use global' },
+        { key: 'csharp_code_context_service.password', label: 'Context Service Password', type: 'password', description: 'Login password for context service', placeholder: 'Leave blank to use global' },
         { key: 'csharp_code_context_service.default_depth', label: 'Analysis Depth', type: 'select', options: { depth: [1, 2, 3, 4, 5] }, description: 'Depth of code analysis' },
         { key: 'csharp_code_context_service.default_mode', label: 'Analysis Mode', type: 'select', options: { mode: ['Full', 'Minified'] }, description: 'Mode of code analysis' },
         { key: 'csharp_code_context_service.timeout', label: 'Timeout (seconds)', type: 'number', min: 30, max: 600, description: 'Service timeout in seconds' }

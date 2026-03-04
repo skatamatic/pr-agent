@@ -1,0 +1,102 @@
+# Deploy PR-Agent Dashboard to GCP on push to main (optional).
+# Requires GitHub secrets: GCP_PROJECT_ID, GCP_SA_KEY (base64-encoded service account JSON).
+# For Terraform state in GCS, configure backend in terraform/gcp/backend.tf and ensure the SA has access.
+#
+# Alternative: Use a Cloud Build trigger on push to main (see docs/CI_CD_DEPLOYMENT.md) so builds run in GCP
+# and you don't need to store GCP_SA_KEY in GitHub.
+
+name: Deploy Dashboard to GCP
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'dashboard/**'
+      - 'terraform/gcp/**'
+      - 'scripts/**'
+      - 'cloudbuild.yaml'
+      - '.github/workflows/deploy-gcp.yaml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        env:
+          REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+        run: |
+          gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+
+      - name: Get backend URL (for frontend build)
+        id: backend_url
+        run: |
+          cd terraform/gcp
+          terraform init -input=false
+          URL=$(terraform output -raw backend_url 2>/dev/null || echo "")
+          echo "url=$URL" >> $GITHUB_OUTPUT
+
+      - name: Build and push backend
+        run: |
+          REGION=${{ vars.GCP_REGION || 'us-central1' }}
+          REPO_ID=${{ vars.GCP_REPO_ID || 'pr-agent-dash-repo' }}
+          IMAGE="$REGION-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/$REPO_ID/backend:${{ github.sha }}"
+          docker build -f dashboard/backend/Dockerfile -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "backend_image=$IMAGE" >> $GITHUB_ENV
+
+      - name: Build and push frontend
+        env:
+          BACKEND_URL: ${{ steps.backend_url.outputs.url }}
+        run: |
+          REGION=${{ vars.GCP_REGION || 'us-central1' }}
+          REPO_ID=${{ vars.GCP_REPO_ID || 'pr-agent-dash-repo' }}
+          BU="${BACKEND_URL:-https://BACKEND-URL.run.app}"
+          WS="${BU/https/wss}"
+          WS="${WS%/}/ws"
+          IMAGE="$REGION-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/$REPO_ID/frontend:${{ github.sha }}"
+          docker build -f dashboard/frontend/Dockerfile \
+            --build-arg "REACT_APP_API_URL=$BU" \
+            --build-arg "REACT_APP_WS_URL=$WS" \
+            -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "frontend_image=$IMAGE" >> $GITHUB_ENV
+
+      - name: Terraform apply (backend + frontend images, backend_base_url)
+        run: |
+          cd terraform/gcp
+          terraform init -input=false
+          terraform apply -auto-approve \
+            -var="backend_image=${{ env.backend_image }}" \
+            -var="frontend_image=${{ env.frontend_image }}" \
+            -var="backend_base_url=${{ steps.backend_url.outputs.url }}" \
+            -var="frontend_base_url="
+
+      - name: Get frontend URL
+        id: frontend_url
+        run: |
+          cd terraform/gcp
+          URL=$(terraform output -raw frontend_url 2>/dev/null || echo "")
+          echo "url=$URL" >> $GITHUB_OUTPUT
+
+      - name: Terraform apply (set frontend_base_url for CORS)
+        if: steps.frontend_url.outputs.url != ''
+        run: |
+          cd terraform/gcp
+          terraform apply -auto-approve \
+            -var="backend_image=${{ env.backend_image }}" \
+            -var="frontend_image=${{ env.frontend_image }}" \
+            -var="backend_base_url=${{ steps.backend_url.outputs.url }}" \
+            -var="frontend_base_url=${{ steps.frontend_url.outputs.url }}"

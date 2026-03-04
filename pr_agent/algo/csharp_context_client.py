@@ -5,26 +5,38 @@ import ssl
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
-async def _login_and_get_service_token(client: httpx.AsyncClient, service_settings: dict) -> str | None:
+def _get_base_url(service_settings) -> str:
+    """Resolve context service base URL from settings (supports 'url' or 'base_url' key)."""
+    if hasattr(service_settings, "get"):
+        url = service_settings.get("base_url") or service_settings.get("url")
+    else:
+        url = getattr(service_settings, "base_url", None) or getattr(service_settings, "url", None)
+    return (url or "").rstrip("/")
+
+
+async def _login_and_get_service_token(client: httpx.AsyncClient, service_settings) -> str | None:
     """
     Logs into the C# context service and returns an API token.
     """
-    login_url = service_settings.base_url.rstrip('/') + "/api/auth/login"
-    username = service_settings.get("username")
-    password = service_settings.get("password")
+    base_url = _get_base_url(service_settings)
+    if not base_url:
+        get_logger().error("[Context] - C# context service URL not configured in settings.")
+        return None
+    login_url = base_url + "/api/auth/login"
+    # Prefer .get() when available (dict-like/Dynaconf) so None/missing is handled correctly
+    if hasattr(service_settings, "get"):
+        username = service_settings.get("username")
+        password = service_settings.get("password")
+    else:
+        username = getattr(service_settings, "username", None)
+        password = getattr(service_settings, "password", None)
 
     if not username or not password:
         get_logger().error("[Context] - C# context service username or password not configured in settings.")
         return None
 
     login_payload = {"username": username, "password": password}
-    
-    # DANGEROUS DEBUG LOGGING - REMOVE AFTER DEBUGGING
-    get_logger().info(f"[Context] DEBUG LOGIN - URL: {login_url}")
-    get_logger().info(f"[Context] DEBUG LOGIN - Username: {username}")
-    get_logger().info(f"[Context] DEBUG LOGIN - Password: {password}")
-    get_logger().info(f"[Context] DEBUG LOGIN - Full payload: {json.dumps(login_payload, indent=2)}")
-    
+
     try:
         response = await client.post(login_url, json=login_payload)
         response.raise_for_status() # Will raise an exception for 4xx/5xx errors
@@ -46,7 +58,10 @@ async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int,
     if not service_settings.get("enabled", False):
         return None
 
-    base_url = service_settings.base_url.rstrip('/')
+    base_url = _get_base_url(service_settings)
+    if not base_url:
+        get_logger().error("[Context] - C# context service URL not configured in settings.")
+        return None
     analyze_endpoint = f"{base_url}/api/analyze"
 
     if not access_token: # This is the access token for your service to access the repo
@@ -64,7 +79,8 @@ async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int,
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
 
-    async with httpx.AsyncClient(timeout=service_settings.timeout, verify=ssl_context) as client:
+    timeout = service_settings.get("timeout", 180) if hasattr(service_settings, "get") else getattr(service_settings, "timeout", 180)
+    async with httpx.AsyncClient(timeout=timeout, verify=ssl_context) as client:
         # Login to get the service API token
         service_api_token = await _login_and_get_service_token(client, service_settings)
         if not service_api_token:
@@ -106,11 +122,13 @@ async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int,
                 "repo": repo_name
             }
         
+        depth = service_settings.get("default_depth", 1) if hasattr(service_settings, "get") else getattr(service_settings, "default_depth", 1)
+        mode = service_settings.get("default_mode", "Minified") if hasattr(service_settings, "get") else getattr(service_settings, "default_mode", "Minified")
         payload_for_analysis = {
             "sourceControlConnectionInfo": source_control_info,
             "prNumber": pr_number,
-            "depth": service_settings.default_depth,
-            "mode": service_settings.default_mode
+            "depth": depth,
+            "mode": mode
         }
         
         # Log context service request

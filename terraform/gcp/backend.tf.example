@@ -1,0 +1,13 @@
+# ------------------------------------------------------------------------------
+# Remote state (GCS). Copy to backend.tf and set bucket (create bucket first).
+#   gsutil mb -p YOUR_PROJECT_ID -l us-central1 gs://YOUR_PROJECT_ID-tfstate
+#   gsutil versioning set on gs://YOUR_PROJECT_ID-tfstate
+# Then: terraform init -reconfigure (or init -migrate-state to move local state)
+# ------------------------------------------------------------------------------
+
+terraform {
+  backend "gcs" {
+    bucket = "YOUR_PROJECT_ID-tfstate"
+    prefix = "pr-agent-dash/state"
+  }
+}

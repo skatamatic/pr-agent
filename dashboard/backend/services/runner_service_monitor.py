@@ -1,4 +1,5 @@
 import subprocess
+import sys
 import psutil
 import json
 import logging
@@ -7,22 +8,32 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+
+def _is_windows() -> bool:
+    """True when running on Windows (local service checks available). On Linux/Cloud Run, use API-based health."""
+    return sys.platform == "win32"
+
+
 class RunnerServiceMonitor:
-    """Service to monitor GitHub Actions runner Windows services"""
-    
+    """Service to monitor GitHub Actions runner Windows services (Windows only). On Linux/Cloud use GitHub API."""
+
     def __init__(self):
         self.logger = logger
 
     def check_service_status(self, service_name: str) -> Dict[str, Union[str, bool, None]]:
         """
-        Check the status of a Windows service
-        
-        Args:
-            service_name: Name of the Windows service to check
-            
-        Returns:
-            Dictionary with service status information
+        Check the status of a Windows service (Windows only).
+        On non-Windows returns not_available so callers can use API-based health.
         """
+        if not _is_windows():
+            self.logger.debug("Runner service check skipped on non-Windows; use GitHub Actions API for runner health.")
+            return {
+                "status": "not_available",
+                "status_display": "Local service check only available on Windows; use API-based runner health.",
+                "service_name": service_name,
+                "exists": False,
+                "platform": sys.platform,
+            }
         try:
             self.logger.info(f"Checking service status for: {service_name}")
             
@@ -295,11 +306,12 @@ class RunnerServiceMonitor:
 
     def list_github_runner_services(self) -> List[Dict[str, Union[str, bool]]]:
         """
-        List all Windows services that appear to be GitHub Actions runners
-        
-        Returns:
-            List of service information dictionaries
+        List all Windows services that appear to be GitHub Actions runners (Windows only).
+        On non-Windows returns empty list.
         """
+        if not _is_windows():
+            self.logger.debug("List runner services skipped on non-Windows.")
+            return []
         try:
             # PowerShell command to find GitHub Actions runner services
             cmd = [
@@ -375,16 +387,11 @@ class RunnerServiceMonitor:
 
     def get_service_health_impact(self, service_status: Dict[str, Union[str, bool, None]]) -> str:
         """
-        Determine the health impact of a service status for repository health integration
-        
-        Args:
-            service_status: Service status dictionary from check_service_status
-            
-        Returns:
-            Health impact level: 'healthy', 'warning', 'error'
+        Determine the health impact of a service status for repository health integration.
         """
         status = service_status.get('status', 'unknown')
-        
+        if status == 'not_available':
+            return 'healthy'  # On Linux/cloud, local check is N/A; use API health
         if status == 'running':
             return 'healthy'
         elif status in ['stopped', 'not_found']:

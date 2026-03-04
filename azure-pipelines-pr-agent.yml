@@ -97,6 +97,10 @@ stages:
         # OPTIONAL: OpenAI Organization
         OPENAI_ORG: $(OPENAI_ORG)
         
+        # OPTIONAL: Dashboard (set DASHBOARD_URL in Pipeline Variables to report jobs/operations/logs)
+        DASHBOARD_URL: $(DASHBOARD_URL)
+        DASHBOARD_API_KEY: $(DASHBOARD_API_KEY)
+        
         # OPTIONAL: C# Context Service (configure these in Pipeline Variables if using)
         CSHARP_CODE_CONTEXT_SERVICE__BASE_URL: $(CSHARP_CODE_CONTEXT_SERVICE__BASE_URL)
         CSHARP_CODE_CONTEXT_SERVICE__USERNAME: $(CSHARP_CODE_CONTEXT_SERVICE__USERNAME)

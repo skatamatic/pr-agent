@@ -1,4 +1,5 @@
 import subprocess
+import sys
 import psutil
 import json
 import logging
@@ -7,22 +8,32 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+
+def _is_windows() -> bool:
+    """True when running on Windows. On Linux/Cloud Run, use Azure DevOps pool API for agent health."""
+    return sys.platform == "win32"
+
+
 class AzureAgentServiceMonitor:
-    """Service to monitor Azure DevOps agent Windows services"""
-    
+    """Service to monitor Azure DevOps agent Windows services (Windows only). On Linux/Cloud use Azure DevOps API."""
+
     def __init__(self):
         self.logger = logger
 
     def check_service_status(self, service_name: str) -> Dict[str, Union[str, bool, None]]:
         """
-        Check the status of an Azure DevOps agent Windows service
-        
-        Args:
-            service_name: Name of the Windows service to check
-            
-        Returns:
-            Dictionary with service status information
+        Check the status of an Azure DevOps agent Windows service (Windows only).
+        On non-Windows returns not_available so callers can use API-based health.
         """
+        if not _is_windows():
+            self.logger.debug("Azure agent service check skipped on non-Windows; use Azure DevOps API for agent health.")
+            return {
+                "status": "not_available",
+                "status_display": "Local service check only available on Windows; use API-based agent health.",
+                "service_name": service_name,
+                "exists": False,
+                "platform": sys.platform,
+            }
         try:
             self.logger.info(f"Checking Azure agent service status for: {service_name}")
             
@@ -157,11 +168,12 @@ class AzureAgentServiceMonitor:
 
     def list_azure_agent_services(self) -> List[Dict[str, Union[str, bool]]]:
         """
-        List all Azure DevOps agent services on the system
-        
-        Returns:
-            List of service dictionaries with status information
+        List all Azure DevOps agent services on the system (Windows only).
+        On non-Windows returns empty list.
         """
+        if not _is_windows():
+            self.logger.debug("List Azure agent services skipped on non-Windows.")
+            return []
         try:
             self.logger.info("Listing Azure DevOps agent services")
             
@@ -282,17 +294,10 @@ class AzureAgentServiceMonitor:
             return []
 
     def get_service_health_impact(self, service_status: Dict[str, Union[str, bool, None]]) -> str:
-        """
-        Determine the health impact of a service status
-        
-        Args:
-            service_status: Service status dictionary
-            
-        Returns:
-            Health impact level: 'healthy', 'warning', or 'error'
-        """
+        """Determine the health impact of a service status."""
         status = service_status.get('status', 'unknown')
-        
+        if status == 'not_available':
+            return 'healthy'  # On Linux/cloud, local check is N/A; use API health
         if status == 'running':
             return 'healthy'
         elif status in ['starting', 'stopping', 'paused']:

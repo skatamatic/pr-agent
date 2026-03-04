@@ -13,3 +13,9 @@ python-multipart>=0.0.6
 gunicorn>=21.2.0
 psutil>=5.9.8 
 jinja2>=3.1.0
+# PostgreSQL driver for Cloud SQL (optional; use when DATABASE_URL is postgresql://)
+psycopg2-binary>=2.9.9
+# GCS config backend (when PR_AGENT_CONFIG_GCS_BUCKET is set)
+google-cloud-storage>=2.14.0
+# GCP Compute for runner VM provision/deprovision (optional)
+google-cloud-compute>=1.14.0
