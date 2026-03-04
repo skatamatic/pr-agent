@@ -56,8 +56,11 @@ try {
         $dockerignorePath = Join-Path $RepoRoot ".dockerignore"
         $dockerignoreBak = Join-Path $RepoRoot ".dockerignore.bak"
         $dockerignorePrAgent = Join-Path $RepoRoot ".dockerignore.pr-agent"
+        if (-not (Test-Path $dockerignorePrAgent)) {
+            throw ".dockerignore.pr-agent not found at $dockerignorePrAgent. PR-Agent image would be missing pr_agent/ code."
+        }
         if (Test-Path $dockerignorePath) { Copy-Item $dockerignorePath $dockerignoreBak -Force }
-        if (Test-Path $dockerignorePrAgent) { Copy-Item $dockerignorePrAgent $dockerignorePath -Force }
+        Copy-Item $dockerignorePrAgent $dockerignorePath -Force
         try {
             docker build -f Dockerfile.github_action -t $PrAgentImage .
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

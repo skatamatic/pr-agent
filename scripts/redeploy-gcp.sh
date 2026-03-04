@@ -49,9 +49,13 @@ gcloud auth configure-docker "${REGISTRY}" --quiet
 # --- 1. PR-Agent image (for self-hosted runner VMs) ---
 if [ "$SKIP_PR_AGENT_IMAGE" != "1" ]; then
   echo "=== Building PR-Agent image: $PR_AGENT_IMAGE ==="
+  if [ ! -f .dockerignore.pr-agent ]; then
+    echo "Error: .dockerignore.pr-agent not found. PR-Agent image would be missing pr_agent/ code."
+    exit 1
+  fi
   _restore_dockerignore() { [ -f .dockerignore.bak ] && mv .dockerignore.bak .dockerignore || true; }
   [ -f .dockerignore ] && cp .dockerignore .dockerignore.bak
-  [ -f .dockerignore.pr-agent ] && cp .dockerignore.pr-agent .dockerignore
+  cp .dockerignore.pr-agent .dockerignore
   trap '_restore_dockerignore' EXIT
   docker build -f Dockerfile.github_action -t "$PR_AGENT_IMAGE" .
   echo "=== Pushing PR-Agent image ==="

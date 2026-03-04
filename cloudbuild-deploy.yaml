@@ -6,6 +6,10 @@
 # preserving all existing env vars, secrets, VPC connector, and other settings
 # that Terraform originally configured.
 #
+# NOTE: Changes to pr_agent/** (the PR-Agent runner itself) are handled by a
+# separate trigger using cloudbuild-pr-agent.yaml, which builds the runner
+# Docker image and updates the backend's GCP_RUNNER_PR_AGENT_IMAGE env var.
+#
 # Substitutions (set by the trigger):
 #   _REGION  - GCP region (e.g. us-central1)
 #   _REPO_ID - Artifact Registry repo ID (e.g. pr-agent-dash-dev-repo)

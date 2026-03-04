@@ -59,7 +59,7 @@ if _cors_env:
 if not hasattr(settings, 'dashboard_api_key'):
     settings.dashboard_api_key = os.getenv("DASHBOARD_API_KEY", "").strip() or ""
 
-# Base URLs for internal callbacks and frontend links (env: DASHBOARD_BACKEND_URL, DASHBOARD_FRONTEND_URL)
+# Base URLs for internal callbacks and frontend links (env: DASHBOARD_BACKEND_BASE_URL, DASHBOARD_FRONTEND_BASE_URL)
 if not hasattr(settings, 'backend_base_url'):
     settings.backend_base_url = "http://localhost:8000"
 if not hasattr(settings, 'frontend_base_url'):

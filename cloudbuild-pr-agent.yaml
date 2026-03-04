@@ -1,0 +1,90 @@
+# Cloud Build CI/CD: build and push the PR-Agent runner Docker image to
+# Artifact Registry, then update the dashboard backend's
+# GCP_RUNNER_PR_AGENT_IMAGE env var so newly provisioned runner VMs
+# pre-pull the latest image.
+#
+# Triggered separately from the dashboard deploy pipeline
+# (cloudbuild-deploy.yaml). Fires on changes to pr_agent/**, docker/
+# Dockerfile.github_action_runner, requirements.txt, or this file.
+#
+# Substitutions (set by the trigger):
+#   _REGION  - GCP region (e.g. us-central1)
+#   _REPO_ID - Artifact Registry repo ID (e.g. pr-agent-dash-dev-repo)
+#   _PREFIX  - Cloud Run service name prefix (e.g. pr-agent-dash-dev)
+
+substitutions:
+  _REGION: us-central1
+  _REPO_ID: pr-agent-dash-repo
+  _PREFIX: pr-agent-dash
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  # ---------- Swap .dockerignore for PR-Agent context ----------
+  # Default .dockerignore excludes pr_agent/; the PR-Agent variant keeps it.
+  - name: 'gcr.io/cloud-builders/docker'
+    id: swap-dockerignore
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        if [ ! -f .dockerignore.pr-agent ]; then
+          echo "ERROR: .dockerignore.pr-agent not found; pr_agent/ would be excluded from the image."
+          exit 1
+        fi
+        [ -f .dockerignore ] && cp .dockerignore .dockerignore.dashboard-backup || true
+        cp .dockerignore.pr-agent .dockerignore
+        echo "Swapped .dockerignore for PR-Agent build context."
+
+  # ---------- Build PR-Agent image ----------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: build-pr-agent
+    args:
+      - build
+      - -f
+      - docker/Dockerfile.github_action_runner
+      - -t
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/pr-agent:${SHORT_SHA}'
+      - -t
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/pr-agent:latest'
+      - .
+    waitFor: ['swap-dockerignore']
+
+  # ---------- Push PR-Agent image ----------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-pr-agent
+    args:
+      - push
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/pr-agent:${SHORT_SHA}'
+    waitFor: ['build-pr-agent']
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-pr-agent-latest
+    args:
+      - push
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/pr-agent:latest'
+    waitFor: ['build-pr-agent']
+
+  # ---------- Update backend env so runner VMs get the new image ----------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: update-backend-env
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        IMAGE="${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/pr-agent:latest"
+        if ! gcloud run services describe ${_PREFIX}-backend --region=${_REGION} --format='value(name)' &>/dev/null; then
+          echo "Warning: Backend service ${_PREFIX}-backend does not exist yet; skipping env var update."
+          echo "Deploy the dashboard first, then push a pr_agent/ change to set the image."
+          exit 0
+        fi
+        echo "Updating ${_PREFIX}-backend GCP_RUNNER_PR_AGENT_IMAGE to $$IMAGE"
+        gcloud run services update ${_PREFIX}-backend \
+          --region=${_REGION} \
+          --update-env-vars="GCP_RUNNER_PR_AGENT_IMAGE=$$IMAGE" \
+          --quiet
+    waitFor: ['push-pr-agent-latest']
+
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/pr-agent:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_ID}/pr-agent:latest'

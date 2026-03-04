@@ -271,9 +271,22 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "terraform init failed" }
 
     Write-Host ""
-    Write-Host "=== Terraform apply (infrastructure; no images yet) ==="
+    # On re-run: pass existing Cloud Run images so Terraform does not destroy live services
+    $ExistingBackendImage  = ""
+    $ExistingFrontendImage = ""
+    try {
+        $ExistingBackendImage = gcloud run services describe "${Prefix}-backend" --region=$Region --format='value(spec.template.spec.containers[0].image)' 2>$null
+        $ExistingFrontendImage = gcloud run services describe "${Prefix}-frontend" --region=$Region --format='value(spec.template.spec.containers[0].image)' 2>$null
+    } catch {}
     $tfApplyArgs = @("-input=false")
+    if ($ExistingBackendImage) { $tfApplyArgs += "-var=backend_image=$ExistingBackendImage" }
+    if ($ExistingFrontendImage) { $tfApplyArgs += "-var=frontend_image=$ExistingFrontendImage" }
     if ($AutoApprove) { $tfApplyArgs += "-auto-approve" }
+    if ($ExistingBackendImage -or $ExistingFrontendImage) {
+        Write-Host "  Terraform apply (using existing Cloud Run images to avoid destroying live services)"
+    } else {
+        Write-Host "  Terraform apply (infrastructure; no images yet)"
+    }
     terraform apply @tfApplyArgs
     if ($LASTEXITCODE -ne 0) { throw "terraform apply failed" }
 
@@ -282,6 +295,7 @@ try {
     if ($SkipDeploy) {
         Write-Host ""
         Write-Host "=== Skipping initial Docker build/deploy (-SkipDeploy) ==="
+        Write-Host "  (Use -SkipDeploy only when resuming after GitHub OAuth or when services already exist.)"
     } else {
         Write-Host ""
         Write-Host "=== Configuring Docker for Artifact Registry ==="
@@ -389,6 +403,14 @@ try {
             --condition=None `
             --quiet 2>$null | Out-Null
     }
+
+    $CbP4sa = "service-$ProjectNumber@gcp-sa-cloudbuild.iam.gserviceaccount.com"
+    Write-Host "  Granting roles/secretmanager.admin to Cloud Build P4SA (for GitHub connection) ..."
+    gcloud projects add-iam-policy-binding $Project `
+        --member="serviceAccount:$CbP4sa" `
+        --role="roles/secretmanager.admin" `
+        --condition=None `
+        --quiet 2>$null | Out-Null
     Write-Host "  Cloud Build SA permissions configured."
 
     # ========================== Cloud Build GitHub connection ===================
@@ -413,9 +435,27 @@ try {
     }
 
     Write-Host "  Verifying connection installation state ..."
-    Write-Host "  If prompted, authorize the Cloud Build GitHub App in your browser."
     $ConnReady = $false
-    for ($i = 1; $i -le 18; $i++) {
+    $BrowserOpened = $false
+
+    # Helper: show URL and open browser once
+    function Show-AndOpenAuthUrl {
+        param([string]$Url)
+        if (-not $Url) { return $false }
+        Write-Host "  >>> Authorize Cloud Build (one-time). Opening in your default browser:"
+        Write-Host "  >>> $Url"
+        Write-Host ""
+        try {
+            Start-Process $Url
+            Write-Host "  Browser launched. Complete the authorization, then this script will continue."
+            return $true
+        } catch {
+            Write-Host "  (Could not launch browser — please open the URL above manually.)"
+            return $true
+        }
+    }
+
+    for ($i = 1; $i -le 24; $i++) {
         $State = ""
         try {
             $State = gcloud builds connections describe $ConnName `
@@ -426,24 +466,28 @@ try {
             $ConnReady = $true
             break
         }
-        if ($State -eq "PENDING_INSTALL_APP") {
-            try {
-                $AuthUrl = gcloud builds connections describe $ConnName `
-                    --region=$Region --format='value(installationState.actionUri)' 2>$null
-                if ($AuthUrl) {
-                    Write-Host "  Action required: authorize Cloud Build at:"
-                    Write-Host "    $AuthUrl"
-                }
-            } catch {}
+        if ($State -eq "PENDING_INSTALL_APP" -or $State -eq "PENDING_USER_OAUTH") {
+            if (-not $BrowserOpened) {
+                try {
+                    $AuthUrl = gcloud builds connections describe $ConnName `
+                        --region=$Region --format='value(installationState.actionUri)' 2>$null
+                    if ($AuthUrl) {
+                        $BrowserOpened = Show-AndOpenAuthUrl -Url $AuthUrl
+                    }
+                } catch {}
+            }
         }
         $StateDisplay = if ($State) { $State } else { 'pending' }
-        Write-Host "  Installation state: $StateDisplay (attempt $i/18, waiting 10s) ..."
+        Write-Host "  Installation state: $StateDisplay (attempt $i/24, waiting 10s) ..."
         Start-Sleep -Seconds 10
     }
 
     if (-not $ConnReady) {
         Write-Host ""
-        throw "GitHub connection did not reach COMPLETE state within 3 minutes. Authorize the Cloud Build GitHub App, then re-run this script. (The script is idempotent -- it will skip already-completed steps.)"
+        Write-Host "  To finish: open the URL shown above in your browser, complete the GitHub authorization,"
+        Write-Host "  then re-run this script. (It will skip completed steps and create the trigger.)"
+        Write-Host ""
+        throw "GitHub connection did not reach COMPLETE state within 4 minutes. Authorize in browser, then re-run."
     }
 
     # ========================== Link GitHub repository =========================
@@ -487,6 +531,7 @@ try {
         gcloud builds triggers delete $TriggerName --region=$Region --quiet 2>$null
     }
 
+    $CbSaResource = "projects/$Project/serviceAccounts/$CbSa"
     gcloud builds triggers create github `
         --name=$TriggerName `
         --region=$Region `
@@ -494,11 +539,45 @@ try {
         --branch-pattern="^$Branch$" `
         --build-config="cloudbuild-deploy.yaml" `
         --included-files="dashboard/**,terraform/gcp/**,cloudbuild-deploy.yaml" `
-        --substitutions="_REGION=$Region,_REPO_ID=$RepoId,_PREFIX=$Prefix"
+        --substitutions="_REGION=$Region,_REPO_ID=$RepoId,_PREFIX=$Prefix" `
+        --service-account=$CbSaResource
+    if ($LASTEXITCODE -ne 0) { throw "Failed to create Cloud Build trigger '$TriggerName'." }
 
     Write-Host "  Trigger '$TriggerName' created."
     Write-Host "  Branch filter: ^$Branch$"
     Write-Host "  Watched paths: dashboard/**, terraform/gcp/**, cloudbuild-deploy.yaml"
+
+    # ========================== Create PR-Agent image trigger ==================
+
+    Write-Host ""
+    Write-Host "=== Creating PR-Agent image trigger ==="
+
+    $AgentTriggerName = "$Prefix-agent"
+    $ExistingAgentTrigger = ""
+    try {
+        $ExistingAgentTrigger = gcloud builds triggers describe $AgentTriggerName `
+            --region=$Region --format='value(name)' 2>$null
+    } catch {}
+
+    if ($ExistingAgentTrigger) {
+        Write-Host "  Trigger '$AgentTriggerName' already exists. Replacing ..."
+        gcloud builds triggers delete $AgentTriggerName --region=$Region --quiet 2>$null
+    }
+
+    gcloud builds triggers create github `
+        --name=$AgentTriggerName `
+        --region=$Region `
+        --repository=$RepoResource `
+        --branch-pattern="^$Branch$" `
+        --build-config="cloudbuild-pr-agent.yaml" `
+        --included-files="pr_agent/**,docker/Dockerfile.github_action_runner,requirements.txt,.dockerignore.pr-agent,cloudbuild-pr-agent.yaml" `
+        --substitutions="_REGION=$Region,_REPO_ID=$RepoId,_PREFIX=$Prefix" `
+        --service-account=$CbSaResource
+    if ($LASTEXITCODE -ne 0) { throw "Failed to create Cloud Build trigger '$AgentTriggerName'." }
+
+    Write-Host "  Trigger '$AgentTriggerName' created."
+    Write-Host "  Branch filter: ^$Branch$"
+    Write-Host "  Watched paths: pr_agent/**, docker/Dockerfile.github_action_runner, requirements.txt, .dockerignore.pr-agent"
 
     # ========================== Summary ========================================
 
@@ -534,11 +613,19 @@ try {
         }
     }
 
-    Write-Host "  Cloud Build trigger: $TriggerName"
-    Write-Host "  Watches branch:      $Branch"
+    Write-Host "  Cloud Build triggers:"
+    Write-Host "    $TriggerName       (dashboard deploy)"
+    Write-Host "    $AgentTriggerName  (PR-Agent image)"
+    Write-Host "  Watches branch: $Branch"
     Write-Host ""
-    Write-Host "  Push to '$Branch' to trigger an automatic build + deploy."
+    Write-Host "  Push to '$Branch' to trigger automatic builds + deploy."
     Write-Host "  Monitor builds: https://console.cloud.google.com/cloud-build/builds?project=$Project"
+    if ($SkipDeploy) {
+        Write-Host ""
+        Write-Host "  Note: You used -SkipDeploy. If Cloud Run backend/frontend do not exist yet,"
+        Write-Host "  the first push will build images but deploy steps will fail. Run this script"
+        Write-Host "  without -SkipDeploy to deploy the initial images, then pushes will auto-deploy."
+    }
     Write-Host ""
     Write-Host "  To re-run infra changes manually:"
     Write-Host "    cd terraform/gcp; terraform apply"

@@ -167,7 +167,7 @@ resource "google_service_networking_connection" "private_vpc" {
 # Use existing connector subnet (do not use ip_cidr_range here - that would create a second
 # allocation and conflict with google_compute_subnetwork.connector).
 resource "google_vpc_access_connector" "connector" {
-  name       = "${var.prefix}-connector"
+  name       = "${var.prefix}-conn"
   region     = var.region
   subnet {
     name = google_compute_subnetwork.connector.name
@@ -443,12 +443,9 @@ resource "google_cloud_run_v2_service" "backend" {
         name  = "GCP_RUNNER_PREFIX"
         value = "${var.prefix}-runner"
       }
-      dynamic "env" {
-        for_each = var.pr_agent_runner_image != "" ? [1] : []
-        content {
-          name  = "GCP_RUNNER_PR_AGENT_IMAGE"
-          value = var.pr_agent_runner_image
-        }
+      env {
+        name  = "GCP_RUNNER_PR_AGENT_IMAGE"
+        value = var.pr_agent_runner_image
       }
 
       volume_mounts {
@@ -462,6 +459,20 @@ resource "google_cloud_run_v2_service" "backend" {
         instances = [google_sql_database_instance.main.connection_name]
       }
     }
+  }
+
+  # Cloud Build CI/CD updates the container image via `gcloud run services update`.
+  # Ignore image drift so `terraform apply` (without -var=backend_image) doesn't revert
+  # to the originally deployed image. Also ignore client/client_version metadata that
+  # gcloud sets. Env vars (including GCP_RUNNER_PR_AGENT_IMAGE added by the pr-agent
+  # pipeline) are preserved because `gcloud run services update --update-env-vars` only
+  # adds/modifies; it doesn't remove existing vars.
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version,
+    ]
   }
 
   depends_on = [
@@ -510,6 +521,14 @@ resource "google_cloud_run_v2_service" "frontend" {
         container_port = 80
       }
     }
+  }
+
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version,
+    ]
   }
 
   depends_on = [google_project_service.run]

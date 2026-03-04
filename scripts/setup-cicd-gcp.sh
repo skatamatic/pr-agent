@@ -130,7 +130,10 @@ if [[ "$ENV" == "all" ]]; then
     echo "##  Deploying environment: $DEPLOY_ENV"
     echo "########################################################################"
     echo ""
-    bash "$SCRIPT_PATH" --env "$DEPLOY_ENV" --project "$PROJECT_ID" --region "$REGION" "${EXTRA_ARGS[@]}"
+    if ! bash "$SCRIPT_PATH" --env "$DEPLOY_ENV" --project "$PROJECT_ID" --region "$REGION" "${EXTRA_ARGS[@]}"; then
+      echo "Error: Deployment of '$DEPLOY_ENV' failed."
+      exit 1
+    fi
   done
 
   echo ""
@@ -279,12 +282,12 @@ echo "  All APIs enabled."
 echo ""
 echo "=== Setting up Terraform state bucket ==="
 
-if gsutil ls -b "gs://${TFSTATE_BUCKET}" &>/dev/null; then
+if gcloud storage buckets describe "gs://${TFSTATE_BUCKET}" &>/dev/null; then
   echo "  Bucket gs://${TFSTATE_BUCKET} already exists."
 else
   echo "  Creating gs://${TFSTATE_BUCKET} ..."
-  gsutil mb -p "$PROJECT_ID" -l "$REGION" "gs://${TFSTATE_BUCKET}"
-  gsutil versioning set on "gs://${TFSTATE_BUCKET}"
+  gcloud storage buckets create "gs://${TFSTATE_BUCKET}" --project="$PROJECT_ID" --location="$REGION" --uniform-bucket-level-access
+  gcloud storage buckets update "gs://${TFSTATE_BUCKET}" --versioning
   echo "  Bucket created with versioning enabled."
 fi
 
@@ -319,14 +322,27 @@ cd "$TF_DIR"
 terraform init -input=false -reconfigure
 
 echo ""
-echo "=== Terraform apply (infrastructure; no images yet) ==="
-terraform apply -input=false $AUTO_APPROVE
+# On re-run: pass existing Cloud Run images so Terraform does not destroy live services
+EXISTING_BACKEND_IMAGE=""
+EXISTING_FRONTEND_IMAGE=""
+EXISTING_BACKEND_IMAGE=$(gcloud run services describe "${PREFIX}-backend" --region="$REGION" --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || true)
+EXISTING_FRONTEND_IMAGE=$(gcloud run services describe "${PREFIX}-frontend" --region="$REGION" --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || true)
+TF_APPLY_EXTRA=""
+if [[ -n "$EXISTING_BACKEND_IMAGE" ]]; then TF_APPLY_EXTRA="${TF_APPLY_EXTRA} -var=backend_image=${EXISTING_BACKEND_IMAGE}"; fi
+if [[ -n "$EXISTING_FRONTEND_IMAGE" ]]; then TF_APPLY_EXTRA="${TF_APPLY_EXTRA} -var=frontend_image=${EXISTING_FRONTEND_IMAGE}"; fi
+if [[ -n "$EXISTING_BACKEND_IMAGE" || -n "$EXISTING_FRONTEND_IMAGE" ]]; then
+  echo "  Terraform apply (using existing Cloud Run images to avoid destroying live services)"
+else
+  echo "  Terraform apply (infrastructure; no images yet)"
+fi
+terraform apply -input=false $TF_APPLY_EXTRA $AUTO_APPROVE
 
 # ========================== Initial build + deploy =========================
 
 if [[ -n "$SKIP_INITIAL_DEPLOY" ]]; then
   echo ""
   echo "=== Skipping initial Docker build/deploy (--skip-deploy) ==="
+  echo "  (Use --skip-deploy only when resuming after GitHub OAuth or when services already exist.)"
 else
   echo ""
   echo "=== Configuring Docker for Artifact Registry ==="
@@ -383,14 +399,19 @@ else
 
   echo ""
   echo "=== Waiting for backend health (up to 120s) ==="
+  HEALTHY=""
   for i in $(seq 1 24); do
     if curl -sf "${BACKEND_URL}/api/health" >/dev/null 2>&1; then
       echo "  Backend healthy."
+      HEALTHY=1
       break
     fi
     echo "  Attempt $i/24 ..."
     sleep 5
   done
+  if [[ -z "$HEALTHY" ]]; then
+    echo "  Warning: health check did not succeed; deployment may still be rolling out."
+  fi
 fi
 
 # ========================== Cloud Build SA permissions ======================
@@ -417,6 +438,14 @@ for role in "${CB_ROLES[@]}"; do
     --condition=None \
     --quiet >/dev/null 2>&1 || true
 done
+
+CB_P4SA="service-${PROJECT_NUMBER}@gcp-sa-cloudbuild.iam.gserviceaccount.com"
+echo "  Granting roles/secretmanager.admin to Cloud Build P4SA (for GitHub connection) ..."
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:${CB_P4SA}" \
+  --role="roles/secretmanager.admin" \
+  --condition=None \
+  --quiet >/dev/null 2>&1 || true
 echo "  Cloud Build SA permissions configured."
 
 # ========================== Cloud Build GitHub connection ===================
@@ -439,11 +468,11 @@ else
   echo "  Connection created. If prompted, authorize Cloud Build in your browser."
 fi
 
-# Wait for installation state to be COMPLETE
+# Wait for installation state to be COMPLETE; open browser when auth URL is available
 echo "  Verifying connection installation state ..."
-echo "  If prompted, authorize the Cloud Build GitHub App in your browser."
 CONN_READY=""
-for i in $(seq 1 18); do
+BROWSER_OPENED=""
+for i in $(seq 1 24); do
   STATE=$(gcloud builds connections describe "$CONN_NAME" \
     --region="$REGION" --format='value(installationState.stage)' 2>/dev/null || true)
   if [[ "$STATE" == "COMPLETE" ]]; then
@@ -451,23 +480,35 @@ for i in $(seq 1 18); do
     CONN_READY=1
     break
   fi
-  if [[ "$STATE" == "PENDING_INSTALL_APP" ]]; then
-    AUTH_URL=$(gcloud builds connections describe "$CONN_NAME" \
-      --region="$REGION" --format='value(installationState.actionUri)' 2>/dev/null || true)
-    if [[ -n "$AUTH_URL" ]]; then
-      echo "  Action required: authorize Cloud Build at:"
-      echo "    $AUTH_URL"
+  if [[ "$STATE" == "PENDING_INSTALL_APP" || "$STATE" == "PENDING_USER_OAUTH" ]]; then
+    if [[ -z "$BROWSER_OPENED" ]]; then
+      AUTH_URL=$(gcloud builds connections describe "$CONN_NAME" \
+        --region="$REGION" --format='value(installationState.actionUri)' 2>/dev/null || true)
+      if [[ -n "$AUTH_URL" ]]; then
+        echo "  >>> Authorize Cloud Build (one-time). Opening in your default browser:"
+        echo "  >>> $AUTH_URL"
+        echo ""
+        BROWSER_OPENED=1
+        if command -v xdg-open &>/dev/null; then
+          xdg-open "$AUTH_URL" 2>/dev/null && echo "  Browser launched. Complete the authorization, then this script will continue." || echo "  (Could not launch browser — please open the URL above manually.)"
+        elif command -v open &>/dev/null; then
+          open "$AUTH_URL" 2>/dev/null && echo "  Browser launched. Complete the authorization, then this script will continue." || echo "  (Could not launch browser — please open the URL above manually.)"
+        else
+          echo "  (Could not launch browser — please open the URL above manually.)"
+        fi
+      fi
     fi
   fi
-  echo "  Installation state: ${STATE:-pending} (attempt $i/18, waiting 10s) ..."
+  echo "  Installation state: ${STATE:-pending} (attempt $i/24, waiting 10s) ..."
   sleep 10
 done
 
 if [[ -z "$CONN_READY" ]]; then
   echo ""
-  echo "Error: GitHub connection did not reach COMPLETE state within 3 minutes."
-  echo "Authorize the Cloud Build GitHub App, then re-run this script."
-  echo "(The script is idempotent -- it will skip already-completed steps.)"
+  echo "  To finish: open the URL shown above in your browser, complete the GitHub authorization,"
+  echo "  then re-run this script. (It will skip completed steps and create the trigger.)"
+  echo ""
+  echo "Error: GitHub connection did not reach COMPLETE state within 4 minutes. Authorize in browser, then re-run."
   exit 1
 fi
 
@@ -502,23 +543,60 @@ EXISTING_TRIGGER=$(gcloud builds triggers describe "$TRIGGER_NAME" \
   --region="$REGION" --format='value(name)' 2>/dev/null || true)
 
 if [[ -n "$EXISTING_TRIGGER" ]]; then
-  echo "  Trigger '$TRIGGER_NAME' already exists. Updating ..."
+  echo "  Trigger '$TRIGGER_NAME' already exists. Replacing ..."
   gcloud builds triggers delete "$TRIGGER_NAME" \
     --region="$REGION" --quiet 2>/dev/null || true
 fi
 
-gcloud builds triggers create github \
+CB_SA_RESOURCE="projects/${PROJECT_ID}/serviceAccounts/${CB_SA}"
+if ! gcloud builds triggers create github \
   --name="$TRIGGER_NAME" \
   --region="$REGION" \
   --repository="$REPO_RESOURCE" \
   --branch-pattern="^${BRANCH}$" \
   --build-config="cloudbuild-deploy.yaml" \
   --included-files="dashboard/**,terraform/gcp/**,cloudbuild-deploy.yaml" \
-  --substitutions="_REGION=${REGION},_REPO_ID=${REPO_ID},_PREFIX=${PREFIX}"
+  --substitutions="_REGION=${REGION},_REPO_ID=${REPO_ID},_PREFIX=${PREFIX}" \
+  --service-account="$CB_SA_RESOURCE"; then
+  echo "Error: Failed to create Cloud Build trigger '$TRIGGER_NAME'."
+  exit 1
+fi
 
 echo "  Trigger '$TRIGGER_NAME' created."
 echo "  Branch filter: ^${BRANCH}$"
 echo "  Watched paths: dashboard/**, terraform/gcp/**, cloudbuild-deploy.yaml"
+
+# ========================== Create PR-Agent image trigger ==================
+
+echo ""
+echo "=== Creating PR-Agent image trigger ==="
+
+AGENT_TRIGGER_NAME="${PREFIX}-agent"
+EXISTING_AGENT_TRIGGER=$(gcloud builds triggers describe "$AGENT_TRIGGER_NAME" \
+  --region="$REGION" --format='value(name)' 2>/dev/null || true)
+
+if [[ -n "$EXISTING_AGENT_TRIGGER" ]]; then
+  echo "  Trigger '$AGENT_TRIGGER_NAME' already exists. Replacing ..."
+  gcloud builds triggers delete "$AGENT_TRIGGER_NAME" \
+    --region="$REGION" --quiet 2>/dev/null || true
+fi
+
+if ! gcloud builds triggers create github \
+  --name="$AGENT_TRIGGER_NAME" \
+  --region="$REGION" \
+  --repository="$REPO_RESOURCE" \
+  --branch-pattern="^${BRANCH}$" \
+  --build-config="cloudbuild-pr-agent.yaml" \
+  --included-files="pr_agent/**,docker/Dockerfile.github_action_runner,requirements.txt,.dockerignore.pr-agent,cloudbuild-pr-agent.yaml" \
+  --substitutions="_REGION=${REGION},_REPO_ID=${REPO_ID},_PREFIX=${PREFIX}" \
+  --service-account="$CB_SA_RESOURCE"; then
+  echo "Error: Failed to create Cloud Build trigger '$AGENT_TRIGGER_NAME'."
+  exit 1
+fi
+
+echo "  Trigger '$AGENT_TRIGGER_NAME' created."
+echo "  Branch filter: ^${BRANCH}$"
+echo "  Watched paths: pr_agent/**, docker/Dockerfile.github_action_runner, requirements.txt, .dockerignore.pr-agent"
 
 # ========================== Summary ========================================
 
@@ -552,11 +630,19 @@ if [[ -z "$SKIP_INITIAL_DEPLOY" ]]; then
   fi
 fi
 
-echo "  Cloud Build trigger: $TRIGGER_NAME"
-echo "  Watches branch:      $BRANCH"
+echo "  Cloud Build triggers:"
+echo "    $TRIGGER_NAME       (dashboard deploy)"
+echo "    $AGENT_TRIGGER_NAME  (PR-Agent image)"
+echo "  Watches branch: $BRANCH"
 echo ""
-echo "  Push to '$BRANCH' to trigger an automatic build + deploy."
+echo "  Push to '$BRANCH' to trigger automatic builds + deploy."
 echo "  Monitor builds: https://console.cloud.google.com/cloud-build/builds?project=$PROJECT_ID"
+if [[ -n "$SKIP_INITIAL_DEPLOY" ]]; then
+  echo ""
+  echo "  Note: You used --skip-deploy. If Cloud Run backend/frontend do not exist yet,"
+  echo "  the first push will build images but deploy steps will fail. Run this script"
+  echo "  without --skip-deploy to deploy the initial images, then pushes will auto-deploy."
+fi
 echo ""
 echo "  To re-run infra changes manually:"
 echo "    cd terraform/gcp && terraform apply"
