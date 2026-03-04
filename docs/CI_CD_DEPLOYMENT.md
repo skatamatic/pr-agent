@@ -150,7 +150,30 @@ For a **non-destructive** approach: use a **fixed tag** (e.g. `0.23-github_actio
 - **If only infra (no images) was applied**: Run build-push (backend, then frontend with backend URL), add image URLs to tfvars, then run `deploy-gcp.sh` (or `deploy-gcp.ps1`).
 - **VPC Access Connector conflict**: If you see “Invalid IP CIDR range… conflicts with an existing subnetwork”, the Terraform config now uses the connector’s `subnet` block (existing subnet) instead of `ip_cidr_range` to avoid double-allocating the same range. If a failed connector exists in GCP, delete it: `gcloud compute networks vpc-access connectors delete CONNECTOR_NAME --region=REGION --project=PROJECT_ID`, then run `terraform apply` again.
 
-## 7. Summary checklist
+## 7. Troubleshooting
+
+### Cloud Build: "does not have permission to write logs to Cloud Logging"
+
+If a Cloud Build run fails and the UI shows empty build logs with a banner like:
+
+> The service account running this build … does not have permission to write logs to Cloud Logging. To fix this, grant the **Logs Writer (roles/logging.logWriter)** role to the service account.
+
+Grant the role to the trigger service account (replace `PROJECT_ID` and `REGION` if needed):
+
+```bash
+PROJECT_ID=pr-agent-test-deploy
+SA="pr-agent-cb-trigger@${PROJECT_ID}.iam.gserviceaccount.com"
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:${SA}" \
+  --role="roles/logging.logWriter" \
+  --quiet
+```
+
+New setups that use `scripts/setup-cicd-gcp.sh` or `setup-cicd-gcp.ps1` already grant this role; the one-off above is for projects created before the role was added.
+
+---
+
+## 8. Summary checklist
 
 | Item | Initial deploy | Ongoing CI/CD |
 |------|----------------|----------------|
@@ -163,7 +186,7 @@ For a **non-destructive** approach: use a **fixed tag** (e.g. `0.23-github_actio
 
 ---
 
-## 8. Files reference
+## 9. Files reference
 
 | File | Purpose |
 |------|---------|

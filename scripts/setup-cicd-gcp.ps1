@@ -406,7 +406,8 @@ try {
         "roles/iam.serviceAccountUser",
         "roles/artifactregistry.writer",
         "roles/secretmanager.secretAccessor",
-        "roles/storage.objectViewer"
+        "roles/storage.objectViewer",
+        "roles/logging.logWriter"
     )
 
     Write-Host "  Granting roles to $CbTriggerSaName ..."

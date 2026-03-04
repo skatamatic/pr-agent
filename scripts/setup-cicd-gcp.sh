@@ -440,6 +440,7 @@ declare -a CB_ROLES=(
   "roles/artifactregistry.writer"
   "roles/secretmanager.secretAccessor"
   "roles/storage.objectViewer"
+  "roles/logging.logWriter"
 )
 
 echo "  Granting roles to $CB_TRIGGER_SA_NAME ..."
