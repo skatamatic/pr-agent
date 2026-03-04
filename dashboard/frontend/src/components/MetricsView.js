@@ -48,6 +48,7 @@ import {
 import apiService from '../services/api';
 import ViewHeader from './ViewHeader';
 import { formatDevTime } from '../utils/timeUtils';
+import { ALL_MODEL_IDS, MODELS_BY_TIER } from '../constants/models';
 
 // Move AnimatedMetric outside of MetricsView to prevent remounting on every render
 const AnimatedMetric = ({ value, formatter, className = "", duration = 1500, integer = false }) => {
@@ -369,27 +370,8 @@ const MetricsView = () => {
         lastDataChangeRef.current = Date.now();
       }
 
-      // Use the same model structure as AI Config
-      const availableModels = [
-        // Premium models
-        'anthropic/claude-opus-4-20250514',
-        'anthropic/claude-sonnet-4-20250514',
-        'anthropic/claude-3-7-sonnet-20250219',
-        'o1-2024-12-17',
-        'o1',
-        'o3-mini',
-        'o3',
-        'o4-mini',
-        // Standard models
-        'anthropic/claude-3-5-sonnet-20241022',
-        'anthropic/claude-3-5-haiku-20241022',
-        'gpt-4o',
-        'gpt-4o-mini',
-        'gpt-4-turbo',
-        'gpt-4',
-        // Budget models
-        'gpt-3.5-turbo'
-      ];
+      // Use the shared model catalog
+      const availableModels = ALL_MODEL_IDS;
 
       // Apply ONLY the live metrics data (NO CONFIG DATA)
       setMetricsData(summary);
@@ -824,14 +806,14 @@ const MetricsView = () => {
   };
 
   const getModelTier = (model) => {
-    const cleanName = model.replace('anthropic/', '').replace('openai/', '');
-    if (model.includes('claude-opus-4') || model.includes('claude-sonnet-4') || model.includes('o1') || model.includes('o3') || model.includes('o4')) {
+    const cleanName = model.replace('anthropic/', '').replace('openai/', '').replace('gemini/', '');
+    if ((MODELS_BY_TIER['Premium'] || []).includes(model)) {
       return { tier: 'premium', icon: Gem, name: cleanName, color: 'from-amber-50 to-yellow-50 dark:from-amber-900/20 dark:to-yellow-900/20 border-amber-200 dark:border-amber-700' };
     }
-    if ((model.includes('claude-3-5') || model.includes('gpt-4')) && !model.includes('claude-opus-4') && !model.includes('claude-sonnet-4')) {
+    if ((MODELS_BY_TIER['Standard'] || []).includes(model)) {
       return { tier: 'standard', icon: Zap, name: cleanName, color: 'from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border-blue-200 dark:border-blue-700' };
     }
-    if (model.includes('gpt-3.5') || model.includes('mini')) {
+    if ((MODELS_BY_TIER['Budget'] || []).includes(model)) {
       return { tier: 'budget', icon: Heart, name: cleanName, color: 'from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 border-green-200 dark:border-green-700' };
     }
     return { tier: 'other', icon: Wrench, name: cleanName, color: 'from-gray-50 to-slate-50 dark:from-gray-900/20 dark:to-slate-900/20 border-gray-200 dark:border-gray-700' };
@@ -1914,38 +1896,30 @@ const MetricsView = () => {
 
   const renderConfigurationTab = () => {
     const models = getRelevantModels();
+    const tierSet = new Set(Object.values(MODELS_BY_TIER).flat());
     const categories = {
       premium: {
         name: 'Premium Models',
         icon: Crown,
-        models: models.filter(m => 
-          m.includes('claude-opus-4') || m.includes('claude-sonnet-4') || m.includes('o1') || m.includes('o3') || m.includes('o4')
-        )
+        models: models.filter(m => (MODELS_BY_TIER['Premium'] || []).includes(m))
       },
       standard: {
-        name: 'Standard Models', 
+        name: 'Standard Models',
         icon: Star,
-        models: models.filter(m => 
-          (m.includes('claude-3-5') || m.includes('gpt-4')) && !m.includes('claude-opus-4') && !m.includes('claude-sonnet-4')
-        )
+        models: models.filter(m => (MODELS_BY_TIER['Standard'] || []).includes(m))
       },
       budget: {
         name: 'Budget Models',
-        icon: Wallet, 
-        models: models.filter(m => 
-          m.includes('gpt-3.5') || m.includes('mini')
-        )
+        icon: Wallet,
+        models: models.filter(m => (MODELS_BY_TIER['Budget'] || []).includes(m))
       },
       other: {
         name: 'Other Models',
         icon: Zap,
-        models: models.filter(m => 
-          !m.includes('claude-opus-4') && !m.includes('claude-sonnet-4') && !m.includes('o1') && !m.includes('o3') && !m.includes('o4') &&
-          !m.includes('claude-3-5') && !m.includes('gpt-4') && !m.includes('gpt-3.5') && !m.includes('mini')
-        )
+        models: models.filter(m => !tierSet.has(m))
       }
     };
-    
+
     // Filter out empty categories
     const availableCategories = Object.entries(categories).filter(([, category]) => category.models.length > 0);
 

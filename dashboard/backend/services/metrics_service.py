@@ -15,24 +15,20 @@ class MetricsService:
     def __init__(self, websocket_manager=None):
         self.websocket_manager = websocket_manager
         self.default_model_costs = {
-            # OpenAI Models (per 1K tokens)
-            "gpt-4": {"input": 0.03, "output": 0.06},
-            "gpt-4-turbo": {"input": 0.01, "output": 0.03},
-            "gpt-4o": {"input": 0.005, "output": 0.015},
-            "gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
-            "gpt-3.5-turbo": {"input": 0.0015, "output": 0.002},
-            
             # Anthropic Models (per 1K tokens)
-            "claude-3-opus": {"input": 0.015, "output": 0.075},
-            "claude-3-sonnet": {"input": 0.003, "output": 0.015},
-            "claude-3-haiku": {"input": 0.00025, "output": 0.00125},
-            "claude-3-5-sonnet": {"input": 0.003, "output": 0.015},
-            "claude-3-5-sonnet-20241022": {"input": 0.003, "output": 0.015},
-            
-            # Google Models (per 1K tokens)
-            "gemini-pro": {"input": 0.0005, "output": 0.0015},
-            "gemini-1.5-pro": {"input": 0.0035, "output": 0.0105},
-            "gemini-1.5-flash": {"input": 0.000075, "output": 0.0003},
+            "anthropic/claude-opus-4-6-20260205": {"input": 0.005, "output": 0.025},
+            "anthropic/claude-sonnet-4-6-20260205": {"input": 0.003, "output": 0.015},
+            "anthropic/claude-haiku-4-5-20251001": {"input": 0.00025, "output": 0.00125},
+
+            # Google Gemini Models (per 1K tokens)
+            "gemini/gemini-3.1-pro-preview": {"input": 0.0035, "output": 0.0105},
+            "gemini/gemini-3-flash-preview": {"input": 0.000075, "output": 0.0003},
+
+            # OpenAI Models (per 1K tokens)
+            "gpt-5": {"input": 0.00125, "output": 0.01},
+            "gpt-5-mini": {"input": 0.00025, "output": 0.002},
+            "gpt-5.3-codex": {"input": 0.00175, "output": 0.014},
+            "gpt-5.3-codex-spark": {"input": 0.001, "output": 0.008},
         }
     
     async def get_or_create_config(self, db: Session) -> MetricsConfig:

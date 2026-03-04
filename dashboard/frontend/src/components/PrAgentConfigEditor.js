@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
+import { MODELS_BY_PROVIDER } from '../constants/models';
 
 const PrAgentConfigEditor = ({ 
   repositoryId, 
@@ -39,52 +40,11 @@ const PrAgentConfigEditor = ({
   const [hasExistingConfig, setHasExistingConfig] = useState(false);
   const { showSuccess, showError } = useContext(ToastContext);
 
-  // Available models categorized by type
-  const availableModels = {
-    premium: [
-      'anthropic/claude-opus-4-20250514',
-      'anthropic/claude-sonnet-4-20250514',
-      'anthropic/claude-3-7-sonnet-20250219',
-      'o1-2024-12-17',
-      'o1',
-      'o3-mini',
-      'o3',
-      'o4-mini'
-    ],
-    standard: [
-      'anthropic/claude-3-5-sonnet-20241022',
-      'anthropic/claude-3-5-haiku-20241022',
-      'gpt-4o',
-      'gpt-4o-mini',
-      'gpt-4-turbo',
-      'gpt-4'
-    ],
-    budget: [
-      'gpt-3.5-turbo',
-      'gpt-4o-mini',
-      'o4-mini'
-    ],
-    reasoning: [
-      'anthropic/claude-opus-4-20250514',
-      'anthropic/claude-3-7-sonnet-20250219',
-      'o1-2024-12-17',
-      'o1',
-      'o3-mini',
-      'o3',
-      'o4-mini',
-      'deepseek/deepseek-reasoner'
-    ]
-  };
+  // Models grouped by provider – imported from shared constants
+  const availableModels = MODELS_BY_PROVIDER;
 
-  // Create a unified model list for all dropdowns - user can choose any model for any purpose
-  const allAvailableModels = {
-    all: [...new Set([
-      ...availableModels.premium,
-      ...availableModels.standard,
-      ...availableModels.budget,
-      ...availableModels.reasoning
-    ]).values()].sort()
-  };
+  // Use the same provider-grouped structure for all dropdowns
+  const allAvailableModels = MODELS_BY_PROVIDER;
 
   const configSections = {
     models: {
@@ -422,10 +382,11 @@ const PrAgentConfigEditor = ({
                 : 'Use global default'}
             </option>
             {field.options && (() => {
-              // Handle complex options with categories (like models)
-              if (field.options.reasoning || field.options.budget || field.options.premium) {
+              // Handle model options grouped by provider
+              const firstValue = Object.values(field.options)[0];
+              if (Array.isArray(firstValue) && firstValue.length > 0 && !field.options.effort && !field.options.depth && !field.options.mode && !field.options.level) {
                 return Object.entries(field.options).map(([category, models]) => (
-                  <optgroup key={category} label={category.charAt(0).toUpperCase() + category.slice(1)}>
+                  <optgroup key={category} label={category}>
                     {models.map(model => (
                       <option key={model} value={model}>{model}</option>
                     ))}

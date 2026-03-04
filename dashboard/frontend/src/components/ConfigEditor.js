@@ -28,6 +28,7 @@ import JSZip from 'jszip';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
+import { MODELS_BY_PROVIDER, ALL_MODEL_IDS } from '../constants/models';
 
 /** Zip an array of File objects (e.g. from a folder picker) into a single ZIP File for bulk upload. */
 async function zipFolderFiles(files) {
@@ -73,52 +74,11 @@ const ConfigEditor = ({ navigationTarget = null }) => {
 
   const { showSuccess, showError } = useContext(ToastContext);
 
-  // Available models categorized by type
-  const availableModels = {
-    premium: [
-      'anthropic/claude-opus-4-20250514',
-      'anthropic/claude-sonnet-4-20250514',
-      'anthropic/claude-3-7-sonnet-20250219',
-      'o1-2024-12-17',
-      'o1',
-      'o3-mini',
-      'o3',
-      'o4-mini'
-    ],
-    standard: [
-      'anthropic/claude-3-5-sonnet-20241022',
-      'anthropic/claude-3-5-haiku-20241022',
-      'gpt-4o',
-      'gpt-4o-mini',
-      'gpt-4-turbo',
-      'gpt-4'
-    ],
-    budget: [
-      'gpt-3.5-turbo',
-      'gpt-4o-mini',
-      'o4-mini'
-    ],
-    reasoning: [
-      'anthropic/claude-opus-4-20250514',
-      'anthropic/claude-3-7-sonnet-20250219',
-      'o1-2024-12-17',
-      'o1',
-      'o3-mini',
-      'o3',
-      'o4-mini',
-      'deepseek/deepseek-reasoner'
-    ]
-  };
+  // Models grouped by provider – imported from shared constants
+  const availableModels = MODELS_BY_PROVIDER;
 
-  // Create a unified model list for all dropdowns - user can choose any model for any purpose
-  const allAvailableModels = {
-    all: [...new Set([
-      ...availableModels.premium,
-      ...availableModels.standard,
-      ...availableModels.budget,
-      ...availableModels.reasoning
-    ]).values()].sort()
-  };
+  // Flat list wrapped in an object for dropdowns that don't need categories
+  const allAvailableModels = MODELS_BY_PROVIDER;
 
 
 
@@ -178,10 +138,10 @@ const ConfigEditor = ({ navigationTarget = null }) => {
       // Transform the PR-Agent config structure to match our UI expectations
       const transformedConfig = {
         // Main config section
-        model: configData.config?.model || 'anthropic/claude-3-5-sonnet-20241022',
-        model_reasoning: configData.config?.model_reasoning || configData.config?.model || 'anthropic/claude-3-5-sonnet-20241022',
-        model_weak: configData.config?.model_weak || 'gpt-4o-mini',
-        fallback_models: configData.config?.fallback_models || ['gpt-4o-mini'],
+        model: configData.config?.model || 'anthropic/claude-sonnet-4-6-20260205',
+        model_reasoning: configData.config?.model_reasoning || configData.config?.model || 'anthropic/claude-opus-4-6-20260205',
+        model_weak: configData.config?.model_weak || 'gpt-5.3-codex-spark',
+        fallback_models: configData.config?.fallback_models || ['gpt-5.3-codex-spark'],
         reasoning_effort: configData.config?.reasoning_effort || 'high',
         max_model_tokens: configData.config?.max_model_tokens || 94000,
         temperature: configData.config?.temperature || 0.2,
@@ -291,10 +251,10 @@ const ConfigEditor = ({ navigationTarget = null }) => {
     } catch (error) {
       // Default configuration on error
       const defaultConfig = {
-        model: 'anthropic/claude-sonnet-4-20250514',
-        model_reasoning: 'anthropic/claude-opus-4-20250514',
-        model_weak: 'o4-mini',
-        fallback_models: ['o4-mini'],
+        model: 'anthropic/claude-sonnet-4-6-20260205',
+        model_reasoning: 'anthropic/claude-opus-4-6-20260205',
+        model_weak: 'gpt-5.3-codex-spark',
+        fallback_models: ['gpt-5.3-codex-spark'],
         reasoning_effort: 'high',
         max_model_tokens: 94000,
         temperature: 0.2,
@@ -1294,7 +1254,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                       className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <option value="">Use default model</option>
-                      {allAvailableModels.all.map(model => (
+                      {ALL_MODEL_IDS.map(model => (
                         <option key={model} value={model}>{model}</option>
                       ))}
                     </select>
@@ -1553,7 +1513,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                     className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <option value="">Use default model</option>
-                    {allAvailableModels.all.map(model => (
+                    {ALL_MODEL_IDS.map(model => (
                       <option key={model} value={model}>{model}</option>
                     ))}
                   </select>

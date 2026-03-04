@@ -40,6 +40,10 @@ MAX_TOKENS = {
     'o3-2025-04-16': 200000,  # 200K, but may be limited by config.max_model_tokens
     'o4-mini': 200000, # 200K, but may be limited by config.max_model_tokens
     'o4-mini-2025-04-16': 200000, # 200K, but may be limited by config.max_model_tokens
+    'gpt-5': 128000,
+    'gpt-5-mini': 400000,
+    'gpt-5.3-codex': 400000,
+    'gpt-5.3-codex-spark': 400000,
     'claude-instant-1': 100000,
     'claude-2': 100000,
     'command-nightly': 4096,
@@ -65,6 +69,11 @@ MAX_TOKENS = {
     'vertex_ai/gemini-2.0-flash': 1048576,
     'vertex_ai/gemini-2.5-flash-preview-04-17': 1048576,
     'vertex_ai/gemini-2.5-flash-preview-05-20': 1048576,
+    'vertex_ai/claude-opus-4-6@20260205': 200000,
+    'vertex_ai/claude-sonnet-4-6@20260205': 200000,
+    'vertex_ai/claude-haiku-4-5@20251001': 200000,
+    'vertex_ai/gemini-3.1-pro-preview': 1048576,
+    'vertex_ai/gemini-3-flash-preview': 1048576,
     'vertex_ai/gemma2': 8200,
     'gemini/gemini-1.5-pro': 1048576,
     'gemini/gemini-1.5-flash': 1048576,
@@ -73,6 +82,8 @@ MAX_TOKENS = {
     'gemini/gemini-2.5-flash-preview-05-20': 1048576,
     'gemini/gemini-2.5-pro-preview-03-25': 1048576,
     'gemini/gemini-2.5-pro-preview-05-06': 1048576,
+    'gemini/gemini-3.1-pro-preview': 1048576,
+    'gemini/gemini-3-flash-preview': 1048576,
     'codechat-bison': 6144,
     'codechat-bison-32k': 32000,
     'anthropic.claude-instant-v1': 100000,
@@ -85,6 +96,9 @@ MAX_TOKENS = {
     'anthropic/claude-3-7-sonnet-20250219': 200000,
     'anthropic/claude-sonnet-4-20250514': 200000,
     'claude-3-7-sonnet-20250219': 200000,
+    'anthropic/claude-opus-4-6-20260205': 200000,
+    'anthropic/claude-sonnet-4-6-20260205': 200000,
+    'anthropic/claude-haiku-4-5-20251001': 200000,
     'anthropic/claude-3-5-haiku-20241022': 100000,
     'bedrock/anthropic.claude-instant-v1': 100000,
     'bedrock/anthropic.claude-v2': 100000,
@@ -180,5 +194,7 @@ SUPPORT_REASONING_EFFORT_MODELS = [
 
 CLAUDE_EXTENDED_THINKING_MODELS = [
     "anthropic/claude-3-7-sonnet-20250219",
-    "claude-3-7-sonnet-20250219"
+    "claude-3-7-sonnet-20250219",
+    "anthropic/claude-opus-4-6-20260205",
+    "anthropic/claude-sonnet-4-6-20260205",
 ]

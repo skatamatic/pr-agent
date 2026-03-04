@@ -82,8 +82,8 @@ def mock_metrics_service():
     service = Mock(spec=MetricsService)
     service.get_or_create_config = AsyncMock(return_value=Mock(
         model_costs={
-            'gpt-4': {'input': 0.03, 'output': 0.06},
-            'gpt-3.5-turbo': {'input': 0.001, 'output': 0.002}
+            'gpt-5.3-codex': {'input': 0.00175, 'output': 0.014},
+            'gpt-5.3-codex-spark': {'input': 0.001, 'output': 0.008}
         },
         developer_hourly_rate=75.0,
         hours_multiplier=1.0

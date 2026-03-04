@@ -137,10 +137,10 @@ class ConfigService:
         """Get default configuration when no config file exists"""
         return {
             "config": {
-                "model": "anthropic/claude-3-5-sonnet-20241022",
-                "model_reasoning": "anthropic/claude-3-5-sonnet-20241022", 
-                "model_weak": "gpt-4o-mini",
-                "fallback_models": ["gpt-4o-mini"],
+                "model": "anthropic/claude-sonnet-4-6-20260205",
+                "model_reasoning": "anthropic/claude-opus-4-6-20260205",
+                "model_weak": "gpt-5.3-codex-spark",
+                "fallback_models": ["gpt-5.3-codex-spark"],
                 "reasoning_effort": "high",
                 "max_model_tokens": 94000,
                 "temperature": 0.2,

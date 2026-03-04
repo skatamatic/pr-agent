@@ -104,8 +104,8 @@ class TestJobDeletionService:
         # Update operation to use multi-model data
         operation = populated_test_db.query(OperationDB).first()
         operation.ai_models_used = {
-            'gpt-4': {'input_tokens': 800, 'output_tokens': 400},
-            'gpt-3.5-turbo': {'input_tokens': 200, 'output_tokens': 100}
+            'gpt-5.3-codex': {'input_tokens': 800, 'output_tokens': 400},
+            'gpt-5.3-codex-spark': {'input_tokens': 200, 'output_tokens': 100}
         }
         operation.model_used = None  # Clear legacy field
         populated_test_db.commit()

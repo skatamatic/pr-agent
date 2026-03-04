@@ -307,9 +307,9 @@ async def generate_test_data() -> Dict[str, Any]:
                 
                 # Generate AI/LLM metrics for completed operations
                 ai_models = [
-                    "gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo",
-                    "claude-3-opus", "claude-3-sonnet", "claude-3-haiku", "claude-3-5-sonnet", "claude-3-5-sonnet-20241022",
-                    "gemini-pro", "gemini-1.5-pro", "gemini-1.5-flash"
+                    "anthropic/claude-opus-4-6-20260205", "anthropic/claude-sonnet-4-6-20260205", "anthropic/claude-haiku-4-5-20251001",
+                    "gemini/gemini-3.1-pro-preview", "gemini/gemini-3-flash-preview",
+                    "gpt-5", "gpt-5-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark"
                 ]
                 
                 model_used = None
@@ -766,12 +766,12 @@ async def generate_ai_metrics_data() -> Dict[str, Any]:
         
         # AI models with realistic usage patterns
         ai_models = [
-            {"name": "gpt-4", "weight": 3, "input_range": (2000, 8000), "output_range": (500, 2000), "dev_hours": (0.5, 3.0)},
-            {"name": "gpt-4-turbo", "weight": 4, "input_range": (3000, 12000), "output_range": (800, 3000), "dev_hours": (0.8, 4.0)},
-            {"name": "gpt-4o", "weight": 5, "input_range": (2500, 10000), "output_range": (600, 2500), "dev_hours": (0.6, 3.5)},
-            {"name": "claude-3-sonnet", "weight": 3, "input_range": (2200, 9000), "output_range": (550, 2200), "dev_hours": (0.7, 3.2)},
-            {"name": "claude-3-5-sonnet", "weight": 4, "input_range": (2800, 11000), "output_range": (700, 2800), "dev_hours": (0.9, 4.2)},
-            {"name": "claude-3-haiku", "weight": 2, "input_range": (1500, 6000), "output_range": (300, 1500), "dev_hours": (0.3, 2.0)},
+            {"name": "anthropic/claude-opus-4-6-20260205", "weight": 3, "input_range": (2800, 11000), "output_range": (700, 2800), "dev_hours": (0.9, 4.2)},
+            {"name": "anthropic/claude-sonnet-4-6-20260205", "weight": 5, "input_range": (2500, 10000), "output_range": (600, 2500), "dev_hours": (0.7, 3.5)},
+            {"name": "anthropic/claude-haiku-4-5-20251001", "weight": 2, "input_range": (1500, 6000), "output_range": (300, 1500), "dev_hours": (0.3, 2.0)},
+            {"name": "gpt-5.3-codex", "weight": 4, "input_range": (3000, 12000), "output_range": (800, 3000), "dev_hours": (0.8, 4.0)},
+            {"name": "gpt-5.3-codex-spark", "weight": 3, "input_range": (2000, 8000), "output_range": (500, 2000), "dev_hours": (0.5, 3.0)},
+            {"name": "gemini/gemini-3.1-pro-preview", "weight": 4, "input_range": (2200, 9000), "output_range": (550, 2200), "dev_hours": (0.6, 3.2)},
         ]
         
         commands = ["review", "describe", "improve", "test", "add_docs", "update_changelog"]

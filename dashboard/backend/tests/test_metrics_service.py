@@ -81,7 +81,7 @@ class TestMetricsService:
         await metrics_service.update_metrics_from_operation(
             db_session,
             {
-                "model_used": "gpt-4",
+                "model_used": "gpt-5.3-codex",
                 "input_tokens": 100,
                 "output_tokens": 50,
                 "job_id": "job-metrics-test",
@@ -91,9 +91,9 @@ class TestMetricsService:
         summary = await metrics_service.get_metrics_summary(db_session)
         assert summary is not None
         assert summary.total_operations >= 1
-        assert "gpt-4" in summary.model_breakdown
-        assert summary.model_breakdown["gpt-4"]["input_tokens"] == 100
-        assert summary.model_breakdown["gpt-4"]["output_tokens"] == 50
+        assert "gpt-5.3-codex" in summary.model_breakdown
+        assert summary.model_breakdown["gpt-5.3-codex"]["input_tokens"] == 100
+        assert summary.model_breakdown["gpt-5.3-codex"]["output_tokens"] == 50
 
     async def test_update_metrics_from_operation_multi_model(self, metrics_service, db_session):
         await metrics_service.get_or_create_config(db_session)
@@ -101,8 +101,8 @@ class TestMetricsService:
             db_session,
             {
                 "ai_models_used": {
-                    "gpt-4": {"input_tokens": 200, "output_tokens": 100},
-                    "gpt-3.5-turbo": {"input_tokens": 50, "output_tokens": 25},
+                    "gpt-5.3-codex": {"input_tokens": 200, "output_tokens": 100},
+                    "gpt-5.3-codex-spark": {"input_tokens": 50, "output_tokens": 25},
                 },
                 "total_input_tokens": 250,
                 "total_output_tokens": 125,
@@ -113,9 +113,9 @@ class TestMetricsService:
         summary = await metrics_service.get_metrics_summary(db_session)
         assert summary is not None
         assert summary.total_operations >= 1
-        assert "gpt-4" in summary.model_breakdown or "gpt-3.5-turbo" in summary.model_breakdown
+        assert "gpt-5.3-codex" in summary.model_breakdown or "gpt-5.3-codex-spark" in summary.model_breakdown
         breakdown = summary.model_breakdown
-        if "gpt-4" in breakdown:
-            assert breakdown["gpt-4"]["input_tokens"] >= 0
-        if "gpt-3.5-turbo" in breakdown:
-            assert breakdown["gpt-3.5-turbo"]["input_tokens"] >= 0
+        if "gpt-5.3-codex" in breakdown:
+            assert breakdown["gpt-5.3-codex"]["input_tokens"] >= 0
+        if "gpt-5.3-codex-spark" in breakdown:
+            assert breakdown["gpt-5.3-codex-spark"]["input_tokens"] >= 0
