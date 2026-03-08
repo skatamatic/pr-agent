@@ -1,11 +1,51 @@
 #!/bin/bash
-# Runner VM startup: install Docker, Python, clone pr-agent, write env, optional ADO agent registration.
+# Runner VM startup: Docker, env file, optional image pre-pull + smoke test,
+# optional ADO agent registration.  On failure the VM self-deletes to save cost.
 # Idempotent; logs to stdout for GCP Serial port / startup logs.
 
-set -e
+set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 log() { echo "[pr-agent-runner-startup] $*"; }
+
+# --- Self-destruct: delete this VM via GCE API to avoid idle cost ---
+self_destruct() {
+  log "Initiating self-destruct to avoid idle cost..."
+  sleep 3
+  _ZONE=$$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/zone" | rev | cut -d/ -f1 | rev) || true
+  _NAME=$$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/name") || true
+  _PROJECT=$$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/project/project-id") || true
+  if [ -n "$${_ZONE:-}" ] && [ -n "$${_NAME:-}" ] && [ -n "$${_PROJECT:-}" ]; then
+    _TOKEN=$$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])" 2>/dev/null) || true
+    if [ -n "$${_TOKEN:-}" ]; then
+      log "Deleting VM $$_NAME in zone $$_ZONE (project $$_PROJECT)..."
+      curl -sf -X DELETE -H "Authorization: Bearer $$_TOKEN" \
+        "https://compute.googleapis.com/compute/v1/projects/$$_PROJECT/zones/$$_ZONE/instances/$$_NAME" >/dev/null 2>&1 || true
+      log "Self-destruct request sent."
+    else
+      log "Could not obtain access token for self-destruct. Manual cleanup required."
+    fi
+  else
+    log "Could not resolve instance metadata for self-destruct. Manual cleanup required."
+  fi
+}
+
+cleanup_on_failure() {
+  local exit_code=$$?
+  log "FATAL: startup script failed (exit $$exit_code). Check console output above for details."
+  self_destruct
+  exit $$exit_code
+}
+trap cleanup_on_failure ERR
+
+# --- Global timeout: self-destruct if startup takes longer than 15 minutes ---
+(
+  sleep 900
+  log "TIMEOUT: startup exceeded 15 minutes. Triggering self-destruct..."
+  self_destruct
+  kill $$$$ 2>/dev/null || true
+) &
+_TIMEOUT_PID=$$!
 
 # --- System packages: Docker CE, Python, git ---
 log "Installing Docker CE and system packages..."
@@ -29,9 +69,7 @@ else
   log "Python and git already present."
 fi
 
-# --- Env file for PR-Agent / pipeline (source in pipeline or pass into Docker) ---
-# 'ENVEOF' is single-quoted so shell won't expand $ signs in Terraform-interpolated values.
-# Terraform replaces $${dashboard_url} etc. BEFORE the script reaches the shell.
+# --- Env file for PR-Agent / pipeline ---
 mkdir -p /opt/pr-agent-runner
 cat > /opt/pr-agent-runner/env << 'ENVEOF'
 export DASHBOARD_URL="${dashboard_url}"
@@ -43,7 +81,8 @@ ENVEOF
 chmod 600 /opt/pr-agent-runner/env
 log "Env file written to /opt/pr-agent-runner/env."
 
-# --- Clone PR-Agent for Python-from-clone execution (e.g. Azure Pipelines) ---
+# --- Clone PR-Agent (only when no Docker image configured) ---
+%{if pr_agent_image == ""}
 PR_AGENT_DIR=/opt/pr-agent
 if [ ! -d "$$PR_AGENT_DIR/.git" ]; then
   log "Cloning PR-Agent into $$PR_AGENT_DIR..."
@@ -53,26 +92,27 @@ if [ ! -d "$$PR_AGENT_DIR/.git" ]; then
 else
   log "PR-Agent already present at $$PR_AGENT_DIR."
 fi
+%{else}
+log "Docker image configured; skipping PR-Agent source clone."
 
-# --- Optional: pre-pull PR-Agent Docker image (speeds up first GitHub Actions job) ---
-%{if pr_agent_image != ""}
-# Authenticate Docker with Artifact Registry if needed (GCE metadata token)
+# --- Pull and smoke-test the Docker image ---
 if echo "${pr_agent_image}" | grep -q "docker.pkg.dev"; then
   log "Authenticating Docker with Artifact Registry..."
   _AR_REGISTRY=$$(echo "${pr_agent_image}" | cut -d/ -f1)
-  _AR_TOKEN=$$(curl -s -H "Metadata-Flavor: Google" \
+  _AR_TOKEN=$$(curl -sf -H "Metadata-Flavor: Google" \
     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-  echo "$$_AR_TOKEN" | docker login -u oauth2accesstoken --password-stdin "https://$$_AR_REGISTRY" 2>/dev/null \
+  echo "$$_AR_TOKEN" | docker login -u oauth2accesstoken --password-stdin "https://$$_AR_REGISTRY" \
     && log "Docker authenticated with $$_AR_REGISTRY." \
-    || log "Docker auth failed (non-fatal); pull may still fail."
+    || { log "FATAL: Docker auth with Artifact Registry failed."; exit 1; }
 fi
-if ! docker image inspect "${pr_agent_image}" &>/dev/null; then
-  log "Pre-pulling Docker image: ${pr_agent_image}"
-  docker pull "${pr_agent_image}" || log "Pre-pull failed (non-fatal); first job will pull."
-else
-  log "Docker image ${pr_agent_image} already present."
-fi
+log "Pulling Docker image: ${pr_agent_image}"
+docker pull "${pr_agent_image}"
+log "Docker image pulled successfully."
+log "Smoke-testing Docker image..."
+docker run --rm "${pr_agent_image}" python3 -c "print('pr-agent container OK')" \
+  && log "Docker smoke test passed." \
+  || { log "WARN: Docker smoke test command failed (image may still work for pipeline)."; }
 %{endif}
 
 # --- Optional: Azure DevOps agent auto-registration ---
@@ -98,6 +138,7 @@ if [ ! -f "$$AGENT_DIR/.agent" ]; then
 
   log "Downloading agent from: $$AGENT_URL"
   curl -fkSL -o agent.tar.gz "$$AGENT_URL"
+  log "Agent package downloaded. Extracting..."
   tar xzf agent.tar.gz
   rm -f agent.tar.gz
 
@@ -126,6 +167,7 @@ else
 fi
 %{endif}
 
-# --- Verify ---
+# --- Done ---
+kill $$_TIMEOUT_PID 2>/dev/null || true
 docker --version && log "Startup complete."
 exit 0

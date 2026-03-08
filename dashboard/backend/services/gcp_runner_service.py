@@ -50,20 +50,21 @@ def _get_startup_script(
 # Authenticate Docker with Artifact Registry (GCE metadata token)
 log "Authenticating Docker with Artifact Registry..."
 _AR_REGISTRY=$(echo "{pr_agent_image}" | cut -d/ -f1)
-_AR_TOKEN=$(curl -s -H "Metadata-Flavor: Google" \\
+_AR_TOKEN=$(curl -sf -H "Metadata-Flavor: Google" \\
   "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \\
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-echo "$_AR_TOKEN" | docker login -u oauth2accesstoken --password-stdin "https://$_AR_REGISTRY" 2>/dev/null \\
+echo "$_AR_TOKEN" | docker login -u oauth2accesstoken --password-stdin "https://$_AR_REGISTRY" \\
   && log "Docker authenticated with $_AR_REGISTRY." \\
-  || log "Docker auth failed (non-fatal); pull may still fail."
+  || {{ log "FATAL: Docker auth with Artifact Registry failed."; exit 1; }}
 """
         pre_pull_block = f"""{ar_auth_block}
-if ! docker image inspect "{pr_agent_image}" &>/dev/null; then
-  log "Pre-pulling Docker image: {pr_agent_image}"
-  docker pull "{pr_agent_image}" || log "Pre-pull failed (non-fatal); first job will pull."
-else
-  log "Docker image {pr_agent_image} already present."
-fi
+log "Pulling Docker image: {pr_agent_image}"
+docker pull "{pr_agent_image}"
+log "Docker image pulled successfully."
+log "Smoke-testing Docker image..."
+docker run --rm "{pr_agent_image}" python3 -c "print('pr-agent container OK')" \\
+  && log "Docker smoke test passed." \\
+  || {{ log "WARN: Docker smoke test command failed (image may still work for pipeline)."; }}
 """
 
     ado_agent_block = ""
@@ -123,13 +124,72 @@ else
 fi
 """
 
+    clone_block = ""
+    if not pr_agent_image:
+        clone_block = f"""
+# --- Clone PR-Agent for Python-from-source execution (only when no Docker image configured) ---
+PR_AGENT_DIR=/opt/pr-agent
+if [ ! -d "$PR_AGENT_DIR/.git" ]; then
+  log "Cloning PR-Agent into $PR_AGENT_DIR..."
+  git clone --depth 1 "{pr_agent_repo_url}" "$PR_AGENT_DIR"
+  pip3 install -r "$PR_AGENT_DIR/requirements.txt" --break-system-packages 2>/dev/null || pip3 install -r "$PR_AGENT_DIR/requirements.txt"
+  log "PR-Agent clone and pip install done."
+else
+  log "PR-Agent already present at $PR_AGENT_DIR."
+fi
+"""
+    else:
+        clone_block = """
+# --- Skipping PR-Agent clone (Docker image configured; pipeline runs inside container) ---
+log "Docker image configured; skipping PR-Agent source clone."
+"""
+
     return f"""#!/bin/bash
-# Runner VM startup: Docker, Python, pr-agent clone, env file, optional ADO agent registration.
-# Idempotent; logs to stdout.
-set -e
+# Runner VM startup: Docker, env file, optional image pre-pull, optional ADO agent registration.
+# Idempotent; logs to stdout.  On failure the VM self-deletes to avoid wasted cost.
+set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 log() {{ echo "[pr-agent-runner-startup] $*"; }}
+
+# --- Self-destruct: delete this VM via GCE API to avoid idle cost ---
+self_destruct() {{
+  log "Initiating self-destruct to avoid idle cost..."
+  sleep 3
+  _ZONE=$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/zone" | rev | cut -d/ -f1 | rev) || true
+  _NAME=$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/name") || true
+  _PROJECT=$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/project/project-id") || true
+  if [ -n "${{_ZONE:-}}" ] && [ -n "${{_NAME:-}}" ] && [ -n "${{_PROJECT:-}}" ]; then
+    _TOKEN=$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])" 2>/dev/null) || true
+    if [ -n "${{_TOKEN:-}}" ]; then
+      log "Deleting VM $_NAME in zone $_ZONE (project $_PROJECT)..."
+      curl -sf -X DELETE -H "Authorization: Bearer $_TOKEN" \
+        "https://compute.googleapis.com/compute/v1/projects/$_PROJECT/zones/$_ZONE/instances/$_NAME" >/dev/null 2>&1 || true
+      log "Self-destruct request sent."
+    else
+      log "Could not obtain access token for self-destruct. Manual cleanup required."
+    fi
+  else
+    log "Could not resolve instance metadata for self-destruct. Manual cleanup required."
+  fi
+}}
+
+cleanup_on_failure() {{
+  local exit_code=$?
+  log "FATAL: startup script failed (exit $exit_code). Check console output above for details."
+  self_destruct
+  exit $exit_code
+}}
+trap cleanup_on_failure ERR
+
+# --- Global timeout: self-destruct if startup takes longer than 15 minutes ---
+(
+  sleep 900
+  log "TIMEOUT: startup exceeded 15 minutes. Triggering self-destruct..."
+  self_destruct
+  kill $$ 2>/dev/null || true
+) &
+_TIMEOUT_PID=$!
 
 # --- System packages: Docker CE, Python, git ---
 log "Installing Docker CE and system packages..."
@@ -164,19 +224,9 @@ export GCP_RUNNER_PR_AGENT_IMAGE="{pr_agent_image}"
 ENVEOF
 chmod 600 /opt/pr-agent-runner/env
 log "Env file written to /opt/pr-agent-runner/env."
-
-# --- Clone PR-Agent for Python-from-clone execution (e.g. Azure Pipelines) ---
-PR_AGENT_DIR=/opt/pr-agent
-if [ ! -d "$PR_AGENT_DIR/.git" ]; then
-  log "Cloning PR-Agent into $PR_AGENT_DIR..."
-  git clone --depth 1 "{pr_agent_repo_url}" "$PR_AGENT_DIR"
-  pip3 install -r "$PR_AGENT_DIR/requirements.txt" --break-system-packages 2>/dev/null || pip3 install -r "$PR_AGENT_DIR/requirements.txt"
-  log "PR-Agent clone and pip install done."
-else
-  log "PR-Agent already present at $PR_AGENT_DIR."
-fi
-{pre_pull_block}{ado_agent_block}
+{clone_block}{pre_pull_block}{ado_agent_block}
 # --- Verify ---
+kill $_TIMEOUT_PID 2>/dev/null || true
 docker --version && log "Startup complete."
 exit 0
 """
@@ -419,25 +469,12 @@ class GCPRunnerService:
     def get_startup_progress(self, instance_name: str, zone: str) -> Dict[str, Any]:
         """Parse startup-script progress from serial console output for UX polling.
 
-        Returns granular milestones, a console log of all pr-agent-runner-startup
-        lines, and a numeric percent estimate so the frontend can render a real
-        progress bar and a live console pane.
+        Milestones are built dynamically based on what the log reveals (Docker
+        mode vs source-clone mode, with/without ADO agent).
         """
-        milestones = [
-            {"key": "system_packages", "label": "Installing system packages", "done": False},
-            {"key": "docker_ready", "label": "Docker installed", "done": False},
-            {"key": "python_git_ready", "label": "Python & Git installed", "done": False},
-            {"key": "env_written", "label": "Environment file written", "done": False},
-            {"key": "pr_agent_cloned", "label": "PR-Agent cloned & deps installed", "done": False},
-            {"key": "docker_image_pull", "label": "Docker image pre-pulled", "done": False},
-            {"key": "ado_agent_download", "label": "Azure agent downloaded", "done": False},
-            {"key": "ado_agent_configured", "label": "Azure agent configured", "done": False},
-            {"key": "ado_agent_started", "label": "Azure agent service started", "done": False},
-            {"key": "startup_complete", "label": "Startup complete", "done": False},
-        ]
         progress: Dict[str, Any] = {
             "log_available": False,
-            "milestones": milestones,
+            "milestones": [],
             "percent": 0,
             "console_lines": [],
             "startup_complete": False,
@@ -468,6 +505,29 @@ class GCPRunnerService:
             progress["console_lines"] = tagged_lines[-60:]
             progress["last_log_excerpt"] = "\n".join(tagged_lines[-8:]) if tagged_lines else ""
 
+            uses_docker = "skipping pr-agent source clone" in c
+            has_ado = "installing azure devops agent" in c or "azure devops agent already configured" in c
+
+            milestones = [
+                {"key": "system_packages", "label": "Installing system packages", "done": False},
+                {"key": "docker_ready", "label": "Docker installed", "done": False},
+                {"key": "python_git_ready", "label": "Python & Git ready", "done": False},
+                {"key": "env_written", "label": "Environment file written", "done": False},
+            ]
+            if uses_docker:
+                milestones.append({"key": "clone_skipped", "label": "Source clone skipped (Docker mode)", "done": False})
+                milestones.append({"key": "docker_image_pull", "label": "Docker image pulled", "done": False})
+                milestones.append({"key": "docker_smoke_test", "label": "Docker image smoke test", "done": False})
+            else:
+                milestones.append({"key": "pr_agent_cloned", "label": "PR-Agent cloned & deps installed", "done": False})
+            if has_ado:
+                milestones.extend([
+                    {"key": "ado_agent_download", "label": "Azure agent downloaded", "done": False},
+                    {"key": "ado_agent_configured", "label": "Azure agent configured", "done": False},
+                    {"key": "ado_agent_started", "label": "Azure agent service started", "done": False},
+                ])
+            milestones.append({"key": "startup_complete", "label": "Startup complete", "done": False})
+
             def mark(key: str) -> None:
                 for m in milestones:
                     if m["key"] == key:
@@ -485,14 +545,19 @@ class GCPRunnerService:
             if "env file written to /opt/pr-agent-runner/env." in c:
                 mark("env_written")
                 progress["env_written"] = True
+            if "skipping pr-agent source clone" in c:
+                mark("clone_skipped")
+                progress["pr_agent_ready"] = True
             if "pr-agent clone and pip install done." in c or "pr-agent already present at /opt/pr-agent." in c:
                 mark("pr_agent_cloned")
                 progress["pr_agent_ready"] = True
-            if "pre-pulling docker image" in c or ("docker image" in c and "already present" in c):
+            if "pulling docker image" in c or "docker image pulled successfully" in c:
                 mark("docker_image_pull")
+            if "docker smoke test passed" in c:
+                mark("docker_smoke_test")
             if "downloading agent from" in c or "agent package downloaded" in c:
                 mark("ado_agent_download")
-            if "configuring agent" in c or "agent configured" in c:
+            if "configuring agent" in c:
                 mark("ado_agent_configured")
             if "registered in pool" in c:
                 mark("ado_agent_started")
@@ -500,6 +565,11 @@ class GCPRunnerService:
             if "startup complete." in c:
                 mark("startup_complete")
                 progress["startup_complete"] = True
+
+            if "fatal: startup script failed" in c or "self-destruct request sent" in c or "timeout:" in c:
+                progress["failed"] = True
+                progress["self_destructing"] = "self-destruct request sent" in c
+                progress["timed_out"] = "timeout:" in c
 
             done_count = sum(1 for m in milestones if m["done"])
             progress["percent"] = min(100, int(done_count / len(milestones) * 100))

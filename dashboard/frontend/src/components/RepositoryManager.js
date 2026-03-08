@@ -361,8 +361,7 @@ const RepositoryManager = () => {
           : c
       )));
       await fetchActionRunnerConnections();
-      setWizardStep(3);
-      showSuccess('Runner VM', data.message || 'VM creation started.');
+      showSuccess('Runner VM', data.message || 'VM creation started. Watch progress below.');
     } catch (error) {
       const msg = error.response?.data?.detail || error.message;
       const isGcpNotConfigured = /GCP|configured|GCP_RUNNER/i.test(msg || '');
@@ -2406,6 +2405,9 @@ const RepositoryManager = () => {
                         const agentOnline = !!provisionProgress.azure_agent?.online;
                         const isComplete = !!provisionProgress.complete;
                         const startupComplete = !!startup.startup_complete;
+                        const hasFailed = !!startup.failed;
+                        const selfDestructing = !!startup.self_destructing;
+                        const timedOut = !!startup.timed_out;
 
                         const allSteps = [
                           { label: 'VM running', done: vmRunning, active: !vmRunning },
@@ -2418,19 +2420,31 @@ const RepositoryManager = () => {
                         const overallPercent = totalSteps > 0 ? Math.round((doneCount / totalSteps) * 100) : 0;
 
                         return (
-                          <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30 p-4 space-y-3">
+                          <div className={`rounded-lg border p-4 space-y-3 ${hasFailed ? 'border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20' : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30'}`}>
                             <div className="flex items-center justify-between">
                               <div className="text-sm font-semibold text-gray-900 dark:text-white">Provisioning Progress</div>
-                              {isComplete ? (
+                              {hasFailed ? (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400">
+                                  {timedOut ? 'Timed Out' : 'Failed'}{selfDestructing ? ' — VM deleting' : ''}
+                                </span>
+                              ) : isComplete ? (
                                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">Complete</span>
                               ) : (
                                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">{overallPercent}%</span>
                               )}
                             </div>
 
+                            {hasFailed && (
+                              <div className="text-xs text-red-700 dark:text-red-400 bg-red-100 dark:bg-red-900/30 rounded p-2">
+                                {selfDestructing
+                                  ? 'The startup script failed and the VM is being automatically deleted to avoid cost. Check the console output below for the error.'
+                                  : 'The startup script encountered an error. The VM will attempt to self-destruct. Check the console output below.'}
+                              </div>
+                            )}
+
                             <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
                               <div
-                                className={`h-2 rounded-full transition-all duration-500 ${isComplete ? 'bg-green-500' : 'bg-blue-500'}`}
+                                className={`h-2 rounded-full transition-all duration-500 ${hasFailed ? 'bg-red-500' : isComplete ? 'bg-green-500' : 'bg-blue-500'}`}
                                 style={{ width: `${overallPercent}%` }}
                               />
                             </div>
@@ -2488,36 +2502,42 @@ const RepositoryManager = () => {
                           Back
                         </button>
                         <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setWizardState((prev) => ({ ...prev, skipRunner: true }));
-                              setWizardStep(3);
-                            }}
-                            className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300"
-                          >
-                            Skip for now
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleAzureProvisionRunner}
-                            disabled={wizardState.provisioning || !wizardState.selectedPool}
-                            className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-                          >
-                            {wizardState.provisioning ? 'Provisioning…' : 'Provision Runner VM'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!wizardState.provisioned) {
+                          {!wizardState.provisioned && (
+                            <button
+                              type="button"
+                              onClick={() => {
                                 setWizardState((prev) => ({ ...prev, skipRunner: true }));
-                              }
-                              setWizardStep(3);
-                            }}
-                            className="px-4 py-2 rounded bg-gray-800 text-white dark:bg-gray-600"
-                          >
-                            Continue
-                          </button>
+                                setWizardStep(3);
+                              }}
+                              className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300"
+                            >
+                              Skip for now
+                            </button>
+                          )}
+                          {!wizardState.provisioned && (
+                            <button
+                              type="button"
+                              onClick={handleAzureProvisionRunner}
+                              disabled={wizardState.provisioning || !wizardState.selectedPool}
+                              className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                            >
+                              {wizardState.provisioning ? 'Provisioning…' : 'Provision Runner VM'}
+                            </button>
+                          )}
+                          {wizardState.provisioned && (() => {
+                            const connId = formData.action_runner_connection_id || wizardState.connectionId;
+                            const progress = provisionProgressByConnection[connId] || {};
+                            const isComplete = !!progress.complete;
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => setWizardStep(3)}
+                                className={`px-4 py-2 rounded text-white ${isComplete ? 'bg-green-600 hover:bg-green-700' : 'bg-gray-600 hover:bg-gray-700'}`}
+                              >
+                                {isComplete ? 'Continue to Review' : 'Continue (setup still running…)'}
+                              </button>
+                            );
+                          })()}
                         </div>
                       </div>
                     </div>
