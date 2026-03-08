@@ -1,6 +1,5 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Search, Download, Filter, AlertCircle, Info, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, RefreshCw, Clock, ExternalLink, X, Eye, CheckCircle, XCircle, Calendar, FileText, Star } from 'lucide-react';
-import api from '../services/api';
+import React, { useState, useEffect, useRef } from 'react';
+import { Search, Download, Filter, Info, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, RefreshCw, Clock, ExternalLink, X, Calendar, FileText, Star } from 'lucide-react';
 import ViewHeader from './ViewHeader';
 import { formatTimestamp as formatTimestampUtil } from '../utils/timeUtils';
 
@@ -12,10 +11,8 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
   const [showSystemLogs, setShowSystemLogs] = useState(true);
   const [showOnlyArtifacts, setShowOnlyArtifacts] = useState(false);
   const [expandedLogs, setExpandedLogs] = useState(new Set());
-  const [expandedMessages, setExpandedMessages] = useState(new Set());
   const [currentPage, setCurrentPage] = useState(1);
-  const [repositories, setRepositories] = useState([]);
-  const [operationTypes, setOperationTypes] = useState([]);
+  const [repositories] = useState([]);
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
   const [showExportDropdown, setShowExportDropdown] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
@@ -80,8 +77,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
 
   // Listen for operation filtering events from other components (legacy support)
   useEffect(() => {
-    const handleFilterByOperation = (event) => {
-      const { operationId } = event.detail;
+    const handleFilterByOperation = () => {
       setSelectedOperationType('all');
       setSelectedRepository('all');
       setCurrentPage(1);
@@ -137,9 +133,6 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
   // Extract unique steps from logs
   const uniqueSteps = [...new Set(logs.map(log => extractStepFromLog(log) || "System").filter(Boolean))];
   
-  // Extract unique job IDs from logs (for job filtering)
-  const uniqueJobIds = [...new Set(logs.map(log => log.job_id).filter(Boolean))];
-
   const getLevelColor = (level) => {
     switch (level?.toLowerCase()) {
       case 'error': return 'text-red-600 bg-red-50 dark:text-red-400 dark:bg-red-900/20';
@@ -401,39 +394,6 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       // If logId was already expanded, return empty set (collapse all)
       return newExpandedLogs;
     });
-  };
-
-  const toggleMessageExpanded = (logId) => {
-    setExpandedMessages(prev => {
-      const newExpandedMessages = new Set(prev);
-      if (newExpandedMessages.has(logId)) {
-        newExpandedMessages.delete(logId);
-      } else {
-        newExpandedMessages.add(logId);
-      }
-      return newExpandedMessages;
-    });
-  };
-
-  // Helper function to determine if a message should be collapsible
-  const shouldCollapseMessage = (message) => {
-    if (!message) return false;
-    // Count newlines
-    const lines = message.split('\n');
-    if (lines.length > 5) return true;
-    
-    // Estimate rendered lines based on character count (assuming ~80 chars per line)
-    const estimatedLines = lines.reduce((total, line) => {
-      return total + Math.max(1, Math.ceil(line.length / 80));
-    }, 0);
-    
-    return estimatedLines > 5;
-  };
-
-  // Helper function to get message preview or full message - no truncation!
-  const getMessagePreview = (message) => {
-    // Return full message always - no truncation
-    return message || '';
   };
 
   const logLevels = [

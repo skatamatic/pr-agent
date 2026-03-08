@@ -2,8 +2,7 @@
  * Tests for JobsList component job deletion functionality
  */
 import React from 'react';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import JobsList from '../JobsList';
 import api from '../../services/api';
 import { ToastContext } from '../../contexts/ToastContext';
@@ -55,9 +54,7 @@ describe('JobsList Component - Job Deletion', () => {
   });
 
   test('calls API on mount', async () => {
-    await act(async () => {
-      renderWithToastContext(<JobsList />);
-    });
+    renderWithToastContext(<JobsList />);
     
     // Wait for API call
     await waitFor(() => {
@@ -69,9 +66,7 @@ describe('JobsList Component - Job Deletion', () => {
   });
 
   test('renders jobs with actions menu', async () => {
-    await act(async () => {
-      renderWithToastContext(<JobsList />);
-    });
+    renderWithToastContext(<JobsList />);
     
     // Wait for the component to finish loading and rendering
     await waitFor(() => {
@@ -131,9 +126,7 @@ describe('JobsList Component - Job Deletion', () => {
     
     // Click delete option
     const deleteButton = screen.getByText('Delete Job & Related Data');
-    await act(async () => {
-      fireEvent.click(deleteButton);
-    });
+    fireEvent.click(deleteButton);
     
     await waitFor(() => {
       expect(api.getJobDeletionPreview).toHaveBeenCalledWith('job-123');
@@ -163,9 +156,7 @@ describe('JobsList Component - Job Deletion', () => {
     
     // Click delete option
     const deleteButton = screen.getByText('Delete Job & Related Data');
-    await act(async () => {
-      fireEvent.click(deleteButton);
-    });
+    fireEvent.click(deleteButton);
     
     await waitFor(() => {
       expect(mockToastContext.showError).toHaveBeenCalledWith('Failed to get deletion preview: Preview API Error');
@@ -209,9 +200,7 @@ describe('JobsList Component - Job Deletion', () => {
     
     // Click delete option
     const deleteButton = screen.getByText('Delete Job & Related Data');
-    await act(async () => {
-      fireEvent.click(deleteButton);
-    });
+    fireEvent.click(deleteButton);
     
     await waitFor(() => {
       expect(screen.getByText('Delete Job & Related Data')).toBeInTheDocument();
@@ -259,9 +248,7 @@ describe('JobsList Component - Job Deletion', () => {
     
     // Click delete option
     const deleteButton = screen.getByText('Delete Job & Related Data');
-    await act(async () => {
-      fireEvent.click(deleteButton);
-    });
+    fireEvent.click(deleteButton);
     
     await waitFor(() => {
       expect(screen.getByText('Delete Job & Related Data')).toBeInTheDocument();
@@ -303,9 +290,7 @@ describe('JobsList Component - Job Deletion', () => {
     
     // Click delete option
     const deleteButton = screen.getByText('Delete Job & Related Data');
-    await act(async () => {
-      fireEvent.click(deleteButton);
-    });
+    fireEvent.click(deleteButton);
     
     await waitFor(() => {
       expect(screen.getByText('Delete Job & Related Data')).toBeInTheDocument();
@@ -348,9 +333,7 @@ describe('JobsList Component - Job Deletion', () => {
     
     // Click delete option
     const deleteButton = screen.getByText('Delete Job & Related Data');
-    await act(async () => {
-      fireEvent.click(deleteButton);
-    });
+    fireEvent.click(deleteButton);
     
     // Wait for the API call to complete
     await waitFor(() => {

@@ -17,8 +17,6 @@ import {
   Wallet,
   ChevronLeft,
   ChevronRight,
-  Play,
-  Pause,
   ArrowUp,
   ArrowDown,
   GitBranch,
@@ -94,7 +92,7 @@ const AnimatedMetric = ({ value, formatter, className = "", duration = 1500, int
       lastValueRef.current = targetValueRef.current; // Update the last known value
       startTimeRef.current = null;
     }
-  }, []); // No dependencies since we use refs
+  }, [integer]); // integer controls rounding behavior
 
   useEffect(() => {
     // Don't animate on initial mount
@@ -137,7 +135,7 @@ const AnimatedMetric = ({ value, formatter, className = "", duration = 1500, int
         cancelAnimationFrame(animationRef.current);
       }
     };
-  }, [value]); // Only depend on value changes
+  }, [value, animateValue]); // Depend on value and animation callback
 
   return (
     <span 
@@ -186,6 +184,8 @@ const MetricsView = () => {
   const lastDataChangeRef = useRef(Date.now());
   const currentIntervalRef = useRef(1000); // Start with 1 second
   const isRestartingRef = useRef(false);
+  const fetchDataRef = useRef(null);
+  const fetchConfigDataRef = useRef(null);
 
   // Config form state
   const [editableConfig, setEditableConfig] = useState({
@@ -229,7 +229,7 @@ const MetricsView = () => {
     
     try {
       // Only fetch data, don't force recalculate on every update
-      await fetchData();
+      await fetchDataRef.current?.();
     } catch (error) {
       console.error('MetricsView: Event-based refresh failed:', error);
     }
@@ -273,8 +273,8 @@ const MetricsView = () => {
 
   useEffect(() => {
     // Initial data load - fetch metrics and config separately
-    fetchData();
-    fetchConfigData();
+    fetchDataRef.current?.();
+    fetchConfigDataRef.current?.();
 
     // Listen for WebSocket events that indicate new activity
     const handleJobUpdate = () => handleNewActivity();
@@ -393,6 +393,9 @@ const MetricsView = () => {
       setLoading(false);
     }
   };
+
+  fetchDataRef.current = fetchData;
+  fetchConfigDataRef.current = fetchConfigData;
 
   // Note: handleRefresh removed since we have auto-refresh now
 

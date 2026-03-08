@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { X, Clock, Target, CheckCircle, AlertCircle, TrendingUp, BarChart3, FileText, Code, Activity, Key, ChevronLeft, ChevronRight } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { X, Clock, Target, AlertCircle, TrendingUp, BarChart3, FileText, Activity, Key, ChevronLeft, ChevronRight } from 'lucide-react';
 import { formatInsightsTime } from '../utils/timeUtils';
 import apiService from '../services/api';
 
@@ -11,9 +11,10 @@ const OperationInsights = ({ operationId, onClose }) => {
   const [hoveredPieSlice, setHoveredPieSlice] = useState(null);
   const [selectedImportanceCategory, setSelectedImportanceCategory] = useState(0);
   const [currentSuggestionIndex, setCurrentSuggestionIndex] = useState(0);
+  const fetchInsightsRef = useRef(null);
 
   useEffect(() => {
-    fetchInsights();
+    fetchInsightsRef.current?.();
   }, [operationId]);
 
   const fetchInsights = async () => {
@@ -38,6 +39,8 @@ const OperationInsights = ({ operationId, onClose }) => {
       setLoading(false);
     }
   };
+
+  fetchInsightsRef.current = fetchInsights;
 
   const renderDescriptionDevTimeInsights = (descTimeData) => {
     if (!descTimeData) return null;
@@ -299,7 +302,7 @@ const OperationInsights = ({ operationId, onClose }) => {
       return renderReviewGuideDevTimeInsights(devTimeData);
     }
 
-    const { complexity_assessment, review_quality_assessment, time_impact_analysis, final_assessment, processing_summary, individual_suggestions } = devTimeData;
+    const { complexity_assessment, review_quality_assessment, time_impact_analysis, final_assessment } = devTimeData;
     
     return (
       <div className="space-y-6">
@@ -797,9 +800,6 @@ const OperationInsights = ({ operationId, onClose }) => {
     
     // Process quality breakdown data
     const totalSuggestions = qualityBreakdown?.total_suggestions || suggestions.length;
-    const highQualityCount = qualityBreakdown?.high_quality_suggestions || 0;
-    const mediumQualityCount = qualityBreakdown?.medium_quality_suggestions || 0;
-    const lowQualityCount = qualityBreakdown?.low_quality_suggestions || 0;
     
     // Process commit eligibility breakdown data
     const commitEligibilityBreakdown = reflectionData.commit_eligibility_breakdown;
@@ -811,7 +811,6 @@ const OperationInsights = ({ operationId, onClose }) => {
     const successfullyAnalyzed = processingSummary?.successfully_analyzed || 0;
     const processingErrors = processingSummary?.processing_errors || 0;
     const lineValidationFailures = processingSummary?.line_validation_failures || 0;
-    const duplicateCodeIssues = processingSummary?.duplicate_code_issues || 0;
     
     // Calculate success rate
     const successRate = totalSuggestions > 0 ? Math.round((successfullyAnalyzed / totalSuggestions) * 100) : 0;
@@ -828,8 +827,6 @@ const OperationInsights = ({ operationId, onClose }) => {
     }
     
     // Calculate max count for histogram scaling
-    const maxCount = Math.max(...scoreDistributionArray);
-    
     // Calculate average score
     const validSuggestions = suggestions.filter((s) => s.score > 0);
     const scores = validSuggestions.map((s) => s.score);

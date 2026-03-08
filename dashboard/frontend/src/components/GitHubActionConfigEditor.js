@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect, useContext, useRef } from 'react';
 import { 
   Server, 
   Settings, 
-  Save, 
   RefreshCw, 
   GitBranch, 
   ExternalLink, 
@@ -26,11 +25,13 @@ const GitHubActionConfigEditor = ({ repoId, repoData, onClose, onSave }) => {
   const [availableVars, setAvailableVars] = useState([]);
   const [showSecrets, setShowSecrets] = useState({});
   const [prStatus, setPrStatus] = useState(null);
+  const loadConfigRef = useRef(null);
+  const loadEnvironmentVarsRef = useRef(null);
   const { showSuccess, showError } = useContext(ToastContext);
 
   useEffect(() => {
-    loadConfig();
-    loadEnvironmentVars();
+    loadConfigRef.current?.();
+    loadEnvironmentVarsRef.current?.();
   }, [repoId]);
 
   const loadConfig = async () => {
@@ -65,6 +66,9 @@ const GitHubActionConfigEditor = ({ repoId, repoData, onClose, onSave }) => {
       console.error('Failed to load environment variables:', error);
     }
   };
+
+  loadConfigRef.current = loadConfig;
+  loadEnvironmentVarsRef.current = loadEnvironmentVars;
 
   const handleSave = async () => {
     try {

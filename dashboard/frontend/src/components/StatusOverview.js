@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Activity, CheckCircle, Clock, AlertCircle, Zap, GitPullRequest, TrendingUp, Server, Wifi, Database, ChevronDown, ChevronUp, Settings, GitBranch, Key, Shield, ExternalLink, Monitor } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Activity, CheckCircle, Clock, AlertCircle, GitPullRequest, TrendingUp, Server, Wifi, Database, ChevronDown, ChevronUp, Settings, Key, Shield, Monitor } from 'lucide-react';
 import apiService from '../services/api';
 import ViewHeader from './ViewHeader';
 
@@ -42,7 +42,35 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
   // Monitor token issues and update repository health status
   useEffect(() => {
     if (repositoryDetails.length > 0) {
-      const tokenIssues = analyzeTokenIssues();
+      const missingTokens = [];
+      const invalidTokens = [];
+      let healthyRepos = 0;
+
+      repositoryDetails.forEach((repo) => {
+        const hasToken = repo.provider === 'github' ? repo.has_github_token : repo.has_azure_pat;
+        const hasInvalidTokenIssue = repo.runner_error && (
+          repo.runner_error.includes('token') ||
+          repo.runner_error.includes('authentication') ||
+          repo.runner_error.includes('invalid') ||
+          repo.runner_error.includes('expired') ||
+          repo.runner_error.includes('permissions')
+        );
+
+        if (!hasToken) {
+          missingTokens.push(repo);
+        } else if (hasInvalidTokenIssue) {
+          invalidTokens.push(repo);
+        } else {
+          healthyRepos += 1;
+        }
+      });
+
+      const tokenIssues = {
+        totalRepos: repositoryDetails.length,
+        healthyRepos,
+        missingTokens,
+        invalidTokens,
+      };
       const hasTokenIssues = tokenIssues.missingTokens.length > 0 || tokenIssues.invalidTokens.length > 0;
       
       if (hasTokenIssues) {
@@ -66,7 +94,7 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
         }
       }
     }
-  }, [repositoryDetails]);
+  }, [repositoryDetails, individualServiceHealth]);
 
   const fetchRepositoryDetails = async () => {
     try {
@@ -178,13 +206,6 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
   const completedJobs = recentJobs.filter(job => job.status === 'completed').length;
   const failedJobs = recentJobs.filter(job => job.status === 'failed').length;
   
-  // Fallback to operation counts if no job data available (for backward compatibility)
-  const operationsData = realtimeStatus?.operations || {};
-  const totalOperations = operationsData.total || operations.length;
-  const activeOperations = operationsData.active || operations.filter(op => op.status === 'processing').length;
-  const completedOperations = operationsData.completed || operations.filter(op => op.status === 'completed').length;
-  const failedOperations = operationsData.failed || operations.filter(op => op.status === 'failed').length;
-
   // Use recent jobs for display (limit to 4 most recent)
   const displayJobs = recentJobs.length > 0 ? recentJobs.slice(0, 4) : 
     realtimeStatus?.recent_operations || 
@@ -285,10 +306,6 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
       service.status === 'checking'
     );
     
-    const connectedServices = Object.values(allServices).filter(service => 
-      service.status && ['healthy', 'connected', 'configured'].includes(service.status)
-    );
-    
     // Prioritize errors first
     if (errorServices.length > 0) {
       return { 
@@ -339,7 +356,7 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
     }
   };
 
-  const analyzeTokenIssues = () => {
+  const analyzeTokenIssues = useCallback(() => {
     // Only analyze ACTIVE repositories for token issues
     const activeRepositories = repositoryDetails.filter(repo => repo.is_active);
     
@@ -372,7 +389,7 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
     });
 
     return tokenIssues;
-  };
+  }, [repositoryDetails]);
 
   const handleNavigateToRepositories = () => {
     // Navigate to repositories view - you may need to pass this as a prop
@@ -458,7 +475,6 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
 
     const data = repoHealth.data;
     const total = data.total_repos || 0;
-    const healthy = data.healthy_repos || 0;
     const unhealthy = data.unhealthy_repos || 0;
     const errorRepos = data.error_repos || [];
 
@@ -470,45 +486,36 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
     const hasRunnerServiceIssues = runnerServiceIssues.length > 0;
     
     // Determine status with comprehensive awareness
-    let status, message, errorDetails, showTokenButton = false;
+    let status, errorDetails, showTokenButton = false;
     if (total === 0 && data.message) {
       // Handle case where no repositories have runner services configured
       status = 'warning';
-      message = data.message; // e.g., "No repositories have runner services configured"
       errorDetails = 'Configure runner services in Repository Management to monitor service health';
     } else if (total === 0) {
       status = 'warning';
-      message = 'No repositories configured';
     } else if (hasTokenIssues && hasRunnerServiceIssues) {
       status = 'error';
       showTokenButton = true;
-      message = `Multiple issues affecting ${tokenIssues.missingTokens.length + tokenIssues.invalidTokens.length + runnerServiceIssues.length} repositories`;
       errorDetails = `${tokenIssues.missingTokens.length + tokenIssues.invalidTokens.length} token issues, ${runnerServiceIssues.length} runner service issues`;
     } else if (hasTokenIssues) {
       status = 'error';
       showTokenButton = true;
       if (tokenIssues.missingTokens.length > 0 && tokenIssues.invalidTokens.length > 0) {
-        message = `${tokenIssues.missingTokens.length + tokenIssues.invalidTokens.length}/${total} repos need token configuration`;
         errorDetails = `${tokenIssues.missingTokens.length} missing, ${tokenIssues.invalidTokens.length} invalid tokens`;
       } else if (tokenIssues.missingTokens.length > 0) {
-        message = `${tokenIssues.missingTokens.length}/${total} repos missing access tokens`;
         errorDetails = `Configure ${tokenIssues.missingTokens.map(r => r.provider).join(', ')} tokens`;
       } else {
-        message = `${tokenIssues.invalidTokens.length}/${total} repos have invalid tokens`;
         errorDetails = 'Check token permissions and expiration';
       }
     } else if (hasRunnerServiceIssues) {
       status = 'error';
-      message = `${healthy}/${total} runner services healthy`;
       const serviceErrorNames = runnerServiceIssues.slice(0, 3).map(r => r.name).join(', ');
       const serviceStatuses = runnerServiceIssues.slice(0, 3).map(r => r.status).join(', ');
       errorDetails = `Service issues: ${serviceErrorNames} (${serviceStatuses})${runnerServiceIssues.length > 3 ? ` and ${runnerServiceIssues.length - 3} more` : ''}`;
     } else if (unhealthy === 0) {
       status = 'connected';
-      message = total === 1 ? `Runner service healthy` : `All ${healthy}/${total} runner services healthy`;
     } else {
       status = 'error';
-      message = `${healthy}/${total} repositories healthy`;
       const errorNames = errorRepos.slice(0, 3).map(r => r.name).join(', ');
       errorDetails = `Issues with: ${errorNames}${errorRepos.length > 3 ? ` and ${errorRepos.length - 3} more` : ''}`;
     }

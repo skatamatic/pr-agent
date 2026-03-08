@@ -1,5 +1,5 @@
-import React, { useState, useContext, useEffect } from 'react';
-import { Play, Database, AlertTriangle, Trash2, Activity, Code, Zap, CheckCircle, XCircle, Clock, Settings, RefreshCw, Calendar, Shield, FileText } from 'lucide-react';
+import React, { useState, useContext, useEffect, useCallback } from 'react';
+import { Play, Database, AlertTriangle, Trash2, Activity, Code, Zap, CheckCircle, XCircle, Clock, Settings, RefreshCw, Shield } from 'lucide-react';
 import apiService from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
@@ -14,12 +14,7 @@ const DeveloperView = ({ onRefresh }) => {
   const [triggeredJobs, setTriggeredJobs] = useState({});
   const { showSuccess, showError, showProgress } = useContext(ToastContext);
 
-  // Fetch scheduled jobs status on component mount
-  useEffect(() => {
-    fetchScheduledJobsStatus();
-  }, []);
-
-  const fetchScheduledJobsStatus = async () => {
+  const fetchScheduledJobsStatus = useCallback(async () => {
     try {
       setLoadingScheduledJobs(true);
       
@@ -56,7 +51,12 @@ const DeveloperView = ({ onRefresh }) => {
     } finally {
       setLoadingScheduledJobs(false);
     }
-  };
+  }, [showError]);
+
+  // Fetch scheduled jobs status on component mount
+  useEffect(() => {
+    fetchScheduledJobsStatus();
+  }, [fetchScheduledJobsStatus]);
 
   const triggerScheduledJob = async (serviceName, serviceDisplayName) => {
     const triggerKey = `trigger_${serviceName}`;
@@ -426,15 +426,6 @@ const DeveloperView = ({ onRefresh }) => {
                      case 'job_timeout_monitoring': return Clock;
                      case 'cleanup_service': return Trash2;
                      default: return Settings;
-                   }
-                 };
-                 
-                 const getStatusColor = (status) => {
-                   switch (status) {
-                     case 'running': return 'text-green-600 dark:text-green-400';
-                     case 'disabled': return 'text-gray-500 dark:text-gray-400';
-                     case 'error': return 'text-red-600 dark:text-red-400';
-                     default: return 'text-yellow-600 dark:text-yellow-400';
                    }
                  };
                  

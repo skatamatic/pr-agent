@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect, useContext, useRef } from 'react';
 import { 
   Settings, 
   Save, 
@@ -15,7 +15,6 @@ import {
   Gauge,
   Clock,
   Zap,
-  Key,
   RotateCcw,
   Shield
 } from 'lucide-react';
@@ -38,6 +37,7 @@ const PrAgentConfigEditor = ({
   const [activeTab, setActiveTab] = useState('models');
   const [prStatus, setPrStatus] = useState(null);
   const [hasExistingConfig, setHasExistingConfig] = useState(false);
+  const fetchConfigsRef = useRef(null);
   const { showSuccess, showError } = useContext(ToastContext);
 
   // Models grouped by provider – imported from shared constants
@@ -154,7 +154,7 @@ const PrAgentConfigEditor = ({
   // Load data when modal opens
   useEffect(() => {
     if (isOpen) {
-      fetchConfigs();
+      fetchConfigsRef.current?.();
     }
   }, [isOpen, repositoryId]);
 
@@ -193,6 +193,8 @@ const PrAgentConfigEditor = ({
       setLoading(false);
     }
   };
+
+  fetchConfigsRef.current = fetchConfigs;
 
   // Helper functions
   const getGlobalValue = (path) => {
@@ -357,7 +359,6 @@ const PrAgentConfigEditor = ({
   // Render field component
   const renderField = (field) => {
     const currentValue = getCurrentValue(field.key);
-    const globalValue = getGlobalValue(field.key);
     const isFieldOverridden = isOverridden(field.key);
     
     const fieldClasses = `w-full rounded-lg px-3 py-2 transition-all duration-200 ${

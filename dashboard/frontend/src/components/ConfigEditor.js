@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useCallback, useContext } from 'react';
+import React, { useState, useEffect, useCallback, useContext, useRef } from 'react';
 import { 
   Settings, 
   Save, 
-  RotateCcw, 
   Brain, 
   Key, 
   Zap, 
@@ -17,17 +16,14 @@ import {
   Lightbulb,
   Github,
   Gauge,
-  Folder,
   Check,
   RefreshCw,
   FolderOpen,
-  Shield,
-  Upload
+  Shield
 } from 'lucide-react';
 import JSZip from 'jszip';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
-import ViewHeader from './ViewHeader';
 import { MODELS_BY_PROVIDER, ALL_MODEL_IDS } from '../constants/models';
 
 /** Zip an array of File objects (e.g. from a folder picker) into a single ZIP File for bulk upload. */
@@ -71,6 +67,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
   const [tempPathValue, setTempPathValue] = useState('');
   const [bulkUploading, setBulkUploading] = useState(false);
   const bulkUploadInputRef = React.useRef(null);
+  const fetchConfigRef = useRef(null);
+  const fetchPrAgentPathRef = useRef(null);
 
   const { showSuccess, showError } = useContext(ToastContext);
 
@@ -99,8 +97,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
   }, [initialLoadComplete, loading, config, originalConfig, editing]);
 
   useEffect(() => {
-    fetchConfig();
-    fetchPrAgentPath();
+    fetchConfigRef.current?.();
+    fetchPrAgentPathRef.current?.();
   }, []);
 
   // Handle navigation target (e.g., animate checkbox)
@@ -353,7 +351,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
         return;
       }
 
-      const response = await api.updateConfig(config);
+      await api.updateConfig(config);
       setOriginalConfig(JSON.parse(JSON.stringify(config))); // Update original after successful save
       setEditing(false); // Exit edit mode on successful save
       showSuccess('Configuration Saved', 'Your configuration has been saved successfully!');
@@ -513,15 +511,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
     setEditing(false);
   };
 
-  const resetToDefaults = () => {
-    if (window.confirm('Are you sure you want to reset all settings to defaults? This cannot be undone.')) {
-      setConfig(JSON.parse(JSON.stringify(originalConfig))); // Reset to original
-      showSuccess('Configuration Reset', 'Settings have been reset to last saved state.');
-    }
-  };
-
   // PR-Agent path management functions
-  const fetchPrAgentPath = async () => {
+  const fetchPrAgentPath = useCallback(async () => {
     try {
       setPrAgentPathLoading(true);
       const response = await api.get('/api/config/pr-agent-path');
@@ -534,7 +525,10 @@ const ConfigEditor = ({ navigationTarget = null }) => {
     } finally {
       setPrAgentPathLoading(false);
     }
-  };
+  }, [showError]);
+
+  fetchConfigRef.current = fetchConfig;
+  fetchPrAgentPathRef.current = fetchPrAgentPath;
 
   const validatePrAgentPath = async (path) => {
     if (!path.trim()) return { valid: true }; // Empty path is valid (means use default)

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Activity, CheckCircle, Clock, AlertCircle, RefreshCw, ExternalLink, ChevronLeft, ChevronRight, Filter, TrendingUp, Zap, Brain, GitBranch, FileText, Lightbulb, Search, Timer, Play, AlertTriangle } from 'lucide-react';
+import { Activity, CheckCircle, Clock, AlertCircle, ExternalLink, ChevronLeft, ChevronRight, Filter, TrendingUp, Zap, Brain, GitBranch, FileText, Lightbulb, Search, Timer, Play, AlertTriangle } from 'lucide-react';
 import api from '../services/api';
 import ViewHeader from './ViewHeader';
 import OperationInsights from './OperationInsights';

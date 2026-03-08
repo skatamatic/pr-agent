@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Download, Save, FileText, ExternalLink, AlertCircle, Check, Copy, Eye, EyeOff } from 'lucide-react';
 import api from '../services/api';
 
@@ -11,9 +11,10 @@ const AzurePipelineConfigEditor = ({ repoId, repoData, onClose, onSave }) => {
   const [envVars, setEnvVars] = useState({});
   const [showEnvVars, setShowEnvVars] = useState(false);
   const [copiedVar, setCopiedVar] = useState(null);
+  const loadConfigAndTemplateRef = useRef(null);
 
   useEffect(() => {
-    loadConfigAndTemplate();
+    loadConfigAndTemplateRef.current?.();
   }, [repoId]);
 
   const loadConfigAndTemplate = async () => {
@@ -49,6 +50,8 @@ const AzurePipelineConfigEditor = ({ repoId, repoData, onClose, onSave }) => {
       setIsLoading(false);
     }
   };
+
+  loadConfigAndTemplateRef.current = loadConfigAndTemplate;
 
   const handleSave = async () => {
     if (!configContent.trim()) {
@@ -289,7 +292,7 @@ const AzurePipelineConfigEditor = ({ repoId, repoData, onClose, onSave }) => {
                   }
                   
                   // Fallback
-                  return { baseUrl: url.replace('/_git/', '/_build').replace(/\/[^\/]*$/, '') };
+                  return { baseUrl: url.replace('/_git/', '/_build').replace(/\/[^/]*$/, '') };
                 } catch (e) {
                   return { baseUrl: url };
                 }

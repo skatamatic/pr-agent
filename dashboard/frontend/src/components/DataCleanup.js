@@ -1,14 +1,11 @@
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect, useContext, useCallback } from 'react';
 import {
   Trash2,
   Calendar,
   Database,
   AlertTriangle,
-  CheckCircle,
   Info,
   Shield,
-  HardDrive,
-  DollarSign,
   BarChart3,
   RefreshCw,
   X,
@@ -89,19 +86,19 @@ const DataCleanup = () => {
   
   const { showError, showSuccess } = useContext(ToastContext);
 
-  // Load repositories on component mount
-  useEffect(() => {
-    fetchRepositories();
-  }, []);
-
-  const fetchRepositories = async () => {
+  const fetchRepositories = useCallback(async () => {
     try {
       const response = await api.getRepositories();
       setRepositories(response.data?.data || []);
     } catch (error) {
       showError('Failed to load repositories: ' + (error.response?.data?.detail || error.message));
     }
-  };
+  }, [showError]);
+
+  // Load repositories on component mount
+  useEffect(() => {
+    fetchRepositories();
+  }, [fetchRepositories]);
 
 
   const handlePreviewCleanup = async () => {
@@ -155,7 +152,7 @@ const DataCleanup = () => {
         data_types: ['operations', 'jobs', 'logs', 'metrics', 'notification_events']
       };
 
-      const response = await api.executeCleanup(requestData);
+      await api.executeCleanup(requestData);
       showSuccess('Data cleanup completed successfully!');
       setCleanupPreview(null);
       setShowConfirmation(false);

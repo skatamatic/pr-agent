@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Database, 
   HardDrive, 
@@ -7,11 +7,7 @@ import {
   Download, 
   Upload, 
   Trash2, 
-  AlertTriangle,
-  CheckCircle,
-  Clock,
   BarChart3,
-  Shield,
   Archive,
   RefreshCw,
   FileText,
@@ -62,19 +58,23 @@ const AdminPanel = () => {
   const [deletingBackup, setDeletingBackup] = useState('');
   
   // Restoration state
-  const [restoringBackup, setRestoringBackup] = useState('');
+  const [restoringBackup] = useState('');
   
   // Progress modal state
   const [showRestoreModal, setShowRestoreModal] = useState(false);
   const [restoreFilename, setRestoreFilename] = useState('');
+  const loadRetentionConfigRef = useRef(null);
+  const loadDatabaseStatsRef = useRef(null);
+  const loadBackupListRef = useRef(null);
+  const loadBackupDirectoryRef = useRef(null);
 
   const { showSuccess, showError } = useToast();
 
   useEffect(() => {
-    loadRetentionConfig();
-    loadDatabaseStats();
-    loadBackupList();
-    loadBackupDirectory();
+    loadRetentionConfigRef.current?.();
+    loadDatabaseStatsRef.current?.();
+    loadBackupListRef.current?.();
+    loadBackupDirectoryRef.current?.();
   }, []);
 
   const loadRetentionConfig = async () => {
@@ -123,6 +123,11 @@ const AdminPanel = () => {
       console.error('Failed to load backup directory:', error);
     }
   };
+
+  loadRetentionConfigRef.current = loadRetentionConfig;
+  loadDatabaseStatsRef.current = loadDatabaseStats;
+  loadBackupListRef.current = loadBackupList;
+  loadBackupDirectoryRef.current = loadBackupDirectory;
 
   const handleConfigChange = (key, value) => {
     setRetentionConfig(prev => ({
@@ -340,12 +345,6 @@ const AdminPanel = () => {
     if (percentage >= 75) return 'bg-yellow-500';
     return 'bg-green-500';
   };
-
-  const sections = [
-    { id: 'retention', name: 'Retention Policy', icon: Calendar },
-    { id: 'database', name: 'Database Stats', icon: Database },
-    { id: 'backup', name: 'Backup & Export', icon: Archive }
-  ];
 
   return (
     <div className="space-y-6">

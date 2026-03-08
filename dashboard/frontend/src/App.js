@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useContext } from 'react';
-import { Activity, AlertCircle, CheckCircle, GitPullRequest, Settings, Code, FileText, BarChart3, GitBranch, Bell, Shield, Database, TrendingUp, RefreshCw, Trash2 } from 'lucide-react';
+import React, { useState, useEffect, useContext, useRef } from 'react';
+import { Activity, Settings, Code, FileText, BarChart3, GitBranch, Bell, Database, TrendingUp, RefreshCw, Trash2 } from 'lucide-react';
 import StatusOverview from './components/StatusOverview';
 import JobsList from './components/JobsList';
 import LogsViewer from './components/LogsViewer';
@@ -45,7 +45,6 @@ function Dashboard() {
     const urlParams = new URLSearchParams(window.location.search);
     return urlParams.get('view') || 'overview';
   });
-  const [jobs, setJobs] = useState([]);
   const [operations, setOperations] = useState([]); // Keep for legacy compatibility
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -63,13 +62,15 @@ function Dashboard() {
     websocket: 'disconnected'
   });
   const [configNavigationTarget, setConfigNavigationTarget] = useState(null);
-  const [previousTab, setPreviousTab] = useState('overview');
   
   // Navigation badge counts for new data
   const [newLogsCount, setNewLogsCount] = useState(0);
   const [newJobsCount, setNewJobsCount] = useState(0);
+  const fetchDataRef = useRef(null);
+  const navigateToJobWithHighlightRef = useRef(null);
+  const navigateToOperationWithHighlightRef = useRef(null);
 
-  const { handleApiError, handleApiSuccess, handleSystemError, handleSystemRestore, clearErrorState } = useContext(ToastContext);
+  const { handleSystemError, handleSystemRestore, clearErrorState } = useContext(ToastContext);
 
   // Check developer mode on startup
   useEffect(() => {
@@ -114,7 +115,7 @@ function Dashboard() {
 
     const handleWebSocketReconnected = () => {
       // Refetch data after reconnection so UI is not stale
-      fetchData(false);
+      fetchDataRef.current?.(false);
     };
 
     const handleLogUpdate = (logData) => {
@@ -160,18 +161,7 @@ function Dashboard() {
         return currentTab; // Don't change the tab, just use it for the check
       });
       
-      setJobs(prevJobs => {
-        const existingIndex = prevJobs.findIndex(job => job.id === jobData.id);
-        if (existingIndex >= 0) {
-          // Update existing job
-          const newJobs = [...prevJobs];
-          newJobs[existingIndex] = { ...newJobs[existingIndex], ...jobData };
-          return newJobs;
-        } else {
-          // Add new job
-          return [jobData, ...prevJobs];
-        }
-      });
+      // Jobs list refreshes via explicit fetches and jobUpdate events.
     };
 
     const handleMetricsUpdate = (metricsData) => {
@@ -235,15 +225,7 @@ function Dashboard() {
     }
 
     try {
-      let jobsRes, operationsRes, logsRes;
-      
-      try {
-        jobsRes = await apiService.getJobs({ limit: 100, include_operations: true });
-      } catch (error) {
-        console.error('Jobs API Error:', error);
-        handleSystemError(error, 'jobs');
-        jobsRes = { data: { data: [] } };
-      }
+      let operationsRes, logsRes;
       
       try {
         operationsRes = await apiService.getOperations({ limit: 100 });
@@ -262,7 +244,6 @@ function Dashboard() {
       }
 
       // Check if we got valid data (axios wraps response in .data)
-      const newJobs = jobsRes.data?.data || [];
       const newOperations = operationsRes.data?.data?.operations || [];
       const newLogs = logsRes.data?.data?.logs || [];
 
@@ -276,7 +257,6 @@ function Dashboard() {
       };
 
       // Always update the state with fresh data
-      setJobs(newJobs);
       setOperations(newOperations);
       setLogs(newLogs);
 
@@ -318,7 +298,7 @@ function Dashboard() {
 
   // Initial data fetch and URL parameter handling
   useEffect(() => {
-    fetchData(true);
+    fetchDataRef.current?.(true);
     
     // Handle URL parameters on initial load
     const urlParams = new URLSearchParams(window.location.search);
@@ -329,9 +309,9 @@ function Dashboard() {
       // Delay to ensure data is loaded first
       setTimeout(() => {
         if (operationId) {
-          navigateToOperationWithHighlight(jobId, operationId);
+          navigateToOperationWithHighlightRef.current?.(jobId, operationId);
         } else {
-          navigateToJobWithHighlight(jobId);
+          navigateToJobWithHighlightRef.current?.(jobId);
         }
       }, 1000);
     }
@@ -342,12 +322,12 @@ function Dashboard() {
     const interval = setInterval(() => {
       // Only poll if WebSocket is not connected
       if (connectionState.websocket !== 'connected') {
-        fetchData(false);
+        fetchDataRef.current?.(false);
       }
     }, 30000);
 
     return () => clearInterval(interval);
-  }, [connectionState]); // Re-establish interval when connection state changes
+  }, [connectionState.websocket]); // Re-establish interval when connection state changes
 
   // Health check monitoring
   useEffect(() => {
@@ -391,7 +371,7 @@ function Dashboard() {
     healthCheck(); // Run immediately
 
     return () => clearInterval(healthInterval);
-  }, [connectionState.api]); // Removed contextService dependency to prevent re-runs
+  }, [connectionState.api, handleSystemError, handleSystemRestore]); // Removed contextService dependency to prevent re-runs
 
   const mainTabs = [
     { id: 'overview', name: 'Overview', icon: Activity },
@@ -459,16 +439,6 @@ function Dashboard() {
         window.dispatchEvent(event);
       }, 100);
     }
-  };
-
-  const navigateToJob = (jobId) => {
-    handleTabChange('jobs');
-    // Clear any existing log filters
-    setLogFilterId(null);
-    setLogFilterType(null);
-    
-    // TODO: In the future, we could add job selection/highlighting in the jobs view
-    // For now, just navigate to the jobs tab where the user can find the job
   };
 
   const navigateToJobWithHighlight = (jobId) => {
@@ -558,6 +528,10 @@ function Dashboard() {
     }, 4000);
   };
 
+  fetchDataRef.current = fetchData;
+  navigateToJobWithHighlightRef.current = navigateToJobWithHighlight;
+  navigateToOperationWithHighlightRef.current = navigateToOperationWithHighlight;
+
   const clearLogFilter = () => {
     setLogFilterId(null);
     setLogFilterType(null);
@@ -576,7 +550,6 @@ function Dashboard() {
       setNewJobsCount(0);
     }
     
-    setPreviousTab(activeTab);
     setActiveTab(tabId);
     
     // Update URL without page reload

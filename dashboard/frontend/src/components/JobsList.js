@@ -1,25 +1,21 @@
-import React, { useState, useEffect, useContext, useRef } from 'react';
+import React, { useState, useEffect, useContext, useRef, useCallback } from 'react';
 import { 
   CheckCircle, 
   XCircle, 
   Clock, 
   ChevronDown, 
   ChevronRight,
-  ChevronUp,
   ExternalLink,
   AlertTriangle,
   Activity,
   Database,
   GitBranch,
   User,
-  Calendar,
   Zap,
   FileText,
   RefreshCw,
-  Filter,
   X,
   Brain,
-  DollarSign,
   TrendingUp,
   BarChart3,
   Play,
@@ -30,7 +26,6 @@ import {
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
-import RunningIndicator from './RunningIndicator';
 import OperationInsights from './OperationInsights';
 import { formatDevTime, formatTimestamp as formatTimestampUtil } from '../utils/timeUtils';
 
@@ -68,10 +63,81 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
     { id: 'all', label: 'All Jobs', icon: BarChart3 }
   ];
 
+  const fetchAllJobs = useCallback(async () => {
+    try {
+      setLoading(true);
+      
+      // Fetch ALL jobs with operations - single request for everything
+      const response = await api.getJobs({
+        limit: 100,
+        include_operations: true
+      });
+      const fetchedJobs = response.data?.data || [];
+      setAllJobs(fetchedJobs);
+      
+      // Filtering is applied by the allJobs/filter effect.
+    } catch (error) {
+      console.error('Failed to fetch jobs:', error);
+      showError('Failed to Load Jobs', 'Unable to fetch jobs data');
+      setJobs([]);
+      setAllJobs([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [showError]);
+
+  const fetchAllJobsPreservingState = useCallback(async () => {
+    try {
+      // Fetch ALL jobs without showing loading state to preserve UI
+      const response = await api.getJobs({
+        limit: 100,
+        include_operations: true
+      });
+      const fetchedJobs = response.data?.data || [];
+      setAllJobs(fetchedJobs);
+      
+      // Client-side filtering will be triggered by allJobs useEffect
+    } catch (error) {
+      // Silently handle errors during background refresh to avoid UI disruption
+      console.error('Background refresh failed:', error);
+    }
+  }, []);
+
+  const applyClientSideFilters = useCallback((jobsToFilter = allJobs) => {
+    if (!jobsToFilter || jobsToFilter.length === 0) {
+      setJobs([]);
+      return;
+    }
+
+    let filteredJobs = [...jobsToFilter];
+
+    // Apply status filter
+    if (selectedFilters.status !== 'all') {
+      filteredJobs = filteredJobs.filter(job => {
+        if (selectedFilters.status === 'running') {
+          return ['running', 'pending'].includes(job.status);
+        }
+        return job.status === selectedFilters.status;
+      });
+    }
+
+    // Apply job type filter
+    if (selectedFilters.jobType !== 'all') {
+      filteredJobs = filteredJobs.filter(job => job.job_type === selectedFilters.jobType);
+    }
+
+    // Apply repository filter
+    if (selectedFilters.repository !== 'all') {
+      filteredJobs = filteredJobs.filter(job => job.repository === selectedFilters.repository);
+    }
+
+    setJobs(filteredJobs);
+  }, [allJobs, selectedFilters]);
+
   // Initial data fetch
   useEffect(() => {
     fetchAllJobs();
-  }, []);
+  }, [fetchAllJobs]);
 
   // Handle manual refresh triggers only (not automatic periodic updates)
   useEffect(() => {
@@ -79,7 +145,7 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
       setLastRefreshTrigger(refreshTrigger);
       fetchAllJobs();
     }
-  }, [refreshTrigger, lastRefreshTrigger]);
+  }, [refreshTrigger, lastRefreshTrigger, fetchAllJobs]);
 
   // Set up periodic refresh that preserves UI state
   useEffect(() => {
@@ -88,12 +154,12 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
     }, 5000);
 
     return () => clearInterval(intervalId);
-  }, []);
+  }, [fetchAllJobsPreservingState]);
 
   // Client-side filtering when filters change - instant, no loading
   useEffect(() => {
     applyClientSideFilters();
-  }, [selectedFilters, allJobs]);
+  }, [applyClientSideFilters]);
 
   // Clean up expanded jobs when jobs list changes
   useEffect(() => {
@@ -111,7 +177,7 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
         setExpandedJobs(validExpandedJobs);
       }
     }
-  }, [jobs]);
+  }, [jobs, expandedJobs]);
 
   // Close actions menu when clicking outside
   useEffect(() => {
@@ -235,78 +301,6 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
       window.removeEventListener('operationUpdate', handleLiveOperationUpdate);
     };
   }, [selectedFilters]);
-
-  const fetchAllJobs = async () => {
-    try {
-      setLoading(true);
-      
-      // Fetch ALL jobs with operations - single request for everything
-      const response = await api.getJobs({
-        limit: 100,
-        include_operations: true
-      });
-      const fetchedJobs = response.data?.data || [];
-      setAllJobs(fetchedJobs);
-      
-      // Apply client-side filtering immediately
-      applyClientSideFilters(fetchedJobs);
-    } catch (error) {
-      console.error('Failed to fetch jobs:', error);
-      showError('Failed to Load Jobs', 'Unable to fetch jobs data');
-      setJobs([]);
-      setAllJobs([]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchAllJobsPreservingState = async () => {
-    try {
-      // Fetch ALL jobs without showing loading state to preserve UI
-      const response = await api.getJobs({
-        limit: 100,
-        include_operations: true
-      });
-      const fetchedJobs = response.data?.data || [];
-      setAllJobs(fetchedJobs);
-      
-      // Client-side filtering will be triggered by allJobs useEffect
-    } catch (error) {
-      // Silently handle errors during background refresh to avoid UI disruption
-      console.error('Background refresh failed:', error);
-    }
-  };
-
-  const applyClientSideFilters = (jobsToFilter = allJobs) => {
-    if (!jobsToFilter || jobsToFilter.length === 0) {
-      setJobs([]);
-      return;
-    }
-
-    let filteredJobs = [...jobsToFilter];
-
-    // Apply status filter
-    if (selectedFilters.status !== 'all') {
-      filteredJobs = filteredJobs.filter(job => {
-        if (selectedFilters.status === 'running') {
-          return ['running', 'pending'].includes(job.status);
-        }
-        return job.status === selectedFilters.status;
-      });
-    }
-
-    // Apply job type filter
-    if (selectedFilters.jobType !== 'all') {
-      filteredJobs = filteredJobs.filter(job => job.job_type === selectedFilters.jobType);
-    }
-
-    // Apply repository filter
-    if (selectedFilters.repository !== 'all') {
-      filteredJobs = filteredJobs.filter(job => job.repository === selectedFilters.repository);
-    }
-
-    setJobs(filteredJobs);
-  };
 
   const toggleJobExpansion = (jobId) => {
     // Single expansion logic - only one job can be expanded at a time
@@ -451,16 +445,6 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
     return formatTimestampUtil(timestamp);
   };
 
-  const formatCurrency = (amount) => {
-    if (!amount) return null;
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 4
-    }).format(amount);
-  };
-
   const formatTokens = (tokens) => {
     if (!tokens) return null;
     return new Intl.NumberFormat('en-US').format(tokens);
@@ -482,15 +466,6 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
     setShowInsights(true);
   };
 
-  const getUniqueValues = (field) => {
-    const values = new Set();
-    jobs.forEach(job => {
-      const value = job[field];
-      if (value) values.add(value);
-    });
-    return Array.from(values);
-  };
-
   // Get all possible values for a field (from all jobs, not just filtered)
   const getAllPossibleValues = (field) => {
     const values = new Set();
@@ -499,28 +474,6 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
       if (value) values.add(value);
     });
     return Array.from(values);
-  };
-
-  // Check if a filter value would have results
-  const hasResultsForFilter = (field, value, currentFilters) => {
-    if (value === 'all') return true;
-    
-    return jobs.some(job => {
-      const matchesStatus = currentFilters.status === 'all' || job.status === currentFilters.status;
-      const matchesJobType = currentFilters.jobType === 'all' || job.job_type === currentFilters.jobType;
-      const matchesRepository = currentFilters.repository === 'all' || job.repository === currentFilters.repository;
-      
-      // Override the field we're checking
-      if (field === 'status') {
-        return value === job.status && matchesJobType && matchesRepository;
-      } else if (field === 'job_type') {
-        return value === job.job_type && matchesStatus && matchesRepository;
-      } else if (field === 'repository') {
-        return value === job.repository && matchesStatus && matchesJobType;
-      }
-      
-      return false;
-    });
   };
 
   // Apply client-side filtering

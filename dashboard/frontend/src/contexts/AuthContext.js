@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import api from '../services/api';
 
 const AuthContext = createContext();
@@ -16,19 +16,14 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    // Check for existing token on app load
-    const token = localStorage.getItem('auth_token');
-    if (token) {
-      // Verify token is still valid
-      api.setAuthToken(token);
-      verifyToken();
-    } else {
-      setLoading(false);
-    }
+  const logout = useCallback(() => {
+    localStorage.removeItem('auth_token');
+    api.setAuthToken(null);
+    setIsAuthenticated(false);
+    setUser(null);
   }, []);
 
-  const verifyToken = async () => {
+  const verifyToken = useCallback(async () => {
     try {
       const response = await api.get('/api/auth/verify');
       if (response.data.data && response.data.data.user) {
@@ -42,7 +37,19 @@ export const AuthProvider = ({ children }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [logout]);
+
+  useEffect(() => {
+    // Check for existing token on app load
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      // Verify token is still valid
+      api.setAuthToken(token);
+      verifyToken();
+    } else {
+      setLoading(false);
+    }
+  }, [verifyToken]);
 
   const login = async (username, password) => {
     try {
@@ -66,13 +73,6 @@ export const AuthProvider = ({ children }) => {
         message: error.response?.data?.detail || 'Login failed' 
       };
     }
-  };
-
-  const logout = () => {
-    localStorage.removeItem('auth_token');
-    api.setAuthToken(null);
-    setIsAuthenticated(false);
-    setUser(null);
   };
 
   const changePassword = async (currentPassword, newPassword) => {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext, useCallback } from 'react';
+import React, { useState, useEffect, useContext, useCallback, useRef } from 'react';
 import { 
   Plus, 
   Edit, 
@@ -63,7 +63,6 @@ const RepositoryManager = () => {
   const [checkingHealth, setCheckingHealth] = useState(new Set());
   const [checkingConfig, setCheckingConfig] = useState(new Set());
   const [showTokens, setShowTokens] = useState({});
-  const [expandedTokenSections, setExpandedTokenSections] = useState(new Set());
   const { showSuccess, showError, showWarning } = useContext(ToastContext);
 
   const [repoActiveTabs, setRepoActiveTabs] = useState({});
@@ -140,6 +139,13 @@ const RepositoryManager = () => {
   const [newConnectionDisplayName, setNewConnectionDisplayName] = useState('');
   const [newConnectionAgentPool, setNewConnectionAgentPool] = useState('');
   const [creatingConnection, setCreatingConnection] = useState(false);
+  const checkRunnerServiceRef = useRef(null);
+  const [azureDiscoveryOrgUrl, setAzureDiscoveryOrgUrl] = useState('');
+  const [azureDiscoveryPat, setAzureDiscoveryPat] = useState('');
+  const [azureDiscoveryLoading, setAzureDiscoveryLoading] = useState(false);
+  const [azureDiscoveryRepos, setAzureDiscoveryRepos] = useState([]);
+  const [azureDiscoveryPools, setAzureDiscoveryPools] = useState([]);
+  const [azureSelectedDiscoveredRepo, setAzureSelectedDiscoveredRepo] = useState('');
 
   const fetchRepositories = useCallback(async () => {
     try {
@@ -192,6 +198,39 @@ const RepositoryManager = () => {
       .catch(() => setActionRunnerConnections([]));
   }, []);
 
+  const discoverAzureDevopsResources = async () => {
+    const orgUrl = azureDiscoveryOrgUrl.trim();
+    const pat = azureDiscoveryPat.trim();
+    if (!orgUrl || !pat) {
+      showWarning('Missing details', 'Enter Azure organization URL and PAT to discover repositories.');
+      return;
+    }
+    try {
+      setAzureDiscoveryLoading(true);
+      const res = await api.discoverAzureDevops({ org_url: orgUrl, pat });
+      const data = res.data?.data || {};
+      const repos = data.repositories || [];
+      const pools = data.pools || [];
+      setAzureDiscoveryRepos(repos);
+      setAzureDiscoveryPools(pools);
+      if (repos.length > 0 && !azureSelectedDiscoveredRepo) {
+        setAzureSelectedDiscoveredRepo(String(repos[0].id || repos[0].url || repos[0].display_name));
+      }
+      if (!newConnectionOrg.trim() && data.organization_url) {
+        const parts = data.organization_url.split('/').filter(Boolean);
+        const maybeOrg = parts[parts.length - 1];
+        if (maybeOrg && !maybeOrg.includes('.')) {
+          setNewConnectionOrg(maybeOrg);
+        }
+      }
+      showSuccess('Azure discovery', `Found ${repos.length} repositories and ${pools.length} agent pools.`);
+    } catch (error) {
+      showError('Azure discovery failed', error.response?.data?.detail || error.message);
+    } finally {
+      setAzureDiscoveryLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (showAddForm) fetchActionRunnerConnections();
   }, [showAddForm, fetchActionRunnerConnections]);
@@ -204,10 +243,10 @@ const RepositoryManager = () => {
       const numericRepoId = parseInt(repoId);
       if (!checkingRunnerService.has(numericRepoId) && !runnerServiceStatus[numericRepoId]) {
         // Only auto-check if we haven't checked yet and we're not currently checking
-        checkRunnerService(numericRepoId);
+        checkRunnerServiceRef.current?.(numericRepoId);
       }
     });
-  }, [repoActiveTabs]); // Trigger when active tabs change
+  }, [repoActiveTabs, checkingRunnerService, runnerServiceStatus]); // Trigger when active tabs change
 
   // Auto-check runner service when service name changes
   useEffect(() => {
@@ -224,7 +263,7 @@ const RepositoryManager = () => {
       // Set a debounced timeout to check the service
       timeouts[repoId] = setTimeout(() => {
         if (serviceName && !checkingRunnerService.has(numericRepoId)) {
-          checkRunnerService(numericRepoId);
+          checkRunnerServiceRef.current?.(numericRepoId);
         }
       }, 1000); // Debounce for 1 second
     });
@@ -233,7 +272,7 @@ const RepositoryManager = () => {
     return () => {
       Object.values(timeouts).forEach(timeout => clearTimeout(timeout));
     };
-  }, [runnerServiceNames]); // Trigger when service names change
+  }, [runnerServiceNames, checkingRunnerService]); // Trigger when service names change
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -462,6 +501,11 @@ const RepositoryManager = () => {
     setShowAddForm(false);
     setErrors({});
     setRepoActiveTabs({});
+    setAzureDiscoveryOrgUrl('');
+    setAzureDiscoveryPat('');
+    setAzureDiscoveryRepos([]);
+    setAzureDiscoveryPools([]);
+    setAzureSelectedDiscoveredRepo('');
   };
 
   const toggleExpanded = (repoId) => {
@@ -509,11 +553,6 @@ const RepositoryManager = () => {
         }
       }
     }
-  };
-
-  const startEdit = (repoId) => {
-    setEditingRepo(repoId);
-    // formData is already loaded from toggleExpanded
   };
 
   const cancelEdit = () => {
@@ -615,37 +654,6 @@ const RepositoryManager = () => {
 
 
 
-  const getConfigStatusIcon = (repo) => {
-    const hasToml = repo.has_pr_agent_config === true;
-    const hasWorkflow = repo.has_workflow_config === true;
-    
-    if (hasToml || hasWorkflow) {
-      return <FileText className="h-4 w-4 text-green-600" />;
-    } else if (repo.config_last_checked) {
-      return <FileText className="h-4 w-4 text-gray-400" />;
-    }
-    return <FileText className="h-4 w-4 text-gray-300" />;
-  };
-
-  const getConfigStatusText = (repo) => {
-    // Only show config status if we've actually checked
-    if (repo.config_last_checked) {
-      const hasToml = repo.has_pr_agent_config === true;
-      const hasWorkflow = repo.has_workflow_config === true;
-      
-      if (hasToml && hasWorkflow) {
-        return 'Has .pr_agent.toml + workflow';
-      } else if (hasToml) {
-        return 'Has .pr_agent.toml';
-      } else if (hasWorkflow) {
-        return 'Has workflow config';
-      } else {
-        return 'Uses default config';
-      }
-    }
-    return 'Config not checked';
-  };
-
   const shouldShowConfigStatus = (repo) => {
     // Only show config status if we have tokens configured (needed for checking)
     return getTokenStatus(repo) === 'configured';
@@ -708,33 +716,6 @@ const RepositoryManager = () => {
   };
 
 
-
-  const getTokenStatusIcon = (status) => {
-    switch (status) {
-      case 'configured':
-        return <Shield className="h-4 w-4 text-green-600 dark:text-green-400" />;
-      case 'invalid':
-        return <Shield className="h-4 w-4 text-red-600 dark:text-red-400" />;
-      case 'missing':
-        return <Shield className="h-4 w-4 text-orange-600 dark:text-orange-400" />;
-      default:
-        return <Shield className="h-4 w-4 text-gray-400" />;
-    }
-  };
-
-  const getTokenStatusText = (status, provider) => {
-    const tokenName = provider === 'github' ? 'GitHub token' : 'Azure PAT';
-    switch (status) {
-      case 'configured':
-        return `${tokenName} configured`;
-      case 'invalid':
-        return `${tokenName} invalid or expired`;
-      case 'missing':
-        return `${tokenName} required`;
-      default:
-        return 'Token status unknown';
-    }
-  };
 
   const getProviderIcon = (provider) => {
     switch (provider) {
@@ -1664,6 +1645,7 @@ const RepositoryManager = () => {
       });
     }
   };
+  checkRunnerServiceRef.current = checkRunnerService;
 
   const saveRunnerServiceName = async (repoId) => {
     if (savingRunnerServiceName.has(repoId)) return;
@@ -2013,6 +1995,92 @@ const RepositoryManager = () => {
                 />
               </div>
 
+              {formData.provider === 'azure_devops' && (
+                <div className="bg-blue-50/50 dark:bg-blue-900/10 rounded-lg p-4 border border-blue-200 dark:border-blue-800">
+                  <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-2">Azure quick discovery</h4>
+                  <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
+                    Enter org URL + PAT to pick a repository and pool from dropdowns.
+                  </p>
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3">
+                    <input
+                      type="url"
+                      placeholder="https://mdt-software.visualstudio.com"
+                      value={azureDiscoveryOrgUrl}
+                      onChange={(e) => setAzureDiscoveryOrgUrl(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                    />
+                    <input
+                      type="password"
+                      placeholder="Azure PAT (read-only use for discovery)"
+                      value={azureDiscoveryPat}
+                      onChange={(e) => setAzureDiscoveryPat(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={discoverAzureDevopsResources}
+                      disabled={azureDiscoveryLoading || !azureDiscoveryOrgUrl.trim() || !azureDiscoveryPat.trim()}
+                      className="px-3 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm disabled:opacity-50"
+                    >
+                      {azureDiscoveryLoading ? 'Loading…' : 'Load repos & pools'}
+                    </button>
+                  </div>
+                  {azureDiscoveryRepos.length > 0 && (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs text-gray-600 dark:text-gray-300 mb-1">Repository</label>
+                        <select
+                          value={azureSelectedDiscoveredRepo}
+                          onChange={(e) => {
+                            const selectedValue = e.target.value;
+                            setAzureSelectedDiscoveredRepo(selectedValue);
+                            const selected = azureDiscoveryRepos.find((r) => String(r.id || r.url || r.display_name) === selectedValue);
+                            if (!selected) return;
+                            setFormData((prev) => ({
+                              ...prev,
+                              name: selected.project && selected.name ? `${selected.project}/${selected.name}` : (selected.name || prev.name),
+                              url: selected.url || prev.url,
+                              azure_pat: prev.azure_pat || azureDiscoveryPat,
+                            }));
+                            if (!newConnectionOrg.trim() && selected.url) {
+                              const parsed = parseAzureDevOpsUrl(selected.url);
+                              if (parsed.organization && parsed.organization !== 'unknown') {
+                                setNewConnectionOrg(parsed.organization);
+                              }
+                              if (parsed.project && parsed.project !== 'unknown') {
+                                setNewConnectionProject(parsed.project);
+                              }
+                            }
+                          }}
+                          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                        >
+                          {azureDiscoveryRepos.map((r) => (
+                            <option key={String(r.id || r.url || r.display_name)} value={String(r.id || r.url || r.display_name)}>
+                              {r.display_name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-600 dark:text-gray-300 mb-1">Suggested agent pool</label>
+                        <select
+                          value={newConnectionAgentPool}
+                          onChange={(e) => setNewConnectionAgentPool(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                        >
+                          <option value="">Select pool</option>
+                          {azureDiscoveryPools.map((p) => (
+                            <option key={String(p.id || p.name)} value={p.name}>
+                              {p.name}{p.is_hosted ? ' (hosted)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Runner connection (one per ADO org or GitHub org) */}
               <div className="bg-amber-50/50 dark:bg-amber-900/10 rounded-lg p-4 border border-amber-200 dark:border-amber-800">
                 <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-2 flex items-center">
@@ -2291,7 +2359,12 @@ const RepositoryManager = () => {
                               onClick={() => {
                                 setProvisioningConnectionId(conn.id);
                                 setLastProvisionResult(null);
-                                api.provisionRunnerVm(conn.id)
+                                const poolOverride = (poolDraftByConnection[conn.id] ?? conn.agent_pool ?? '').trim();
+                                const patOverride = formData.provider === 'azure_devops' ? (formData.azure_pat || '').trim() : '';
+                                const body = {};
+                                if (poolOverride) body.agent_pool = poolOverride;
+                                if (patOverride) body.ado_pat = patOverride;
+                                api.provisionRunnerVm(conn.id, Object.keys(body).length ? body : null)
                                   .then((res) => {
                                     const data = res.data?.data;
                                     if (data?.success) {

@@ -201,6 +201,89 @@ class DashboardApplication:
                 )
         
         return check_maintenance_mode
+
+    def _normalize_azure_org_url(self, org_url: str) -> str:
+        """Normalize user input into an Azure DevOps organization base URL."""
+        from urllib.parse import urlparse
+
+        raw = (org_url or "").strip()
+        if not raw:
+            raise ValueError("Organization URL is required")
+        if not raw.startswith(("http://", "https://")):
+            raw = f"https://{raw}"
+
+        parsed = urlparse(raw)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("Invalid Azure DevOps organization URL")
+
+        host = parsed.netloc.lower()
+        parts = [p for p in parsed.path.split("/") if p]
+        if "dev.azure.com" in host:
+            if parts:
+                return f"{parsed.scheme}://{parsed.netloc}/{parts[0]}"
+            raise ValueError("For dev.azure.com, include organization (for example: https://dev.azure.com/myorg)")
+        if "visualstudio.com" in host:
+            return f"{parsed.scheme}://{parsed.netloc}"
+        raise ValueError("Azure DevOps URL must be dev.azure.com or *.visualstudio.com")
+
+    def _azure_auth_headers(self, pat: str) -> Dict[str, str]:
+        import base64
+
+        token = (pat or "").strip()
+        if not token:
+            raise ValueError("Azure DevOps PAT is required")
+        auth_string = base64.b64encode(f":{token}".encode()).decode()
+        return {
+            "Authorization": f"Basic {auth_string}",
+            "Accept": "application/json",
+            "User-Agent": "PR-Agent-Dashboard",
+        }
+
+    def _resolve_azure_org_url(self, connection_org: str, repo_url: Optional[str] = None) -> str:
+        """Resolve org URL from repo URL (preferred) with connection fallback."""
+        default_url = f"https://dev.azure.com/{connection_org}"
+        if not repo_url:
+            return default_url
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(repo_url)
+            if parsed.scheme in ("http", "https") and parsed.netloc:
+                if "visualstudio.com" in parsed.netloc:
+                    return f"{parsed.scheme}://{parsed.netloc}"
+                if "dev.azure.com" in parsed.netloc:
+                    path_parts = [p for p in parsed.path.split("/") if p]
+                    org = path_parts[0] if path_parts else connection_org
+                    return f"{parsed.scheme}://{parsed.netloc}/{org}"
+        except Exception:
+            pass
+        return default_url
+
+    def _fetch_azure_agent_pools(self, org_url: str, pat: str, timeout: int = 20) -> List[Dict[str, Any]]:
+        import requests
+
+        headers = self._azure_auth_headers(pat)
+        response = requests.get(f"{org_url}/_apis/distributedtask/pools?api-version=7.1", headers=headers, timeout=timeout)
+        if response.status_code != 200:
+            detail = f"Azure API failed ({response.status_code}) while listing agent pools."
+            try:
+                detail = (response.json() or {}).get("message", detail)
+            except Exception:
+                pass
+            raise HTTPException(status_code=400, detail=detail)
+
+        payload = response.json() if response.content else {}
+        pools_raw = payload.get("value", []) if isinstance(payload, dict) else []
+        pools = []
+        for pool in pools_raw:
+            if isinstance(pool, dict):
+                pools.append({
+                    "id": pool.get("id"),
+                    "name": pool.get("name"),
+                    "is_hosted": pool.get("isHosted", False),
+                })
+        pools.sort(key=lambda x: (x.get("name") or "").lower())
+        return pools
     
     def _setup_routes(self):
         """Setup all API routes using service methods"""
@@ -1527,8 +1610,6 @@ class DashboardApplication:
         async def list_azure_agent_pools(connection_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """List Azure DevOps agent pools for this connection's organization using a linked repo PAT."""
             try:
-                import base64
-                import requests
                 from models import ActionRunnerConnectionDB, RepositoryDB
 
                 conn = db.query(ActionRunnerConnectionDB).filter(ActionRunnerConnectionDB.id == connection_id).first()
@@ -1554,47 +1635,8 @@ class DashboardApplication:
                         detail="No Azure PAT found. Set Azure PAT on any repository linked to this connection first."
                     )
 
-                org_url = f"https://dev.azure.com/{conn.organization}"
-                if getattr(repo_with_pat, "url", None):
-                    try:
-                        from urllib.parse import urlparse
-                        parsed = urlparse(repo_with_pat.url)
-                        if parsed.scheme in ("http", "https") and parsed.netloc:
-                            if "visualstudio.com" in parsed.netloc:
-                                org_url = f"{parsed.scheme}://{parsed.netloc}"
-                            elif "dev.azure.com" in parsed.netloc:
-                                org_url = f"{parsed.scheme}://{parsed.netloc}/{conn.organization}"
-                    except Exception:
-                        pass
-                auth_string = base64.b64encode(f":{repo_with_pat.azure_pat}".encode()).decode()
-                headers = {
-                    "Authorization": f"Basic {auth_string}",
-                    "Accept": "application/json",
-                    "User-Agent": "PR-Agent-Dashboard",
-                }
-                url = f"{org_url}/_apis/distributedtask/pools?api-version=7.1"
-                response = requests.get(url, headers=headers, timeout=20)
-                if response.status_code != 200:
-                    detail = f"Azure API failed ({response.status_code}) while listing agent pools."
-                    try:
-                        err = response.json()
-                        detail = err.get("message", detail)
-                    except Exception:
-                        pass
-                    raise HTTPException(status_code=400, detail=detail)
-
-                payload = response.json() if response.content else {}
-                pools_raw = payload.get("value", []) if isinstance(payload, dict) else []
-                pools = []
-                for p in pools_raw:
-                    if not isinstance(p, dict):
-                        continue
-                    pools.append({
-                        "id": p.get("id"),
-                        "name": p.get("name"),
-                        "is_hosted": p.get("isHosted", False),
-                    })
-                pools.sort(key=lambda x: (x.get("name") or "").lower())
+                org_url = self._resolve_azure_org_url(conn.organization, getattr(repo_with_pat, "url", None))
+                pools = self._fetch_azure_agent_pools(org_url, repo_with_pat.azure_pat)
 
                 return APIResponse(
                     data={"pools": pools, "organization": conn.organization, "current_pool": conn.agent_pool},
@@ -1604,6 +1646,78 @@ class DashboardApplication:
                 raise
             except Exception as e:
                 logger.exception("Error listing Azure agent pools for connection %s: %s", connection_id, e)
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/azure-devops/discovery")
+        async def azure_devops_discovery(body: dict, current_user: UserDB = Depends(require_auth)):
+            """Discover Azure projects, repos, and agent pools from org URL + PAT."""
+            try:
+                import requests
+
+                org_url = self._normalize_azure_org_url(body.get("org_url", ""))
+                pat = (body.get("pat") or "").strip()
+                selected_project = (body.get("project") or "").strip() or None
+                headers = self._azure_auth_headers(pat)
+
+                projects_resp = requests.get(f"{org_url}/_apis/projects?api-version=7.1", headers=headers, timeout=20)
+                if projects_resp.status_code != 200:
+                    detail = f"Azure API failed ({projects_resp.status_code}) while listing projects."
+                    try:
+                        detail = (projects_resp.json() or {}).get("message", detail)
+                    except Exception:
+                        pass
+                    raise HTTPException(status_code=400, detail=detail)
+
+                projects_raw = (projects_resp.json() or {}).get("value", [])
+                projects = [
+                    {"id": p.get("id"), "name": p.get("name")}
+                    for p in projects_raw
+                    if isinstance(p, dict) and p.get("name")
+                ]
+                projects.sort(key=lambda p: (p.get("name") or "").lower())
+
+                target_projects = [selected_project] if selected_project else [p["name"] for p in projects]
+                repositories = []
+                for project_name in target_projects:
+                    repos_resp = requests.get(
+                        f"{org_url}/{project_name}/_apis/git/repositories?api-version=7.1",
+                        headers=headers,
+                        timeout=20,
+                    )
+                    if repos_resp.status_code != 200:
+                        continue
+                    for repo in (repos_resp.json() or {}).get("value", []):
+                        if not isinstance(repo, dict):
+                            continue
+                        repo_name = repo.get("name")
+                        if not repo_name:
+                            continue
+                        web_url = repo.get("webUrl") or ""
+                        repositories.append({
+                            "id": repo.get("id"),
+                            "name": repo_name,
+                            "project": project_name,
+                            "url": web_url,
+                            "display_name": f"{project_name} / {repo_name}",
+                        })
+
+                repositories.sort(key=lambda r: ((r.get("project") or "").lower(), (r.get("name") or "").lower()))
+                pools = self._fetch_azure_agent_pools(org_url, pat)
+
+                return APIResponse(
+                    data={
+                        "organization_url": org_url,
+                        "projects": projects,
+                        "repositories": repositories,
+                        "pools": pools,
+                        "selected_project": selected_project,
+                    },
+                    message="Azure DevOps discovery completed",
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.exception("Azure DevOps discovery failed: %s", e)
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.post("/api/action-runner-connections/{connection_id}/provision")
@@ -1665,29 +1779,30 @@ class DashboardApplication:
                         .first()
                     )
 
-                if conn.provider == 'azure_devops' and repo_with_pat and getattr(repo_with_pat, 'url', None):
-                    try:
-                        from urllib.parse import urlparse
-                        parsed = urlparse(repo_with_pat.url)
-                        if parsed.scheme in ('http', 'https') and parsed.netloc:
-                            if 'visualstudio.com' in parsed.netloc:
-                                ado_org_url = f"{parsed.scheme}://{parsed.netloc}"
-                            elif 'dev.azure.com' in parsed.netloc:
-                                ado_org_url = f"{parsed.scheme}://{parsed.netloc}/{conn.organization}"
-                    except Exception:
-                        pass
+                if conn.provider == 'azure_devops':
+                    ado_org_url = self._resolve_azure_org_url(conn.organization, getattr(repo_with_pat, 'url', None) if repo_with_pat else None)
 
                 if conn.provider == 'azure_devops':
-                    if not agent_pool:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Azure DevOps auto-registration requires an agent pool on the connection."
-                        )
                     if not ado_pat:
                         raise HTTPException(
                             status_code=400,
                             detail="Azure DevOps auto-registration requires an Azure PAT. Set it on any repository linked to this connection (azure_pat), then provision again."
                         )
+                    if not agent_pool:
+                        pools = self._fetch_azure_agent_pools(ado_org_url, ado_pat)
+                        if not pools:
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Azure DevOps auto-registration requires an agent pool, and no pools were returned by Azure for this PAT/org."
+                            )
+                        preferred_pool = next((p for p in pools if not p.get("is_hosted")), pools[0])
+                        agent_pool = (preferred_pool.get("name") or "").strip()
+                        if not agent_pool:
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Azure DevOps auto-registration requires an agent pool on the connection."
+                            )
+                        logger.info("Auto-selected Azure agent pool '%s' for connection %s", agent_pool, conn.id)
 
                 if agent_pool and agent_pool != conn.agent_pool:
                     conn.agent_pool = agent_pool

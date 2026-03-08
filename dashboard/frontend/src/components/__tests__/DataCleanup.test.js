@@ -3,7 +3,6 @@
  */
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import DataCleanup from '../DataCleanup';
 import api from '../../services/api';
 import { ToastContext } from '../../contexts/ToastContext';
@@ -113,8 +112,7 @@ describe('DataCleanup Component', () => {
     await waitFor(() => {
       expect(screen.getByText('test/repo1')).toBeInTheDocument();
     });
-    const repoLabel = screen.getByText('test/repo1');
-    const repoButton = repoLabel.closest('button');
+    const repoButton = screen.getByRole('button', { name: /test\/repo1/i });
     fireEvent.click(repoButton);
     expect(repoButton).toHaveClass('bg-blue-600');
   });
@@ -172,9 +170,9 @@ describe('DataCleanup Component', () => {
     
     await waitFor(() => {
       expect(screen.getByText('Cleanup Impact Preview')).toBeInTheDocument();
-      expect(screen.getByText('Before Cleanup')).toBeInTheDocument();
-      expect(screen.getByText('After Cleanup')).toBeInTheDocument();
     });
+    expect(screen.getByText('Before Cleanup')).toBeInTheDocument();
+    expect(screen.getByText('After Cleanup')).toBeInTheDocument();
   });
 
   test('shows proceed button after preview', async () => {

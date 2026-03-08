@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useToast } from '../contexts/ToastContext';
 import { 
   Bell, 
@@ -6,7 +6,6 @@ import {
   Edit, 
   Trash2, 
   Settings, 
-  Check, 
   X,
   AlertCircle,
   ChevronDown,
@@ -14,8 +13,6 @@ import {
   Save,
   Eye,
   EyeOff,
-  Mail,
-  MessageSquare,
   TestTube,
   RefreshCw
 } from 'lucide-react';
@@ -62,6 +59,9 @@ const Notifications = () => {
   const [eventsPerPage] = useState(20);
   const [eventTypeFilter, setEventTypeFilter] = useState('');
   const [repositoryFilter, setRepositoryFilter] = useState('');
+  const loadConfigsRef = useRef(null);
+  const loadEventsRef = useRef(null);
+  const loadRepositoriesRef = useRef(null);
 
   const eventTypeOptions = [
     { value: 'NEW_JOB', label: 'New Job Created', description: 'When a new PR analysis job starts' },
@@ -72,15 +72,15 @@ const Notifications = () => {
   ];
 
   useEffect(() => {
-    loadConfigs();
-    loadEvents();
-    loadRepositories();
+    loadConfigsRef.current?.();
+    loadEventsRef.current?.();
+    loadRepositoriesRef.current?.();
   }, []);
 
   // Reload events when filters change
   useEffect(() => {
     if (activeTab === 'events') {
-      loadEvents(1);
+      loadEventsRef.current?.(1);
     }
   }, [eventTypeFilter, repositoryFilter, activeTab]);
 
@@ -123,6 +123,10 @@ const Notifications = () => {
       setLoading(false);
     }
   };
+
+  loadConfigsRef.current = loadConfigs;
+  loadEventsRef.current = loadEvents;
+  loadRepositoriesRef.current = loadRepositories;
 
   const handleSaveConfig = async (e, configId = null) => {
     e.preventDefault();
