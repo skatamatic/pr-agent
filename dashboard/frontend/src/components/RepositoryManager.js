@@ -2036,7 +2036,7 @@ const RepositoryManager = () => {
                           placeholder="Agent Pool (e.g. PRAgent_Cloud)"
                           value={newConnectionAgentPool}
                           onChange={(e) => setNewConnectionAgentPool(e.target.value)}
-                          className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm w-44"
+                          className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 text-sm w-44"
                         />
                       )}
                       <input
@@ -2155,7 +2155,7 @@ const RepositoryManager = () => {
                                     placeholder="PAT for agent registration"
                                     value={provisionAdoPat}
                                     onChange={(e) => setProvisionAdoPat(e.target.value)}
-                                    className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm w-56"
+                                    className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 text-sm w-56"
                                   />
                                 </div>
                               </div>
