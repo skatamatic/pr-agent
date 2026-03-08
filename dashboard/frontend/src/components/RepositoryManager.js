@@ -37,6 +37,33 @@ import { formatTimestamp } from '../utils/timeUtils';
 import GitHubActionConfigEditor from './GitHubActionConfigEditor';
 import AzurePipelineConfigEditor from './AzurePipelineConfigEditor';
 
+export const getAzureRepoKey = (repo) => String(repo?.id || repo?.url || repo?.display_name || '');
+
+export const resolveSelectedRepoKey = (repos, previousKey = '') => {
+  if (!Array.isArray(repos) || repos.length === 0) return '';
+  if (previousKey && repos.some((repo) => getAzureRepoKey(repo) === previousKey)) {
+    return previousKey;
+  }
+  return getAzureRepoKey(repos[0]);
+};
+
+export const deriveAzureOrganizationFromOrgUrl = (orgUrl = '') => {
+  try {
+    const parsedUrl = new URL(orgUrl);
+    const host = (parsedUrl.hostname || '').toLowerCase();
+    const pathParts = parsedUrl.pathname.split('/').filter(Boolean);
+    if (host === 'dev.azure.com') {
+      return pathParts[0] || '';
+    }
+    if (host.endsWith('.visualstudio.com')) {
+      return host.split('.')[0] || '';
+    }
+    return host.split('.')[0] || '';
+  } catch (_) {
+    return '';
+  }
+};
+
 const RepositoryManager = () => {
   const [repositories, setRepositories] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -125,27 +152,23 @@ const RepositoryManager = () => {
   const [tokenTestResults, setTokenTestResults] = useState({});
 
   // GCP runner VM provision/deprovision
-  const [provisioningConnectionId, setProvisioningConnectionId] = useState(null);
-  const [deprovisioningConnectionId, setDeprovisioningConnectionId] = useState(null);
-  const [lastProvisionResult, setLastProvisionResult] = useState(null);
-  const [loadingPoolsConnectionId, setLoadingPoolsConnectionId] = useState(null);
-  const [savingPoolConnectionId, setSavingPoolConnectionId] = useState(null);
-  const [azurePoolOptionsByConnection, setAzurePoolOptionsByConnection] = useState({});
-  const [poolDraftByConnection, setPoolDraftByConnection] = useState({});
   const [provisionProgressByConnection, setProvisionProgressByConnection] = useState({});
-  // Inline create connection (when no connections for provider)
-  const [newConnectionOrg, setNewConnectionOrg] = useState('');
-  const [newConnectionProject, setNewConnectionProject] = useState('');
-  const [newConnectionDisplayName, setNewConnectionDisplayName] = useState('');
-  const [newConnectionAgentPool, setNewConnectionAgentPool] = useState('');
-  const [creatingConnection, setCreatingConnection] = useState(false);
   const checkRunnerServiceRef = useRef(null);
-  const [azureDiscoveryOrgUrl, setAzureDiscoveryOrgUrl] = useState('');
-  const [azureDiscoveryPat, setAzureDiscoveryPat] = useState('');
-  const [azureDiscoveryLoading, setAzureDiscoveryLoading] = useState(false);
-  const [azureDiscoveryRepos, setAzureDiscoveryRepos] = useState([]);
-  const [azureDiscoveryPools, setAzureDiscoveryPools] = useState([]);
-  const [azureSelectedDiscoveredRepo, setAzureSelectedDiscoveredRepo] = useState('');
+  const [wizardStep, setWizardStep] = useState(0);
+  const [wizardState, setWizardState] = useState({
+    orgUrl: '',
+    pat: '',
+    loading: false,
+    connected: false,
+    repos: [],
+    pools: [],
+    selectedRepoKey: '',
+    selectedPool: '',
+    connectionId: null,
+    provisioning: false,
+    provisioned: false,
+    skipRunner: false,
+  });
 
   const fetchRepositories = useCallback(async () => {
     try {
@@ -164,7 +187,7 @@ const RepositoryManager = () => {
   }, [fetchRepositories]);
 
   useEffect(() => {
-    const connId = formData.action_runner_connection_id;
+    const connId = formData.action_runner_connection_id || wizardState.connectionId;
     if (!connId) return undefined;
     const conn = actionRunnerConnections.find((c) => c.id === connId);
     if (!conn || !conn.gcp_instance_name || !conn.gcp_zone) return undefined;
@@ -190,7 +213,7 @@ const RepositoryManager = () => {
       cancelled = true;
       clearInterval(intervalId);
     };
-  }, [formData.action_runner_connection_id, actionRunnerConnections]);
+  }, [formData.action_runner_connection_id, wizardState.connectionId, actionRunnerConnections]);
 
   const fetchActionRunnerConnections = useCallback(() => {
     return api.getActionRunnerConnections()
@@ -199,35 +222,142 @@ const RepositoryManager = () => {
   }, []);
 
   const discoverAzureDevopsResources = async () => {
-    const orgUrl = azureDiscoveryOrgUrl.trim();
-    const pat = azureDiscoveryPat.trim();
+    const orgUrl = wizardState.orgUrl.trim();
+    const pat = wizardState.pat.trim();
     if (!orgUrl || !pat) {
       showWarning('Missing details', 'Enter Azure organization URL and PAT to discover repositories.');
       return;
     }
     try {
-      setAzureDiscoveryLoading(true);
+      setWizardState((prev) => ({ ...prev, loading: true }));
       const res = await api.discoverAzureDevops({ org_url: orgUrl, pat });
       const data = res.data?.data || {};
       const repos = data.repositories || [];
       const pools = data.pools || [];
-      setAzureDiscoveryRepos(repos);
-      setAzureDiscoveryPools(pools);
-      if (repos.length > 0 && !azureSelectedDiscoveredRepo) {
-        setAzureSelectedDiscoveredRepo(String(repos[0].id || repos[0].url || repos[0].display_name));
-      }
-      if (!newConnectionOrg.trim() && data.organization_url) {
-        const parts = data.organization_url.split('/').filter(Boolean);
-        const maybeOrg = parts[parts.length - 1];
-        if (maybeOrg && !maybeOrg.includes('.')) {
-          setNewConnectionOrg(maybeOrg);
+      const selectedRepoKey = resolveSelectedRepoKey(repos, wizardState.selectedRepoKey);
+      const selectedPool = (wizardState.selectedPool && pools.some((p) => p.name === wizardState.selectedPool))
+        ? wizardState.selectedPool
+        : '';
+      setWizardState((prev) => ({
+        ...prev,
+        loading: false,
+        connected: true,
+        repos,
+        pools,
+        selectedRepoKey,
+        selectedPool,
+        skipRunner: false,
+      }));
+      if (selectedRepoKey) {
+        const selected = repos.find((r) => getAzureRepoKey(r) === selectedRepoKey);
+        if (selected) {
+          setFormData((prev) => ({
+            ...prev,
+            provider: 'azure_devops',
+            name: selected.project && selected.name ? `${selected.project}/${selected.name}` : (selected.name || prev.name),
+            url: selected.url || prev.url,
+            azure_pat: pat,
+          }));
         }
+      } else {
+        setFormData((prev) => ({ ...prev, provider: 'azure_devops', azure_pat: pat }));
       }
+      setWizardStep(1);
       showSuccess('Azure discovery', `Found ${repos.length} repositories and ${pools.length} agent pools.`);
     } catch (error) {
+      setWizardState((prev) => ({ ...prev, loading: false }));
       showError('Azure discovery failed', error.response?.data?.detail || error.message);
+    }
+  };
+
+  const handleAzureDiscoveredRepoSelect = (selectedValue) => {
+    setWizardState((prev) => ({ ...prev, selectedRepoKey: selectedValue }));
+    const selected = wizardState.repos.find((r) => getAzureRepoKey(r) === selectedValue);
+    if (!selected) return;
+    setFormData((prev) => ({
+      ...prev,
+      provider: 'azure_devops',
+      name: selected.project && selected.name ? `${selected.project}/${selected.name}` : (selected.name || prev.name),
+      url: selected.url || prev.url,
+      azure_pat: wizardState.pat.trim() || prev.azure_pat,
+    }));
+  };
+
+  const ensureAzureRunnerConnection = async (agentPoolOverride = '') => {
+    const selected = wizardState.repos.find(
+      (r) => getAzureRepoKey(r) === wizardState.selectedRepoKey
+    );
+    const parsed = parseAzureDevOpsUrl((selected?.url || formData.url || '').trim());
+    const orgFromOrgUrl = deriveAzureOrganizationFromOrgUrl(wizardState.orgUrl);
+    const organization = parsed.organization && parsed.organization !== 'unknown'
+      ? parsed.organization
+      : orgFromOrgUrl;
+    if (!organization) {
+      throw new Error('Unable to resolve Azure organization from repository URL or organization URL.');
+    }
+    const project = parsed.project && parsed.project !== 'unknown' ? parsed.project : null;
+    const displayName = project ? `${organization} / ${project}` : organization;
+    const payload = {
+      provider: 'azure_devops',
+      organization,
+      project,
+      display_name: displayName,
+      agent_pool: agentPoolOverride || undefined,
+    };
+    const res = await api.createActionRunnerConnection(payload);
+    const connection = res.data?.data;
+    if (!connection?.id) {
+      throw new Error('Failed to create or load action runner connection.');
+    }
+    await fetchActionRunnerConnections();
+    setFormData((prev) => ({ ...prev, action_runner_connection_id: connection.id }));
+    setWizardState((prev) => ({ ...prev, connectionId: connection.id }));
+    return connection;
+  };
+
+  const handleAzureProvisionRunner = async () => {
+    const selectedPool = wizardState.selectedPool.trim();
+    if (!selectedPool) {
+      showWarning('Select pool', 'Choose an Azure agent pool before provisioning.');
+      return;
+    }
+    if (!wizardState.pat.trim()) {
+      showWarning('Missing PAT', 'Connect with a PAT in Step 1 before provisioning.');
+      return;
+    }
+    try {
+      setWizardState((prev) => ({ ...prev, provisioning: true, skipRunner: false }));
+      const connection = await ensureAzureRunnerConnection(selectedPool);
+      const body = {
+        ado_pat: wizardState.pat.trim(),
+        agent_pool: selectedPool,
+      };
+      const res = await api.provisionRunnerVm(connection.id, body);
+      const data = res.data?.data;
+      if (!data?.success) {
+        const msg = data?.error || res.data?.detail || 'Unknown error';
+        throw new Error(msg);
+      }
+      setWizardState((prev) => ({ ...prev, provisioned: true, connectionId: connection.id }));
+      setActionRunnerConnections((prev) => prev.map((c) => (
+        c.id === connection.id
+          ? { ...c, gcp_instance_name: data.instance_name, gcp_zone: data.zone, agent_pool: selectedPool }
+          : c
+      )));
+      await fetchActionRunnerConnections();
+      setWizardStep(3);
+      showSuccess('Runner VM', data.message || 'VM creation started.');
+    } catch (error) {
+      const msg = error.response?.data?.detail || error.message;
+      const isGcpNotConfigured = /GCP|configured|GCP_RUNNER/i.test(msg || '');
+      showError(
+        'Provision failed',
+        isGcpNotConfigured
+          ? 'GCP runner provisioning is not configured. Set GCP_RUNNER_PROJECT_ID (and optionally GCP_RUNNER_REGION, GCP_RUNNER_ZONE) on the backend, or use an existing self-hosted runner.'
+          : msg
+      );
     } finally {
-      setAzureDiscoveryLoading(false);
+      setWizardState((prev) => ({ ...prev, provisioning: false }));
     }
   };
 
@@ -501,11 +631,21 @@ const RepositoryManager = () => {
     setShowAddForm(false);
     setErrors({});
     setRepoActiveTabs({});
-    setAzureDiscoveryOrgUrl('');
-    setAzureDiscoveryPat('');
-    setAzureDiscoveryRepos([]);
-    setAzureDiscoveryPools([]);
-    setAzureSelectedDiscoveredRepo('');
+    setWizardStep(0);
+    setWizardState({
+      orgUrl: '',
+      pat: '',
+      loading: false,
+      connected: false,
+      repos: [],
+      pools: [],
+      selectedRepoKey: '',
+      selectedPool: '',
+      connectionId: null,
+      provisioning: false,
+      provisioned: false,
+      skipRunner: false,
+    });
   };
 
   const toggleExpanded = (repoId) => {
@@ -1954,25 +2094,35 @@ const RepositoryManager = () => {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                    Repository Name
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    placeholder="owner/repository-name"
-                    className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                     Provider
                   </label>
                   <select
                     value={formData.provider}
-                    onChange={(e) => setFormData({ ...formData, provider: e.target.value })}
+                    onChange={(e) => {
+                      const provider = e.target.value;
+                      setFormData((prev) => ({
+                        ...prev,
+                        provider,
+                        action_runner_connection_id: provider === 'azure_devops' ? prev.action_runner_connection_id : null,
+                      }));
+                      if (provider === 'azure_devops') {
+                        setWizardStep(0);
+                        setWizardState({
+                          orgUrl: '',
+                          pat: '',
+                          loading: false,
+                          connected: false,
+                          repos: [],
+                          pools: [],
+                          selectedRepoKey: '',
+                          selectedPool: '',
+                          connectionId: null,
+                          provisioning: false,
+                          provisioned: false,
+                          skipRunner: false,
+                        });
+                      }
+                    }}
                     className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
                   >
                     <option value="github">GitHub</option>
@@ -1981,687 +2131,388 @@ const RepositoryManager = () => {
                 </div>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                  Repository URL
-                </label>
-                <input
-                  type="url"
-                  value={formData.url}
-                  onChange={(e) => setFormData({ ...formData, url: e.target.value })}
-                  placeholder="https://github.com/owner/repository-name"
-                  className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                  required
-                />
-              </div>
+              {formData.provider === 'github' && (
+                <>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Repository Name
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.name}
+                        onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                        placeholder="owner/repository-name"
+                        className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Repository URL
+                      </label>
+                      <input
+                        type="url"
+                        value={formData.url}
+                        onChange={(e) => setFormData({ ...formData, url: e.target.value })}
+                        placeholder="https://github.com/owner/repository-name"
+                        className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+                        required
+                      />
+                    </div>
+                  </div>
+                  <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 border border-gray-200 dark:border-gray-600">
+                    <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-3 flex items-center">
+                      <Key className="h-4 w-4 mr-2" />
+                      Access Token Configuration
+                    </h4>
+                    <div className="relative">
+                      <input
+                        type={isTokenVisible('new', 'github') ? 'text' : 'password'}
+                        value={formData.github_token}
+                        onChange={(e) => setFormData({ ...formData, github_token: e.target.value })}
+                        placeholder="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                        className="w-full px-4 py-3 pr-12 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors font-mono text-sm"
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => toggleTokenVisibility('new', 'github')}
+                        className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                      >
+                        {isTokenVisible('new', 'github') ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
 
               {formData.provider === 'azure_devops' && (
-                <div className="bg-blue-50/50 dark:bg-blue-900/10 rounded-lg p-4 border border-blue-200 dark:border-blue-800">
-                  <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-2">Azure quick discovery</h4>
-                  <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
-                    Enter org URL + PAT to pick a repository and pool from dropdowns.
-                  </p>
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3">
-                    <input
-                      type="url"
-                      placeholder="https://mdt-software.visualstudio.com"
-                      value={azureDiscoveryOrgUrl}
-                      onChange={(e) => setAzureDiscoveryOrgUrl(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
-                    />
-                    <input
-                      type="password"
-                      placeholder="Azure PAT (read-only use for discovery)"
-                      value={azureDiscoveryPat}
-                      onChange={(e) => setAzureDiscoveryPat(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
-                    />
-                    <button
-                      type="button"
-                      onClick={discoverAzureDevopsResources}
-                      disabled={azureDiscoveryLoading || !azureDiscoveryOrgUrl.trim() || !azureDiscoveryPat.trim()}
-                      className="px-3 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm disabled:opacity-50"
-                    >
-                      {azureDiscoveryLoading ? 'Loading…' : 'Load repos & pools'}
-                    </button>
+                <div className="space-y-5">
+                  <div className="grid grid-cols-4 gap-2">
+                    {['Connect', 'Select Repo', 'Runner Setup', 'Review'].map((label, idx) => (
+                      <div key={label} className="flex items-center">
+                        <div className={`h-8 w-8 rounded-full flex items-center justify-center text-xs font-semibold border ${wizardStep >= idx ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-300'}`}>
+                          {idx + 1}
+                        </div>
+                        <span className={`ml-2 text-xs ${wizardStep >= idx ? 'text-blue-700 dark:text-blue-300' : 'text-gray-500 dark:text-gray-400'}`}>{label}</span>
+                      </div>
+                    ))}
                   </div>
-                  {azureDiscoveryRepos.length > 0 && (
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+
+                  {wizardStep === 0 && (
+                    <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 space-y-4">
                       <div>
-                        <label className="block text-xs text-gray-600 dark:text-gray-300 mb-1">Repository</label>
-                        <select
-                          value={azureSelectedDiscoveredRepo}
-                          onChange={(e) => {
-                            const selectedValue = e.target.value;
-                            setAzureSelectedDiscoveredRepo(selectedValue);
-                            const selected = azureDiscoveryRepos.find((r) => String(r.id || r.url || r.display_name) === selectedValue);
-                            if (!selected) return;
-                            setFormData((prev) => ({
-                              ...prev,
-                              name: selected.project && selected.name ? `${selected.project}/${selected.name}` : (selected.name || prev.name),
-                              url: selected.url || prev.url,
-                              azure_pat: prev.azure_pat || azureDiscoveryPat,
-                            }));
-                            if (!newConnectionOrg.trim() && selected.url) {
-                              const parsed = parseAzureDevOpsUrl(selected.url);
-                              if (parsed.organization && parsed.organization !== 'unknown') {
-                                setNewConnectionOrg(parsed.organization);
-                              }
-                              if (parsed.project && parsed.project !== 'unknown') {
-                                setNewConnectionProject(parsed.project);
-                              }
-                            }
-                          }}
-                          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                        <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Step 1 - Connect to Azure DevOps</h4>
+                        <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">Enter org URL and PAT once. We reuse it for discovery, pool selection, and provisioning.</p>
+                      </div>
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        <input
+                          type="url"
+                          placeholder="https://mdt-software.visualstudio.com"
+                          value={wizardState.orgUrl}
+                          onChange={(e) => setWizardState((prev) => ({ ...prev, orgUrl: e.target.value }))}
+                          className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                        />
+                        <div className="relative">
+                          <input
+                            type={isTokenVisible('new', 'azure') ? 'text' : 'password'}
+                            placeholder="Azure DevOps PAT"
+                            value={wizardState.pat}
+                            onChange={(e) => setWizardState((prev) => ({ ...prev, pat: e.target.value }))}
+                            className="w-full px-4 py-3 pr-12 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white font-mono text-sm"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => toggleTokenVisibility('new', 'azure')}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                          >
+                            {isTokenVisible('new', 'azure') ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          onClick={discoverAzureDevopsResources}
+                          disabled={wizardState.loading || !wizardState.orgUrl.trim() || !wizardState.pat.trim()}
+                          className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
                         >
-                          {azureDiscoveryRepos.map((r) => (
+                          {wizardState.loading ? 'Connecting…' : 'Connect & Discover'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {wizardStep === 1 && (() => {
+                    const hasValidSelectedRepo = wizardState.repos.some(
+                      (r) => getAzureRepoKey(r) === wizardState.selectedRepoKey
+                    );
+                    return (
+                    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-4">
+                      <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Step 2 - Select Repository</h4>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Discovered Repository</label>
+                        <select
+                          value={wizardState.selectedRepoKey}
+                          onChange={(e) => handleAzureDiscoveredRepoSelect(e.target.value)}
+                          className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                        >
+                          <option value="">Select repository</option>
+                          {wizardState.repos.map((r) => (
                             <option key={String(r.id || r.url || r.display_name)} value={String(r.id || r.url || r.display_name)}>
                               {r.display_name}
                             </option>
                           ))}
                         </select>
                       </div>
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Repository Name</label>
+                          <input
+                            type="text"
+                            value={formData.name}
+                            onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
+                            className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                            required
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Repository URL</label>
+                          <input
+                            type="url"
+                            value={formData.url}
+                            onChange={(e) => setFormData((prev) => ({ ...prev, url: e.target.value }))}
+                            className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                            required
+                          />
+                        </div>
+                      </div>
+                      <div className="flex justify-between">
+                        <button
+                          type="button"
+                          onClick={() => setWizardStep(0)}
+                          className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300"
+                        >
+                          Back
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setWizardStep(2)}
+                          disabled={!hasValidSelectedRepo}
+                          className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                        >
+                          Next: Runner Setup
+                        </button>
+                      </div>
+                    </div>
+                    );
+                  })()}
+
+                  {wizardStep === 2 && (
+                    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-4">
+                      <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Step 3 - Runner Setup (Optional)</h4>
+                      <p className="text-xs text-gray-600 dark:text-gray-400">Choose an agent pool and provision now, or skip and configure later.</p>
                       <div>
-                        <label className="block text-xs text-gray-600 dark:text-gray-300 mb-1">Suggested agent pool</label>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Azure Agent Pool</label>
                         <select
-                          value={newConnectionAgentPool}
-                          onChange={(e) => setNewConnectionAgentPool(e.target.value)}
-                          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                          value={wizardState.selectedPool}
+                          onChange={(e) => setWizardState((prev) => ({ ...prev, selectedPool: e.target.value }))}
+                          className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                         >
                           <option value="">Select pool</option>
-                          {azureDiscoveryPools.map((p) => (
+                          {wizardState.pools.map((p) => (
                             <option key={String(p.id || p.name)} value={p.name}>
                               {p.name}{p.is_hosted ? ' (hosted)' : ''}
                             </option>
                           ))}
                         </select>
                       </div>
+
+                      {formData.action_runner_connection_id && (() => {
+                        const conn = actionRunnerConnections.find((c) => c.id === formData.action_runner_connection_id);
+                        if (!conn) return null;
+                        const hasVm = !!(conn.gcp_instance_name && conn.gcp_zone);
+                        const provisionProgress = provisionProgressByConnection[conn.id] || {};
+                        const vmRunning = !!provisionProgress.vm_running;
+                        const startupComplete = !!provisionProgress.startup?.startup_complete;
+                        const agentFound = !!provisionProgress.azure_agent?.found;
+                        const agentOnline = !!provisionProgress.azure_agent?.online;
+                        return (
+                          <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30 p-3">
+                            <div className="text-sm font-medium text-gray-900 dark:text-white mb-2">Live setup progress</div>
+                            <div className="space-y-1 text-xs text-gray-700 dark:text-gray-300">
+                              <div className="flex items-center justify-between"><span>VM running</span><span>{vmRunning ? 'Done' : (provisionProgress.vm_status || 'Waiting')}</span></div>
+                              <div className="flex items-center justify-between"><span>Startup script completed</span><span>{startupComplete ? 'Done' : 'In progress'}</span></div>
+                              <div className="flex items-center justify-between"><span>Agent registered in pool</span><span>{agentFound ? 'Done' : 'Waiting'}</span></div>
+                              <div className="flex items-center justify-between"><span>Agent online</span><span>{agentOnline ? 'Done' : 'Waiting'}</span></div>
+                            </div>
+                            {hasVm && (
+                              <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
+                                VM: {conn.gcp_instance_name} ({conn.gcp_zone})
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+
+                      <div className="flex flex-wrap gap-2 justify-between">
+                        <button
+                          type="button"
+                          onClick={() => setWizardStep(1)}
+                          className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300"
+                        >
+                          Back
+                        </button>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setWizardState((prev) => ({ ...prev, skipRunner: true }));
+                              setWizardStep(3);
+                            }}
+                            className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300"
+                          >
+                            Skip for now
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleAzureProvisionRunner}
+                            disabled={wizardState.provisioning || !wizardState.selectedPool}
+                            className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                          >
+                            {wizardState.provisioning ? 'Provisioning…' : 'Provision Runner VM'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!wizardState.provisioned) {
+                                setWizardState((prev) => ({ ...prev, skipRunner: true }));
+                              }
+                              setWizardStep(3);
+                            }}
+                            className="px-4 py-2 rounded bg-gray-800 text-white dark:bg-gray-600"
+                          >
+                            Continue
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {wizardStep === 3 && (
+                    <div className="space-y-4">
+                      <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 border border-gray-200 dark:border-gray-600">
+                        <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Step 4 - Review & Save</h4>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 text-sm">
+                          <div className="text-gray-700 dark:text-gray-300"><span className="font-medium">Repository:</span> {formData.name || 'Not selected'}</div>
+                          <div className="text-gray-700 dark:text-gray-300"><span className="font-medium">URL:</span> {formData.url || 'Not selected'}</div>
+                          <div className="text-gray-700 dark:text-gray-300"><span className="font-medium">Pool:</span> {wizardState.selectedPool || 'Not set'}</div>
+                          <div className="text-gray-700 dark:text-gray-300"><span className="font-medium">Runner setup:</span> {wizardState.skipRunner ? 'Skipped' : (formData.action_runner_connection_id ? 'Connected' : 'Not provisioned')}</div>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">Configuration</label>
+                        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+                          <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                            <input type="checkbox" checked={formData.is_active} onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Active</span>
+                          </label>
+                          <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                            <input type="checkbox" checked={formData.monitor_prs} onChange={(e) => setFormData({ ...formData, monitor_prs: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Monitor PRs</span>
+                          </label>
+                          <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                            <input type="checkbox" checked={formData.monitor_issues} onChange={(e) => setFormData({ ...formData, monitor_issues: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Monitor Issues</span>
+                          </label>
+                          <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                            <input type="checkbox" checked={formData.auto_review} onChange={(e) => setFormData({ ...formData, auto_review: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto Review</span>
+                          </label>
+                          <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                            <input type="checkbox" checked={formData.auto_describe} onChange={(e) => setFormData({ ...formData, auto_describe: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto Describe</span>
+                          </label>
+                          <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                            <input type="checkbox" checked={formData.auto_improve} onChange={(e) => setFormData({ ...formData, auto_improve: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto Improve</span>
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="flex justify-between pt-4 border-t border-gray-200 dark:border-gray-700">
+                        <button
+                          type="button"
+                          onClick={() => setWizardStep(2)}
+                          className="px-6 py-2.5 text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                        >
+                          Back
+                        </button>
+                        <div className="space-x-3">
+                          <button
+                            type="button"
+                            onClick={resetForm}
+                            className="px-6 py-2.5 text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={!formData.name.trim() || !formData.url.trim() || !wizardState.pat.trim()}
+                            className="px-6 py-2.5 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 transition-colors shadow-sm hover:shadow-md disabled:opacity-50"
+                          >
+                            <Plus className="h-4 w-4 mr-2 inline" />
+                            Add Repository
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
               )}
 
-              {/* Runner connection (one per ADO org or GitHub org) */}
-              <div className="bg-amber-50/50 dark:bg-amber-900/10 rounded-lg p-4 border border-amber-200 dark:border-amber-800">
-                <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-2 flex items-center">
-                  <Server className="h-4 w-4 mr-2 text-amber-600 dark:text-amber-400" />
-                  Action runner connection (optional)
-                </h4>
-                <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
-                  One self-hosted runner per {formData.provider === 'azure_devops' ? 'ADO org/project' : 'GitHub org'}. Link this repo to an existing connection so runner health is shared, or leave unset and add a connection later.
-                </p>
-                <select
-                  value={formData.action_runner_connection_id ?? ''}
-                  onChange={(e) => {
-                    const id = e.target.value ? parseInt(e.target.value, 10) : null;
-                    setFormData({ ...formData, action_runner_connection_id: id });
-                    if (!id) setLastProvisionResult(null);
-                  }}
-                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
-                >
-                  <option value="">None</option>
-                  {actionRunnerConnections
-                    .filter((c) => c.provider === formData.provider)
-                    .map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.display_name || `${c.organization}${c.project ? ` / ${c.project}` : ''}`}
-                        {c.runner_status ? ` (${c.runner_status})` : ''}
-                        {c.gcp_instance_name ? ' [VM]' : ''}
-                        {c.repository_count > 0 ? ` · ${c.repository_count} repo(s)` : ''}
-                      </option>
-                    ))}
-                </select>
-                {actionRunnerConnections.filter((c) => c.provider === formData.provider).length === 0 && (
-                  <div className="mt-3 p-3 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-600 text-sm">
-                    <p className="text-gray-600 dark:text-gray-400 mb-2">No runner connections for {formData.provider === 'azure_devops' ? 'Azure DevOps' : 'GitHub'} yet. Create one to share a self-hosted runner across repos.</p>
-                    <div className="flex flex-wrap items-end gap-2">
-                      <input
-                        type="text"
-                        placeholder={formData.provider === 'azure_devops' ? 'Organization' : 'Organization'}
-                        value={newConnectionOrg}
-                        onChange={(e) => setNewConnectionOrg(e.target.value)}
-                        className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm w-40"
-                      />
-                      {formData.provider === 'azure_devops' && (
-                        <input
-                          type="text"
-                          placeholder="Project (optional)"
-                          value={newConnectionProject}
-                          onChange={(e) => setNewConnectionProject(e.target.value)}
-                          className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm w-32"
-                        />
-                      )}
-                      {formData.provider === 'azure_devops' && (
-                        <input
-                          type="text"
-                          placeholder="Agent Pool (e.g. PRAgent_Cloud)"
-                          value={newConnectionAgentPool}
-                          onChange={(e) => setNewConnectionAgentPool(e.target.value)}
-                          className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 text-sm w-44"
-                        />
-                      )}
-                      <input
-                        type="text"
-                        placeholder="Display name (optional)"
-                        value={newConnectionDisplayName}
-                        onChange={(e) => setNewConnectionDisplayName(e.target.value)}
-                        className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm w-40"
-                      />
-                      <button
-                        type="button"
-                        disabled={!newConnectionOrg.trim() || creatingConnection}
-                        onClick={() => {
-                          setCreatingConnection(true);
-                          api.createActionRunnerConnection({
-                            provider: formData.provider,
-                            organization: newConnectionOrg.trim(),
-                            project: formData.provider === 'azure_devops' ? (newConnectionProject.trim() || null) : null,
-                            display_name: newConnectionDisplayName.trim() || undefined,
-                            agent_pool: formData.provider === 'azure_devops' ? (newConnectionAgentPool.trim() || undefined) : undefined,
-                          })
-                            .then((res) => {
-                              const created = res.data?.data;
-                              if (created?.id) {
-                                showSuccess('Connection created', 'Link this repo to the new connection.');
-                                setNewConnectionOrg('');
-                                setNewConnectionProject('');
-                                setNewConnectionDisplayName('');
-                                setNewConnectionAgentPool('');
-                                fetchActionRunnerConnections().then(() => {
-                                  setFormData((f) => ({ ...f, action_runner_connection_id: created.id }));
-                                });
-                              }
-                            })
-                            .catch((err) => showError('Create connection failed', err.response?.data?.detail || err.message))
-                            .finally(() => setCreatingConnection(false));
-                        }}
-                        className="px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 text-xs disabled:opacity-50"
-                      >
-                        {creatingConnection ? 'Creating…' : 'Create connection'}
-                      </button>
-                    </div>
+              {formData.provider === 'github' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">Configuration</label>
+                  <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+                    <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                      <input type="checkbox" checked={formData.is_active} onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Active</span>
+                    </label>
+                    <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                      <input type="checkbox" checked={formData.monitor_prs} onChange={(e) => setFormData({ ...formData, monitor_prs: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Monitor PRs</span>
+                    </label>
+                    <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                      <input type="checkbox" checked={formData.monitor_issues} onChange={(e) => setFormData({ ...formData, monitor_issues: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Monitor Issues</span>
+                    </label>
+                    <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                      <input type="checkbox" checked={formData.auto_review} onChange={(e) => setFormData({ ...formData, auto_review: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto Review</span>
+                    </label>
+                    <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                      <input type="checkbox" checked={formData.auto_describe} onChange={(e) => setFormData({ ...formData, auto_describe: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto Describe</span>
+                    </label>
+                    <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                      <input type="checkbox" checked={formData.auto_improve} onChange={(e) => setFormData({ ...formData, auto_improve: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto Improve</span>
+                    </label>
                   </div>
-                )}
-                {formData.action_runner_connection_id && (() => {
-                  const conn = actionRunnerConnections.find((c) => c.id === formData.action_runner_connection_id);
-                  if (!conn) return null;
-                  const hasVm = !!(conn.gcp_instance_name && conn.gcp_zone);
-                  const linkedAzureRepos = repositories.filter((r) => r.action_runner_connection_id === conn.id && r.provider === 'azure_devops');
-                  const hasAzurePat = linkedAzureRepos.some((r) => r.has_azure_pat || (r.azure_pat && r.azure_pat.trim()));
-                  const provisionProgress = provisionProgressByConnection[conn.id] || {};
-                  const vmRunning = !!provisionProgress.vm_running;
-                  const startupComplete = !!provisionProgress.startup?.startup_complete;
-                  const agentFound = !!provisionProgress.azure_agent?.found;
-                  const agentOnline = !!provisionProgress.azure_agent?.online;
-                  const isAzure = conn.provider === 'azure_devops';
-                  const wizardPercent = isAzure
-                    ? (hasAzurePat ? 20 : 0) + (conn.agent_pool ? 20 : 0) + (hasVm ? 25 : 0) + (vmRunning ? 10 : 0) + (startupComplete ? 10 : 0) + (agentFound ? 10 : 0) + (agentOnline ? 5 : 0)
-                    : (hasVm ? (vmRunning ? 80 : 55) : 15) + (startupComplete ? 20 : 0);
-                  const finalPercent = Math.max(0, Math.min(100, wizardPercent));
-                  const progressLabel = finalPercent >= 100
-                    ? 'Setup complete'
-                    : finalPercent >= 75
-                      ? 'Finishing up'
-                      : finalPercent >= 40
-                        ? 'Provisioning in progress'
-                        : 'Getting started';
-                  const etaHint = finalPercent >= 100
-                    ? 'Ready for PR jobs.'
-                    : finalPercent >= 75
-                      ? 'Typically under 1 minute remaining.'
-                      : finalPercent >= 40
-                        ? 'Usually 2-4 minutes total from provision click.'
-                        : 'Complete steps above to begin provisioning.';
-                  const provisioning = provisioningConnectionId === conn.id;
-                  const deprovisioning = deprovisioningConnectionId === conn.id;
-                  const installInfo = lastProvisionResult?.install_instructions || (hasVm
-                    ? {
-                        ssh_command: `gcloud compute ssh ${conn.gcp_instance_name} --zone=${conn.gcp_zone} --project=<your-project>`,
-                        steps: conn.provider === 'azure_devops'
-                          ? `Runner VM is managed by the dashboard. Re-provision to refresh agent auto-registration in pool "${conn.agent_pool || 'configured pool'}".`
-                          : 'SSH to the VM and install the runner/agent per your provider docs.',
-                        docs_url: '',
-                      }
-                    : null);
-                  return (
-                    <div className="mt-3 p-3 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-600 text-sm">
-                      <div className="flex items-center justify-between gap-2 mb-3">
-                        <div className="font-medium text-gray-800 dark:text-gray-200">Runner Setup Wizard</div>
-                        <span className={`text-xs px-2 py-0.5 rounded-full ${finalPercent >= 100 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'}`}>
-                          {finalPercent >= 100 ? 'Ready' : 'In setup'}
-                        </span>
-                      </div>
-                      <div className="mb-3">
-                        <div className="flex items-center justify-between text-xs mb-1">
-                          <span className="text-gray-700 dark:text-gray-300">{progressLabel}</span>
-                          <span className="text-gray-600 dark:text-gray-400">{finalPercent}%</span>
-                        </div>
-                        <div className="w-full h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
-                          <div
-                            className="h-full bg-blue-600 transition-all duration-500"
-                            style={{ width: `${finalPercent}%` }}
-                          />
-                        </div>
-                        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{etaHint}</p>
-                      </div>
-
-                      {conn.provider === 'azure_devops' && (
-                        <div className="space-y-3 mb-3">
-                          <div className="p-3 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700">
-                            <div className="flex items-center justify-between gap-2 mb-2">
-                              <div className="text-sm font-medium text-gray-800 dark:text-gray-100">Step 1 - Azure PAT connected</div>
-                              <span className={`text-xs px-2 py-0.5 rounded-full ${hasAzurePat ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'}`}>
-                                {hasAzurePat ? 'Done' : 'Missing'}
-                              </span>
-                            </div>
-                            {!hasAzurePat && (
-                              <div className="flex items-center justify-between gap-2">
-                                <p className="text-xs text-gray-600 dark:text-gray-300">Add Azure PAT in Access Token Configuration below, then save repository.</p>
-                                <button
-                                  type="button"
-                                  onClick={() => document.getElementById('new-repo-token-config')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
-                                  className="px-2 py-1 rounded bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-xs"
-                                >
-                                  Jump to token
-                                </button>
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="p-3 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700">
-                            <div className="flex items-center justify-between gap-2 mb-2">
-                              <div className="text-sm font-medium text-gray-800 dark:text-gray-100">Step 2 - Choose agent pool</div>
-                              <span className={`text-xs px-2 py-0.5 rounded-full ${conn.agent_pool ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'}`}>
-                                {conn.agent_pool ? 'Saved' : 'Not set'}
-                              </span>
-                            </div>
-                            <div className="flex flex-wrap items-end gap-2">
-                              <div className="flex flex-col">
-                                <label className="text-xs text-gray-600 dark:text-gray-300 mb-0.5">Azure Agent Pool</label>
-                                <select
-                                  value={poolDraftByConnection[conn.id] ?? conn.agent_pool ?? ''}
-                                  onChange={(e) => setPoolDraftByConnection((prev) => ({ ...prev, [conn.id]: e.target.value }))}
-                                  className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm min-w-56"
-                                >
-                                  <option value="">Select pool</option>
-                                  {(azurePoolOptionsByConnection[conn.id] || []).map((pool) => (
-                                    <option key={`${conn.id}-${pool.id || pool.name}`} value={pool.name}>
-                                      {pool.name}{pool.is_hosted ? ' (hosted)' : ''}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-                              <button
-                                type="button"
-                                disabled={loadingPoolsConnectionId === conn.id || !hasAzurePat}
-                                onClick={() => {
-                                  setLoadingPoolsConnectionId(conn.id);
-                                  api.getAzureAgentPoolsForConnection(conn.id)
-                                    .then((res) => {
-                                      const pools = res.data?.data?.pools || [];
-                                      setAzurePoolOptionsByConnection((prev) => ({ ...prev, [conn.id]: pools }));
-                                      if (!poolDraftByConnection[conn.id] && conn.agent_pool) {
-                                        setPoolDraftByConnection((prev) => ({ ...prev, [conn.id]: conn.agent_pool }));
-                                      }
-                                      showSuccess('Azure pools', `Loaded ${pools.length} pool(s) for ${conn.organization}.`);
-                                    })
-                                    .catch((err) => showError('Load pools failed', err.response?.data?.detail || err.message))
-                                    .finally(() => setLoadingPoolsConnectionId(null));
-                                }}
-                                className="px-2 py-1.5 rounded bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-xs disabled:opacity-50"
-                              >
-                                {loadingPoolsConnectionId === conn.id ? 'Loading…' : 'Load pools'}
-                              </button>
-                              <button
-                                type="button"
-                                disabled={savingPoolConnectionId === conn.id}
-                                onClick={() => {
-                                  const value = (poolDraftByConnection[conn.id] ?? conn.agent_pool ?? '').trim();
-                                  setSavingPoolConnectionId(conn.id);
-                                  api.updateActionRunnerConnection(conn.id, { agent_pool: value || null })
-                                    .then(() => {
-                                      showSuccess('Agent pool', value ? `Saved "${value}"` : 'Cleared');
-                                      setActionRunnerConnections((prev) => prev.map((c) => c.id === conn.id ? { ...c, agent_pool: value || null } : c));
-                                      fetchActionRunnerConnections();
-                                    })
-                                    .catch((err) => showError('Save agent pool failed', err.response?.data?.detail || err.message))
-                                    .finally(() => setSavingPoolConnectionId(null));
-                                }}
-                                className="px-2 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 text-xs disabled:opacity-50"
-                              >
-                                {savingPoolConnectionId === conn.id ? 'Saving…' : 'Save pool'}
-                              </button>
-                            </div>
-                            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                              Pulls pools from Azure using PAT on linked repos.
-                            </p>
-                          </div>
-                        </div>
-                      )}
-
-                      <div className="p-3 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700">
-                        <div className="flex items-center justify-between gap-2 mb-2">
-                          <div className="text-sm font-medium text-gray-800 dark:text-gray-100">Step {conn.provider === 'azure_devops' ? '3' : '1'} - Provision runner VM</div>
-                          <span className={`text-xs px-2 py-0.5 rounded-full ${hasVm ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'}`}>
-                            {hasVm ? 'Provisioned' : 'Not provisioned'}
-                          </span>
-                        </div>
-                        {!hasVm ? (
-                          <div className="space-y-2">
-                            <p className="text-gray-600 dark:text-gray-400 text-xs">
-                              {conn.provider === 'azure_devops'
-                                ? 'This will create the VM and auto-register the Azure agent with your selected pool.'
-                                : 'This will create the VM for your self-hosted runner.'}
-                            </p>
-                            <button
-                              type="button"
-                              disabled={provisioning}
-                              onClick={() => {
-                                setProvisioningConnectionId(conn.id);
-                                setLastProvisionResult(null);
-                                const poolOverride = (poolDraftByConnection[conn.id] ?? conn.agent_pool ?? '').trim();
-                                const patOverride = formData.provider === 'azure_devops' ? (formData.azure_pat || '').trim() : '';
-                                const body = {};
-                                if (poolOverride) body.agent_pool = poolOverride;
-                                if (patOverride) body.ado_pat = patOverride;
-                                api.provisionRunnerVm(conn.id, Object.keys(body).length ? body : null)
-                                  .then((res) => {
-                                    const data = res.data?.data;
-                                    if (data?.success) {
-                                      showSuccess('Runner VM', data.message || 'VM creation started.');
-                                      setLastProvisionResult(data);
-                                      setActionRunnerConnections((prev) => prev.map((c) => c.id === conn.id ? { ...c, gcp_instance_name: data.instance_name, gcp_zone: data.zone } : c));
-                                      fetchActionRunnerConnections();
-                                    } else {
-                                      const msg = data?.error || res.data?.detail || 'Unknown error';
-                                      const isGcpNotConfigured = /GCP|configured|GCP_RUNNER/i.test(msg);
-                                      showError('Provision failed', isGcpNotConfigured
-                                        ? 'GCP runner provisioning is not configured. Set GCP_RUNNER_PROJECT_ID (and optionally GCP_RUNNER_REGION, GCP_RUNNER_ZONE) on the backend, or use an existing self-hosted runner.'
-                                        : msg);
-                                    }
-                                  })
-                                  .catch((err) => {
-                                    const msg = err.response?.data?.detail || err.message;
-                                    const isGcpNotConfigured = /GCP|configured|GCP_RUNNER/i.test(msg);
-                                    showError('Provision failed', isGcpNotConfigured
-                                      ? 'GCP runner provisioning is not configured. Set GCP_RUNNER_PROJECT_ID (and optionally GCP_RUNNER_REGION, GCP_RUNNER_ZONE) on the backend, or use an existing self-hosted runner.'
-                                      : msg);
-                                  })
-                                  .finally(() => setProvisioningConnectionId(null));
-                              }}
-                              className="px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 text-xs disabled:opacity-50"
-                            >
-                              {provisioning ? 'Provisioning…' : 'Provision runner VM'}
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="space-y-2">
-                            <div className="text-gray-600 dark:text-gray-400 text-xs">
-                              {conn.gcp_instance_name} ({conn.gcp_zone})
-                            </div>
-                            <div className="flex flex-wrap gap-2">
-                              {installInfo?.ssh_command && (
-                                <button
-                                  type="button"
-                                  onClick={() => { navigator.clipboard.writeText(installInfo.ssh_command); showSuccess('Copied', 'SSH command copied to clipboard'); }}
-                                  className="px-2 py-1 rounded bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-xs"
-                                >
-                                  Copy SSH command
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                disabled={deprovisioning}
-                                onClick={() => {
-                                  setDeprovisioningConnectionId(conn.id);
-                                  api.deprovisionRunnerVm(conn.id)
-                                    .then((res) => {
-                                      showSuccess('Runner VM', res.data?.data?.message || 'VM removal started.');
-                                      setActionRunnerConnections((prev) => prev.map((c) => c.id === conn.id ? { ...c, gcp_instance_name: null, gcp_zone: null } : c));
-                                      setLastProvisionResult(null);
-                                    })
-                                    .catch((err) => showError('Deprovision failed', err.response?.data?.detail || err.message))
-                                    .finally(() => {
-                                      setDeprovisioningConnectionId(null);
-                                      fetchActionRunnerConnections();
-                                    });
-                                }}
-                                className="px-2 py-1 rounded bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-900/50 text-xs disabled:opacity-50"
-                              >
-                                {deprovisioning ? 'Removing…' : 'Remove VM'}
-                              </button>
-                            </div>
-                            {installInfo && (
-                              <details className="mt-2">
-                                <summary className="cursor-pointer text-gray-600 dark:text-gray-400">Details</summary>
-                                <pre className="mt-1 p-2 bg-gray-200 dark:bg-gray-700 rounded text-xs overflow-x-auto">{installInfo.ssh_command}</pre>
-                                <p className="mt-1 text-gray-600 dark:text-gray-400">{installInfo.steps}</p>
-                                {installInfo.docs_url && (
-                                  <a href={installInfo.docs_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 text-xs">Docs</a>
-                                )}
-                              </details>
-                            )}
-                          </div>
-                        )}
-                      </div>
-
-                      {hasVm && (
-                        <div className="p-3 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 mt-3">
-                          <div className="text-sm font-medium text-gray-800 dark:text-gray-100 mb-2">Live setup progress</div>
-                          <div className="space-y-1 text-xs">
-                            <div className="flex items-center justify-between">
-                              <span className="text-gray-600 dark:text-gray-300">VM running</span>
-                              <span className={vmRunning ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
-                                {vmRunning ? "Done" : (provisionProgress.vm_status ? provisionProgress.vm_status : "Waiting")}
-                              </span>
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <span className="text-gray-600 dark:text-gray-300">Startup script completed</span>
-                              <span className={startupComplete ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
-                                {startupComplete ? "Done" : "In progress"}
-                              </span>
-                            </div>
-                            {conn.provider === 'azure_devops' && (
-                              <>
-                                <div className="flex items-center justify-between">
-                                  <span className="text-gray-600 dark:text-gray-300">Agent registered in pool</span>
-                                  <span className={agentFound ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
-                                    {agentFound ? "Done" : "Waiting"}
-                                  </span>
-                                </div>
-                                <div className="flex items-center justify-between">
-                                  <span className="text-gray-600 dark:text-gray-300">Agent online</span>
-                                  <span className={agentOnline ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
-                                    {agentOnline ? "Done" : "Waiting"}
-                                  </span>
-                                </div>
-                              </>
-                            )}
-                          </div>
-                          {provisionProgress.startup?.last_log_excerpt && (
-                            <details className="mt-2">
-                              <summary className="cursor-pointer text-gray-600 dark:text-gray-400 text-xs">Startup logs (latest)</summary>
-                              <pre className="mt-1 p-2 bg-gray-200 dark:bg-gray-800 rounded text-xs overflow-x-auto whitespace-pre-wrap">
-                                {provisionProgress.startup.last_log_excerpt}
-                              </pre>
-                            </details>
-                          )}
-                        </div>
-                      )}
-
-                      {lastProvisionResult?.install_instructions && (
-                        <div className="mt-3 p-2 rounded border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20">
-                          <p className="text-xs text-blue-700 dark:text-blue-300">
-                            {lastProvisionResult.agent_auto_registered
-                              ? 'Nice! VM provisioning and Azure agent registration have started. It usually appears in a few minutes.'
-                              : 'VM provisioning has started. Use details above if any manual follow-up is needed.'}
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-              </div>
-
-              {/* Access Token Configuration */}
-              <div id="new-repo-token-config" className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 border border-gray-200 dark:border-gray-600">
-                <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-3 flex items-center">
-                  <Key className="h-4 w-4 mr-2" />
-                  Access Token Configuration
-                </h4>
-                
-                <div className="space-y-4">
-                  {/* GitHub Token */}
-                  {formData.provider === 'github' && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        GitHub Access Token
-                        <span className="text-red-500 ml-1">*</span>
-                      </label>
-                      <div className="relative">
-                        <input
-                          type={isTokenVisible('new', 'github') ? 'text' : 'password'}
-                          value={formData.github_token}
-                          onChange={(e) => setFormData({ ...formData, github_token: e.target.value })}
-                          placeholder="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                          className="w-full px-4 py-3 pr-12 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors font-mono text-sm"
-                          required
-                        />
-                        <button
-                          type="button"
-                          onClick={() => toggleTokenVisibility('new', 'github')}
-                          className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                        >
-                          {isTokenVisible('new', 'github') ? 
-                            <EyeOff className="h-4 w-4" /> : 
-                            <Eye className="h-4 w-4" />
-                          }
-                        </button>
-                      </div>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                        Required for runner health checks and config detection. Needs 'repo' and 'actions:read' permissions.
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Azure DevOps PAT */}
-                  {formData.provider === 'azure_devops' && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        Azure DevOps Personal Access Token (PAT)
-                        <span className="text-red-500 ml-1">*</span>
-                      </label>
-                      <div className="relative">
-                        <input
-                          type={isTokenVisible('new', 'azure') ? 'text' : 'password'}
-                          value={formData.azure_pat}
-                          onChange={(e) => setFormData({ ...formData, azure_pat: e.target.value })}
-                          placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                          className="w-full px-4 py-3 pr-12 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors font-mono text-sm"
-                          required
-                        />
-                        <button
-                          type="button"
-                          onClick={() => toggleTokenVisibility('new', 'azure')}
-                          className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                        >
-                          {isTokenVisible('new', 'azure') ? 
-                            <EyeOff className="h-4 w-4" /> : 
-                            <Eye className="h-4 w-4" />
-                          }
-                        </button>
-                      </div>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                        Required for agent health checks and config detection. Needs 'Agent Pools (read)' and 'Code (read)' permissions.
-                      </p>
-                    </div>
-                  )}
+                  <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200 dark:border-gray-700 mt-6">
+                    <button type="button" onClick={resetForm} className="px-6 py-2.5 text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                      Cancel
+                    </button>
+                    <button type="submit" className="px-6 py-2.5 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 transition-colors shadow-sm hover:shadow-md">
+                      <Plus className="h-4 w-4 mr-2 inline" />
+                      Add Repository
+                    </button>
+                  </div>
                 </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
-                  Configuration
-                </label>
-                <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-                  <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.is_active}
-                      onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
-                      className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
-                    />
-                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Active</span>
-                  </label>
-
-                  <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.monitor_prs}
-                      onChange={(e) => setFormData({ ...formData, monitor_prs: e.target.checked })}
-                      className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
-                    />
-                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Monitor PRs</span>
-                  </label>
-
-                  <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.monitor_issues}
-                      onChange={(e) => setFormData({ ...formData, monitor_issues: e.target.checked })}
-                      className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
-                    />
-                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Monitor Issues</span>
-                  </label>
-
-                  <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.auto_review}
-                      onChange={(e) => setFormData({ ...formData, auto_review: e.target.checked })}
-                      className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
-                    />
-                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto Review</span>
-                  </label>
-                  
-                  <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.auto_describe}
-                      onChange={(e) => setFormData({ ...formData, auto_describe: e.target.checked })}
-                      className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
-                    />
-                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto Describe</span>
-                  </label>
-
-                  <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.auto_improve}
-                      onChange={(e) => setFormData({ ...formData, auto_improve: e.target.checked })}
-                      className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
-                    />
-                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto Improve</span>
-                  </label>
-                </div>
-              </div>
-
-              <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200 dark:border-gray-700">
-                <button
-                  type="button"
-                  onClick={resetForm}
-                  className="px-6 py-2.5 text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors duration-200"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-6 py-2.5 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 transition-colors duration-200 shadow-sm hover:shadow-md"
-                >
-                  <Plus className="h-4 w-4 mr-2 inline" />
-                  Add Repository
-                </button>
-              </div>
+              )}
             </form>
           </div>
         </div>
