@@ -226,7 +226,13 @@ const RepositoryManager = () => {
     let timerId = null;
 
     const poll = () => {
-      api.getRunnerProvisionStatus(connId)
+      const selectedRepo = wizardState.repos.find((r) => getAzureRepoKey(r) === wizardState.selectedRepoKey);
+      const repoUrlForStatus = (selectedRepo?.url || formData.url || '').trim();
+      const patForStatus = (wizardState.pat || formData.azure_pat || '').trim();
+      api.getRunnerProvisionStatus(connId, {
+        pat: patForStatus || undefined,
+        repoUrl: repoUrlForStatus || undefined,
+      })
         .then((res) => {
           if (cancelled) return;
           const data = res.data?.data || {};
@@ -247,7 +253,16 @@ const RepositoryManager = () => {
       cancelled = true;
       if (timerId) clearTimeout(timerId);
     };
-  }, [formData.action_runner_connection_id, wizardState.connectionId, actionRunnerConnections]);
+  }, [
+    formData.action_runner_connection_id,
+    wizardState.connectionId,
+    actionRunnerConnections,
+    wizardState.repos,
+    wizardState.selectedRepoKey,
+    wizardState.pat,
+    formData.url,
+    formData.azure_pat,
+  ]);
 
   useEffect(() => {
     if (consoleAutoScrollEnabled && consoleEndRef.current) {

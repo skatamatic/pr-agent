@@ -131,7 +131,13 @@ const apiService = {
   getAzureDevopsPatIdentity: (body) => api.post('/api/azure-devops/pat-identity', body),
   listAzureDevopsBranches: (body) => api.post('/api/azure-devops/branches', body),
   setupAzureDevopsPipeline: (body) => api.post('/api/azure-devops/pipeline/setup', body),
-  getRunnerProvisionStatus: (connectionId) => api.get(`/api/action-runner-connections/${connectionId}/provision-status`),
+  getRunnerProvisionStatus: (connectionId, options = {}) =>
+    api.get(`/api/action-runner-connections/${connectionId}/provision-status`, {
+      headers: {
+        ...(options.pat ? { 'X-Azure-PAT': options.pat } : {}),
+        ...(options.repoUrl ? { 'X-Azure-Repo-Url': options.repoUrl } : {}),
+      },
+    }),
   provisionRunnerVm: (connectionId, body = null) => api.post(`/api/action-runner-connections/${connectionId}/provision`, body),
   deprovisionRunnerVm: (connectionId) => api.post(`/api/action-runner-connections/${connectionId}/deprovision`),
   deleteActionRunnerConnection: (connectionId) => api.delete(`/api/action-runner-connections/${connectionId}`),

@@ -2320,7 +2320,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.get("/api/action-runner-connections/{connection_id}/provision-status")
-        async def get_runner_provision_status(connection_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+        async def get_runner_provision_status(connection_id: int, request: Request, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Get progress for runner provisioning: VM status, startup script milestones, and Azure agent online state."""
             try:
                 import base64
@@ -2364,6 +2364,8 @@ class DashboardApplication:
 
                 azure_agent = {}
                 if conn.provider == "azure_devops":
+                    pat_override = (request.headers.get("x-azure-pat") or "").strip()
+                    repo_url_override = (request.headers.get("x-azure-repo-url") or "").strip()
                     repo_with_pat = (
                         db.query(RepositoryDB)
                         .filter(
@@ -2375,13 +2377,15 @@ class DashboardApplication:
                         .order_by(RepositoryDB.id.asc())
                         .first()
                     )
-                    if conn.agent_pool and repo_with_pat and repo_with_pat.azure_pat:
+                    pat_for_status = pat_override or (repo_with_pat.azure_pat if repo_with_pat and repo_with_pat.azure_pat else "")
+                    if conn.agent_pool and pat_for_status:
                         try:
                             org_url = f"https://dev.azure.com/{conn.organization}"
-                            if getattr(repo_with_pat, "url", None):
+                            candidate_repo_url = repo_url_override or (getattr(repo_with_pat, "url", None) if repo_with_pat else None)
+                            if candidate_repo_url:
                                 try:
                                     from urllib.parse import urlparse
-                                    parsed = urlparse(repo_with_pat.url)
+                                    parsed = urlparse(candidate_repo_url)
                                     if parsed.scheme in ("http", "https") and parsed.netloc:
                                         if "visualstudio.com" in parsed.netloc:
                                             org_url = f"{parsed.scheme}://{parsed.netloc}"
@@ -2389,7 +2393,7 @@ class DashboardApplication:
                                             org_url = f"{parsed.scheme}://{parsed.netloc}/{conn.organization}"
                                 except Exception:
                                     pass
-                            auth_string = base64.b64encode(f":{repo_with_pat.azure_pat}".encode()).decode()
+                            auth_string = base64.b64encode(f":{pat_for_status}".encode()).decode()
                             headers = {
                                 "Authorization": f"Basic {auth_string}",
                                 "Accept": "application/json",
@@ -2408,8 +2412,19 @@ class DashboardApplication:
                                     )
                                     if agents_resp.status_code == 200:
                                         agents = (agents_resp.json() or {}).get("value", [])
-                                        target_name = (conn.gcp_instance_name or "").strip().lower()
-                                        agent = next((a for a in agents if (a.get("name") or "").strip().lower() == target_name), None)
+                                        expected_names = {
+                                            (conn.gcp_instance_name or "").strip().lower(),
+                                            (self._expected_agent_name_for_connection(conn) or "").strip().lower(),
+                                        }
+                                        expected_names = {n for n in expected_names if n}
+
+                                        def _matches(candidate_name: str) -> bool:
+                                            c = (candidate_name or "").strip().lower()
+                                            if not c:
+                                                return False
+                                            return any(c == t or c.startswith(t) or t.startswith(c) for t in expected_names)
+
+                                        agent = next((a for a in agents if _matches(a.get("name"))), None)
                                         if agent:
                                             azure_agent = {
                                                 "pool_name": conn.agent_pool,
@@ -2417,9 +2432,17 @@ class DashboardApplication:
                                                 "online": bool(agent.get("status", "").lower() == "online"),
                                                 "enabled": bool(agent.get("enabled", False)),
                                                 "name": agent.get("name"),
+                                                "expected_names": sorted(expected_names),
                                             }
                                         else:
-                                            azure_agent = {"pool_name": conn.agent_pool, "found": False, "online": False, "enabled": False}
+                                            azure_agent = {
+                                                "pool_name": conn.agent_pool,
+                                                "found": False,
+                                                "online": False,
+                                                "enabled": False,
+                                                "expected_names": sorted(expected_names),
+                                                "seen_agent_names": [a.get("name") for a in agents[:10]],
+                                            }
                                     else:
                                         azure_agent = {"pool_name": conn.agent_pool, "error": f"agents_query_failed_{agents_resp.status_code}"}
                                 else:
@@ -2434,7 +2457,7 @@ class DashboardApplication:
                             "found": False,
                             "online": False,
                             "missing_pool": not bool(conn.agent_pool),
-                            "missing_pat": not bool(repo_with_pat and repo_with_pat.azure_pat),
+                            "missing_pat": not bool(pat_for_status),
                         }
 
                 complete = bool(vm_running and startup.get("startup_complete")) if conn.provider != "azure_devops" else bool(
