@@ -125,6 +125,9 @@ const apiService = {
   getRepositoryHealth: () => api.get('/api/repositories/health'),
   getActionRunnerConnections: () => api.get('/api/action-runner-connections'),
   createActionRunnerConnection: (data) => api.post('/api/action-runner-connections', data),
+  updateActionRunnerConnection: (connectionId, data) => api.put(`/api/action-runner-connections/${connectionId}`, data),
+  getAzureAgentPoolsForConnection: (connectionId) => api.get(`/api/action-runner-connections/${connectionId}/azure-agent-pools`),
+  getRunnerProvisionStatus: (connectionId) => api.get(`/api/action-runner-connections/${connectionId}/provision-status`),
   provisionRunnerVm: (connectionId, body = null) => api.post(`/api/action-runner-connections/${connectionId}/provision`, body),
   deprovisionRunnerVm: (connectionId) => api.post(`/api/action-runner-connections/${connectionId}/deprovision`),
   

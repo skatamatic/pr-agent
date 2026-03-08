@@ -129,7 +129,11 @@ const RepositoryManager = () => {
   const [provisioningConnectionId, setProvisioningConnectionId] = useState(null);
   const [deprovisioningConnectionId, setDeprovisioningConnectionId] = useState(null);
   const [lastProvisionResult, setLastProvisionResult] = useState(null);
-  const [provisionAdoPat, setProvisionAdoPat] = useState('');
+  const [loadingPoolsConnectionId, setLoadingPoolsConnectionId] = useState(null);
+  const [savingPoolConnectionId, setSavingPoolConnectionId] = useState(null);
+  const [azurePoolOptionsByConnection, setAzurePoolOptionsByConnection] = useState({});
+  const [poolDraftByConnection, setPoolDraftByConnection] = useState({});
+  const [provisionProgressByConnection, setProvisionProgressByConnection] = useState({});
   // Inline create connection (when no connections for provider)
   const [newConnectionOrg, setNewConnectionOrg] = useState('');
   const [newConnectionProject, setNewConnectionProject] = useState('');
@@ -152,6 +156,35 @@ const RepositoryManager = () => {
   useEffect(() => {
     fetchRepositories();
   }, [fetchRepositories]);
+
+  useEffect(() => {
+    const connId = formData.action_runner_connection_id;
+    if (!connId) return undefined;
+    const conn = actionRunnerConnections.find((c) => c.id === connId);
+    if (!conn || !conn.gcp_instance_name || !conn.gcp_zone) return undefined;
+
+    let cancelled = false;
+    const poll = () => {
+      api.getRunnerProvisionStatus(connId)
+        .then((res) => {
+          if (cancelled) return;
+          setProvisionProgressByConnection((prev) => ({
+            ...prev,
+            [connId]: res.data?.data || {},
+          }));
+        })
+        .catch(() => {
+          // keep UI calm; provisioning API errors are shown on explicit user actions
+        });
+    };
+
+    poll();
+    const intervalId = setInterval(poll, 8000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [formData.action_runner_connection_id, actionRunnerConnections]);
 
   const fetchActionRunnerConnections = useCallback(() => {
     return api.getActionRunnerConnections()
@@ -2085,136 +2118,311 @@ const RepositoryManager = () => {
                   const conn = actionRunnerConnections.find((c) => c.id === formData.action_runner_connection_id);
                   if (!conn) return null;
                   const hasVm = !!(conn.gcp_instance_name && conn.gcp_zone);
+                  const linkedAzureRepos = repositories.filter((r) => r.action_runner_connection_id === conn.id && r.provider === 'azure_devops');
+                  const hasAzurePat = linkedAzureRepos.some((r) => r.has_azure_pat || (r.azure_pat && r.azure_pat.trim()));
+                  const provisionProgress = provisionProgressByConnection[conn.id] || {};
+                  const vmRunning = !!provisionProgress.vm_running;
+                  const startupComplete = !!provisionProgress.startup?.startup_complete;
+                  const agentFound = !!provisionProgress.azure_agent?.found;
+                  const agentOnline = !!provisionProgress.azure_agent?.online;
+                  const isAzure = conn.provider === 'azure_devops';
+                  const wizardPercent = isAzure
+                    ? (hasAzurePat ? 20 : 0) + (conn.agent_pool ? 20 : 0) + (hasVm ? 25 : 0) + (vmRunning ? 10 : 0) + (startupComplete ? 10 : 0) + (agentFound ? 10 : 0) + (agentOnline ? 5 : 0)
+                    : (hasVm ? (vmRunning ? 80 : 55) : 15) + (startupComplete ? 20 : 0);
+                  const finalPercent = Math.max(0, Math.min(100, wizardPercent));
+                  const progressLabel = finalPercent >= 100
+                    ? 'Setup complete'
+                    : finalPercent >= 75
+                      ? 'Finishing up'
+                      : finalPercent >= 40
+                        ? 'Provisioning in progress'
+                        : 'Getting started';
+                  const etaHint = finalPercent >= 100
+                    ? 'Ready for PR jobs.'
+                    : finalPercent >= 75
+                      ? 'Typically under 1 minute remaining.'
+                      : finalPercent >= 40
+                        ? 'Usually 2-4 minutes total from provision click.'
+                        : 'Complete steps above to begin provisioning.';
                   const provisioning = provisioningConnectionId === conn.id;
                   const deprovisioning = deprovisioningConnectionId === conn.id;
-                  const installInfo = lastProvisionResult?.install_instructions || (hasVm ? { ssh_command: `gcloud compute ssh ${conn.gcp_instance_name} --zone=${conn.gcp_zone} --project=<your-project>`, steps: 'SSH to the VM and install the runner/agent per your provider docs.', docs_url: '' } : null);
+                  const installInfo = lastProvisionResult?.install_instructions || (hasVm
+                    ? {
+                        ssh_command: `gcloud compute ssh ${conn.gcp_instance_name} --zone=${conn.gcp_zone} --project=<your-project>`,
+                        steps: conn.provider === 'azure_devops'
+                          ? `Runner VM is managed by the dashboard. Re-provision to refresh agent auto-registration in pool "${conn.agent_pool || 'configured pool'}".`
+                          : 'SSH to the VM and install the runner/agent per your provider docs.',
+                        docs_url: '',
+                      }
+                    : null);
                   return (
                     <div className="mt-3 p-3 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-600 text-sm">
-                      <div className="font-medium text-gray-800 dark:text-gray-200 mb-2">GCP Runner VM</div>
-                      {hasVm ? (
-                        <div className="space-y-2">
-                          <div className="text-gray-600 dark:text-gray-400">
-                            {conn.gcp_instance_name} ({conn.gcp_zone})
+                      <div className="flex items-center justify-between gap-2 mb-3">
+                        <div className="font-medium text-gray-800 dark:text-gray-200">Runner Setup Wizard</div>
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${finalPercent >= 100 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'}`}>
+                          {finalPercent >= 100 ? 'Ready' : 'In setup'}
+                        </span>
+                      </div>
+                      <div className="mb-3">
+                        <div className="flex items-center justify-between text-xs mb-1">
+                          <span className="text-gray-700 dark:text-gray-300">{progressLabel}</span>
+                          <span className="text-gray-600 dark:text-gray-400">{finalPercent}%</span>
+                        </div>
+                        <div className="w-full h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                          <div
+                            className="h-full bg-blue-600 transition-all duration-500"
+                            style={{ width: `${finalPercent}%` }}
+                          />
+                        </div>
+                        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{etaHint}</p>
+                      </div>
+
+                      {conn.provider === 'azure_devops' && (
+                        <div className="space-y-3 mb-3">
+                          <div className="p-3 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700">
+                            <div className="flex items-center justify-between gap-2 mb-2">
+                              <div className="text-sm font-medium text-gray-800 dark:text-gray-100">Step 1 - Azure PAT connected</div>
+                              <span className={`text-xs px-2 py-0.5 rounded-full ${hasAzurePat ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'}`}>
+                                {hasAzurePat ? 'Done' : 'Missing'}
+                              </span>
+                            </div>
+                            {!hasAzurePat && (
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-xs text-gray-600 dark:text-gray-300">Add Azure PAT in Access Token Configuration below, then save repository.</p>
+                                <button
+                                  type="button"
+                                  onClick={() => document.getElementById('new-repo-token-config')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                                  className="px-2 py-1 rounded bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-xs"
+                                >
+                                  Jump to token
+                                </button>
+                              </div>
+                            )}
                           </div>
-                          <div className="flex flex-wrap gap-2">
-                            {installInfo?.ssh_command && (
+
+                          <div className="p-3 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700">
+                            <div className="flex items-center justify-between gap-2 mb-2">
+                              <div className="text-sm font-medium text-gray-800 dark:text-gray-100">Step 2 - Choose agent pool</div>
+                              <span className={`text-xs px-2 py-0.5 rounded-full ${conn.agent_pool ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'}`}>
+                                {conn.agent_pool ? 'Saved' : 'Not set'}
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap items-end gap-2">
+                              <div className="flex flex-col">
+                                <label className="text-xs text-gray-600 dark:text-gray-300 mb-0.5">Azure Agent Pool</label>
+                                <select
+                                  value={poolDraftByConnection[conn.id] ?? conn.agent_pool ?? ''}
+                                  onChange={(e) => setPoolDraftByConnection((prev) => ({ ...prev, [conn.id]: e.target.value }))}
+                                  className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm min-w-56"
+                                >
+                                  <option value="">Select pool</option>
+                                  {(azurePoolOptionsByConnection[conn.id] || []).map((pool) => (
+                                    <option key={`${conn.id}-${pool.id || pool.name}`} value={pool.name}>
+                                      {pool.name}{pool.is_hosted ? ' (hosted)' : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
                               <button
                                 type="button"
-                                onClick={() => { navigator.clipboard.writeText(installInfo.ssh_command); showSuccess('Copied', 'SSH command copied to clipboard'); }}
-                                className="px-2 py-1 rounded bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-xs"
+                                disabled={loadingPoolsConnectionId === conn.id || !hasAzurePat}
+                                onClick={() => {
+                                  setLoadingPoolsConnectionId(conn.id);
+                                  api.getAzureAgentPoolsForConnection(conn.id)
+                                    .then((res) => {
+                                      const pools = res.data?.data?.pools || [];
+                                      setAzurePoolOptionsByConnection((prev) => ({ ...prev, [conn.id]: pools }));
+                                      if (!poolDraftByConnection[conn.id] && conn.agent_pool) {
+                                        setPoolDraftByConnection((prev) => ({ ...prev, [conn.id]: conn.agent_pool }));
+                                      }
+                                      showSuccess('Azure pools', `Loaded ${pools.length} pool(s) for ${conn.organization}.`);
+                                    })
+                                    .catch((err) => showError('Load pools failed', err.response?.data?.detail || err.message))
+                                    .finally(() => setLoadingPoolsConnectionId(null));
+                                }}
+                                className="px-2 py-1.5 rounded bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-xs disabled:opacity-50"
                               >
-                                Copy SSH command
+                                {loadingPoolsConnectionId === conn.id ? 'Loading…' : 'Load pools'}
                               </button>
-                            )}
+                              <button
+                                type="button"
+                                disabled={savingPoolConnectionId === conn.id}
+                                onClick={() => {
+                                  const value = (poolDraftByConnection[conn.id] ?? conn.agent_pool ?? '').trim();
+                                  setSavingPoolConnectionId(conn.id);
+                                  api.updateActionRunnerConnection(conn.id, { agent_pool: value || null })
+                                    .then(() => {
+                                      showSuccess('Agent pool', value ? `Saved "${value}"` : 'Cleared');
+                                      setActionRunnerConnections((prev) => prev.map((c) => c.id === conn.id ? { ...c, agent_pool: value || null } : c));
+                                      fetchActionRunnerConnections();
+                                    })
+                                    .catch((err) => showError('Save agent pool failed', err.response?.data?.detail || err.message))
+                                    .finally(() => setSavingPoolConnectionId(null));
+                                }}
+                                className="px-2 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 text-xs disabled:opacity-50"
+                              >
+                                {savingPoolConnectionId === conn.id ? 'Saving…' : 'Save pool'}
+                              </button>
+                            </div>
+                            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                              Pulls pools from Azure using PAT on linked repos.
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="p-3 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700">
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <div className="text-sm font-medium text-gray-800 dark:text-gray-100">Step {conn.provider === 'azure_devops' ? '3' : '1'} - Provision runner VM</div>
+                          <span className={`text-xs px-2 py-0.5 rounded-full ${hasVm ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'}`}>
+                            {hasVm ? 'Provisioned' : 'Not provisioned'}
+                          </span>
+                        </div>
+                        {!hasVm ? (
+                          <div className="space-y-2">
+                            <p className="text-gray-600 dark:text-gray-400 text-xs">
+                              {conn.provider === 'azure_devops'
+                                ? 'This will create the VM and auto-register the Azure agent with your selected pool.'
+                                : 'This will create the VM for your self-hosted runner.'}
+                            </p>
                             <button
                               type="button"
-                              disabled={deprovisioning}
+                              disabled={provisioning}
                               onClick={() => {
-                                setDeprovisioningConnectionId(conn.id);
-                                api.deprovisionRunnerVm(conn.id)
+                                setProvisioningConnectionId(conn.id);
+                                setLastProvisionResult(null);
+                                api.provisionRunnerVm(conn.id)
                                   .then((res) => {
-                                    showSuccess('Runner VM', res.data?.data?.message || 'VM removal started.');
-                                    setActionRunnerConnections((prev) => prev.map((c) => c.id === conn.id ? { ...c, gcp_instance_name: null, gcp_zone: null } : c));
-                                    setLastProvisionResult(null);
+                                    const data = res.data?.data;
+                                    if (data?.success) {
+                                      showSuccess('Runner VM', data.message || 'VM creation started.');
+                                      setLastProvisionResult(data);
+                                      setActionRunnerConnections((prev) => prev.map((c) => c.id === conn.id ? { ...c, gcp_instance_name: data.instance_name, gcp_zone: data.zone } : c));
+                                      fetchActionRunnerConnections();
+                                    } else {
+                                      const msg = data?.error || res.data?.detail || 'Unknown error';
+                                      const isGcpNotConfigured = /GCP|configured|GCP_RUNNER/i.test(msg);
+                                      showError('Provision failed', isGcpNotConfigured
+                                        ? 'GCP runner provisioning is not configured. Set GCP_RUNNER_PROJECT_ID (and optionally GCP_RUNNER_REGION, GCP_RUNNER_ZONE) on the backend, or use an existing self-hosted runner.'
+                                        : msg);
+                                    }
                                   })
-                                  .catch((err) => showError('Deprovision failed', err.response?.data?.detail || err.message))
-                                  .finally(() => {
-                                    setDeprovisioningConnectionId(null);
-                                    fetchActionRunnerConnections();
-                                  });
-                              }}
-                              className="px-2 py-1 rounded bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-900/50 text-xs disabled:opacity-50"
-                            >
-                              {deprovisioning ? 'Removing…' : 'Remove VM'}
-                            </button>
-                          </div>
-                          {installInfo && (
-                            <details className="mt-2">
-                              <summary className="cursor-pointer text-gray-600 dark:text-gray-400">Install instructions</summary>
-                              <pre className="mt-1 p-2 bg-gray-200 dark:bg-gray-700 rounded text-xs overflow-x-auto">{installInfo.ssh_command}</pre>
-                              <p className="mt-1 text-gray-600 dark:text-gray-400">{installInfo.steps}</p>
-                              {installInfo.docs_url && (
-                                <a href={installInfo.docs_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 text-xs">Docs</a>
-                              )}
-                            </details>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="space-y-2">
-                          <p className="text-gray-600 dark:text-gray-400">No VM provisioned yet.</p>
-                          {conn.provider === 'azure_devops' && (
-                            <div className="space-y-2">
-                              {!conn.agent_pool && (
-                                <p className="text-yellow-600 dark:text-yellow-400 text-xs">Set an Agent Pool name on the connection to enable auto-registration.</p>
-                              )}
-                              <div className="flex flex-wrap items-end gap-2">
-                                <div className="flex flex-col">
-                                  <label className="text-xs text-gray-500 dark:text-gray-400 mb-0.5">ADO PAT (Agent Pools scope)</label>
-                                  <input
-                                    type="password"
-                                    placeholder="PAT for agent registration"
-                                    value={provisionAdoPat}
-                                    onChange={(e) => setProvisionAdoPat(e.target.value)}
-                                    className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 text-sm w-56"
-                                  />
-                                </div>
-                              </div>
-                              {provisionAdoPat && conn.agent_pool && (
-                                <p className="text-green-600 dark:text-green-400 text-xs">Agent will auto-register in pool "{conn.agent_pool}" (no SSH needed).</p>
-                              )}
-                            </div>
-                          )}
-                          <button
-                            type="button"
-                            disabled={provisioning}
-                            onClick={() => {
-                              setProvisioningConnectionId(conn.id);
-                              setLastProvisionResult(null);
-                              const body = (conn.provider === 'azure_devops' && provisionAdoPat)
-                                ? { ado_pat: provisionAdoPat }
-                                : null;
-                              api.provisionRunnerVm(conn.id, body)
-                                .then((res) => {
-                                  const data = res.data?.data;
-                                  if (data?.success) {
-                                    showSuccess('Runner VM', data.message || 'VM creation started.');
-                                    setLastProvisionResult(data);
-                                    setProvisionAdoPat('');
-                                    setActionRunnerConnections((prev) => prev.map((c) => c.id === conn.id ? { ...c, gcp_instance_name: data.instance_name, gcp_zone: data.zone } : c));
-                                    fetchActionRunnerConnections();
-                                  } else {
-                                    const msg = data?.error || res.data?.detail || 'Unknown error';
+                                  .catch((err) => {
+                                    const msg = err.response?.data?.detail || err.message;
                                     const isGcpNotConfigured = /GCP|configured|GCP_RUNNER/i.test(msg);
                                     showError('Provision failed', isGcpNotConfigured
                                       ? 'GCP runner provisioning is not configured. Set GCP_RUNNER_PROJECT_ID (and optionally GCP_RUNNER_REGION, GCP_RUNNER_ZONE) on the backend, or use an existing self-hosted runner.'
                                       : msg);
-                                  }
-                                })
-                                .catch((err) => {
-                                  const msg = err.response?.data?.detail || err.message;
-                                  const isGcpNotConfigured = /GCP|configured|GCP_RUNNER/i.test(msg);
-                                  showError('Provision failed', isGcpNotConfigured
-                                    ? 'GCP runner provisioning is not configured. Set GCP_RUNNER_PROJECT_ID (and optionally GCP_RUNNER_REGION, GCP_RUNNER_ZONE) on the backend, or use an existing self-hosted runner.'
-                                    : msg);
-                                })
-                                .finally(() => setProvisioningConnectionId(null));
-                            }}
-                            className="px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 text-xs disabled:opacity-50"
-                          >
-                            {provisioning ? 'Provisioning…' : 'Provision runner VM'}
-                          </button>
-                          {lastProvisionResult?.install_instructions && (
-                            <details className="mt-2" open>
-                              <summary className="cursor-pointer text-gray-600 dark:text-gray-400">
-                                {lastProvisionResult.agent_auto_registered ? 'Auto-registration details' : 'Install instructions'}
-                              </summary>
-                              <pre className="mt-1 p-2 bg-gray-200 dark:bg-gray-700 rounded text-xs overflow-x-auto">{lastProvisionResult.install_instructions.ssh_command}</pre>
-                              <p className="mt-1 text-gray-600 dark:text-gray-400">{lastProvisionResult.install_instructions.steps}</p>
-                              {lastProvisionResult.install_instructions.docs_url && (
-                                <a href={lastProvisionResult.install_instructions.docs_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 text-xs">Docs</a>
+                                  })
+                                  .finally(() => setProvisioningConnectionId(null));
+                              }}
+                              className="px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 text-xs disabled:opacity-50"
+                            >
+                              {provisioning ? 'Provisioning…' : 'Provision runner VM'}
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            <div className="text-gray-600 dark:text-gray-400 text-xs">
+                              {conn.gcp_instance_name} ({conn.gcp_zone})
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              {installInfo?.ssh_command && (
+                                <button
+                                  type="button"
+                                  onClick={() => { navigator.clipboard.writeText(installInfo.ssh_command); showSuccess('Copied', 'SSH command copied to clipboard'); }}
+                                  className="px-2 py-1 rounded bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 text-xs"
+                                >
+                                  Copy SSH command
+                                </button>
                               )}
+                              <button
+                                type="button"
+                                disabled={deprovisioning}
+                                onClick={() => {
+                                  setDeprovisioningConnectionId(conn.id);
+                                  api.deprovisionRunnerVm(conn.id)
+                                    .then((res) => {
+                                      showSuccess('Runner VM', res.data?.data?.message || 'VM removal started.');
+                                      setActionRunnerConnections((prev) => prev.map((c) => c.id === conn.id ? { ...c, gcp_instance_name: null, gcp_zone: null } : c));
+                                      setLastProvisionResult(null);
+                                    })
+                                    .catch((err) => showError('Deprovision failed', err.response?.data?.detail || err.message))
+                                    .finally(() => {
+                                      setDeprovisioningConnectionId(null);
+                                      fetchActionRunnerConnections();
+                                    });
+                                }}
+                                className="px-2 py-1 rounded bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-900/50 text-xs disabled:opacity-50"
+                              >
+                                {deprovisioning ? 'Removing…' : 'Remove VM'}
+                              </button>
+                            </div>
+                            {installInfo && (
+                              <details className="mt-2">
+                                <summary className="cursor-pointer text-gray-600 dark:text-gray-400">Details</summary>
+                                <pre className="mt-1 p-2 bg-gray-200 dark:bg-gray-700 rounded text-xs overflow-x-auto">{installInfo.ssh_command}</pre>
+                                <p className="mt-1 text-gray-600 dark:text-gray-400">{installInfo.steps}</p>
+                                {installInfo.docs_url && (
+                                  <a href={installInfo.docs_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 text-xs">Docs</a>
+                                )}
+                              </details>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {hasVm && (
+                        <div className="p-3 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 mt-3">
+                          <div className="text-sm font-medium text-gray-800 dark:text-gray-100 mb-2">Live setup progress</div>
+                          <div className="space-y-1 text-xs">
+                            <div className="flex items-center justify-between">
+                              <span className="text-gray-600 dark:text-gray-300">VM running</span>
+                              <span className={vmRunning ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
+                                {vmRunning ? "Done" : (provisionProgress.vm_status ? provisionProgress.vm_status : "Waiting")}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="text-gray-600 dark:text-gray-300">Startup script completed</span>
+                              <span className={startupComplete ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
+                                {startupComplete ? "Done" : "In progress"}
+                              </span>
+                            </div>
+                            {conn.provider === 'azure_devops' && (
+                              <>
+                                <div className="flex items-center justify-between">
+                                  <span className="text-gray-600 dark:text-gray-300">Agent registered in pool</span>
+                                  <span className={agentFound ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
+                                    {agentFound ? "Done" : "Waiting"}
+                                  </span>
+                                </div>
+                                <div className="flex items-center justify-between">
+                                  <span className="text-gray-600 dark:text-gray-300">Agent online</span>
+                                  <span className={agentOnline ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
+                                    {agentOnline ? "Done" : "Waiting"}
+                                  </span>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                          {provisionProgress.startup?.last_log_excerpt && (
+                            <details className="mt-2">
+                              <summary className="cursor-pointer text-gray-600 dark:text-gray-400 text-xs">Startup logs (latest)</summary>
+                              <pre className="mt-1 p-2 bg-gray-200 dark:bg-gray-800 rounded text-xs overflow-x-auto whitespace-pre-wrap">
+                                {provisionProgress.startup.last_log_excerpt}
+                              </pre>
                             </details>
                           )}
+                        </div>
+                      )}
+
+                      {lastProvisionResult?.install_instructions && (
+                        <div className="mt-3 p-2 rounded border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20">
+                          <p className="text-xs text-blue-700 dark:text-blue-300">
+                            {lastProvisionResult.agent_auto_registered
+                              ? 'Nice! VM provisioning and Azure agent registration have started. It usually appears in a few minutes.'
+                              : 'VM provisioning has started. Use details above if any manual follow-up is needed.'}
+                          </p>
                         </div>
                       )}
                     </div>
@@ -2223,7 +2431,7 @@ const RepositoryManager = () => {
               </div>
 
               {/* Access Token Configuration */}
-              <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 border border-gray-200 dark:border-gray-600">
+              <div id="new-repo-token-config" className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 border border-gray-200 dark:border-gray-600">
                 <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-3 flex items-center">
                   <Key className="h-4 w-4 mr-2" />
                   Access Token Configuration

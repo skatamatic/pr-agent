@@ -58,7 +58,7 @@ This document describes how the dashboard-provisioned GCP runner VM fits togethe
   - Image: Ubuntu 22.04 LTS
   - Machine type: e2-medium (configurable)
   - **Startup script** (see below): installs Docker, Python, git, PR-Agent clone, env file.
-- **Result**: VM boots; startup script runs once; VM is ready for runner/agent install and then for jobs.
+- **Result**: VM boots; startup script runs once; for Azure DevOps, agent registration is automated when connection has `agent_pool` and a linked repo PAT.
 
 ### 2. VM startup script (best practices)
 
@@ -67,10 +67,10 @@ This document describes how the dashboard-provisioned GCP runner VM fits togethe
 - **Order**: Install system packages (Docker, Python, git) → create env file → clone PR-Agent → pip install → optional `docker pull` for PR-Agent image.
 - **No secrets in script**: DASHBOARD_URL and GCS bucket/prefix are injected by Terraform/dashboard; API keys and tokens are provided at **job** time via pipeline variables or workflow env, not baked into the image.
 
-### 3. User installs the runner/agent
+### 3. Runner/agent registration
 
-- **GitHub**: Settings → Actions → Runners → New self-hosted runner → copy install commands → SSH to VM → run them.
-- **Azure DevOps**: Project settings → Agent pools → Add agent → Linux → copy registration script → SSH to VM → run it.
+- **GitHub**: still manual (GitHub runner registration flow).
+- **Azure DevOps**: automated by VM startup script (download + configure + install service). No manual copy/download/config on VM.
 - Runner/agent runs as a service and waits for jobs.
 
 ### 4. How jobs run PR-Agent (two supported modes)

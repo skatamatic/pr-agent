@@ -239,6 +239,7 @@ class GCPRunnerService:
         organization: str,
         project: Optional[str] = None,
         agent_pool: str = "",
+        ado_org_url: str = "",
     ) -> Dict[str, Any]:
         """
         Create a GCE VM for this runner connection. Returns dict with instance_name, zone,
@@ -259,7 +260,7 @@ class GCPRunnerService:
         ado_pat = ""
         ado_pool = ""
         if provider == "azure_devops" and self.ado_pat and agent_pool:
-            ado_org_url = f"https://dev.azure.com/{organization}"
+            ado_org_url = (ado_org_url or "").strip() or f"https://dev.azure.com/{organization}"
             ado_pat = self.ado_pat
             ado_pool = agent_pool
 
@@ -412,3 +413,41 @@ class GCPRunnerService:
             return instance.status if hasattr(instance, "status") else None
         except Exception:
             return None
+
+    def get_startup_progress(self, instance_name: str, zone: str) -> Dict[str, Any]:
+        """Parse startup-script progress from serial console output for UX polling."""
+        progress = {
+            "log_available": False,
+            "docker_ready": False,
+            "env_written": False,
+            "pr_agent_ready": False,
+            "ado_agent_registered": False,
+            "startup_complete": False,
+            "last_log_excerpt": "",
+        }
+        if not GCP_COMPUTE_AVAILABLE or not self.is_configured():
+            return progress
+        try:
+            request = compute_v1.GetSerialPortOutputInstanceRequest(
+                project=self.project_id,
+                zone=zone,
+                instance=instance_name,
+                port=1,
+            )
+            out = self.client.get_serial_port_output(request=request)
+            contents = (out.contents if hasattr(out, "contents") else "") or ""
+            if not contents:
+                return progress
+            progress["log_available"] = True
+            c = contents.lower()
+            progress["docker_ready"] = ("docker installed." in c) or ("docker already installed." in c)
+            progress["env_written"] = "env file written to /opt/pr-agent-runner/env." in c
+            progress["pr_agent_ready"] = ("pr-agent clone and pip install done." in c) or ("pr-agent already present at /opt/pr-agent." in c)
+            progress["ado_agent_registered"] = "registered in pool" in c
+            progress["startup_complete"] = "startup complete." in c
+            lines = [ln for ln in contents.splitlines() if "[pr-agent-runner-startup]" in ln]
+            progress["last_log_excerpt"] = "\n".join(lines[-8:]) if lines else ""
+        except Exception:
+            # Non-fatal: serial logs may be unavailable briefly or restricted
+            return progress
+        return progress

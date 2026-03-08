@@ -1486,12 +1486,133 @@ class DashboardApplication:
                 db.rollback()
                 raise HTTPException(status_code=500, detail=str(e))
 
+        @self.app.put("/api/action-runner-connections/{connection_id}")
+        async def update_action_runner_connection(connection_id: int, body: dict, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """Update mutable fields for a runner connection (currently agent_pool)."""
+            try:
+                from models import ActionRunnerConnectionDB, ActionRunnerConnectionResponse
+                conn = db.query(ActionRunnerConnectionDB).filter(ActionRunnerConnectionDB.id == connection_id).first()
+                if not conn:
+                    raise HTTPException(status_code=404, detail="Action runner connection not found")
+
+                if "agent_pool" in body:
+                    value = body.get("agent_pool")
+                    conn.agent_pool = value.strip() if isinstance(value, str) and value.strip() else None
+
+                db.commit()
+                db.refresh(conn)
+                repos_count = len(getattr(conn, "repositories", []) or [])
+                return APIResponse(data=ActionRunnerConnectionResponse(
+                    id=conn.id,
+                    provider=conn.provider,
+                    organization=conn.organization,
+                    project=conn.project,
+                    display_name=conn.display_name or f"{conn.organization}" + (f" / {conn.project}" if conn.project else ""),
+                    agent_pool=conn.agent_pool,
+                    created_at=conn.created_at,
+                    updated_at=conn.updated_at,
+                    repository_count=repos_count,
+                    runner_status=None,
+                    gcp_instance_name=conn.gcp_instance_name,
+                    gcp_zone=conn.gcp_zone,
+                ), message="Action runner connection updated")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error updating action runner connection: {e}")
+                db.rollback()
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/action-runner-connections/{connection_id}/azure-agent-pools")
+        async def list_azure_agent_pools(connection_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """List Azure DevOps agent pools for this connection's organization using a linked repo PAT."""
+            try:
+                import base64
+                import requests
+                from models import ActionRunnerConnectionDB, RepositoryDB
+
+                conn = db.query(ActionRunnerConnectionDB).filter(ActionRunnerConnectionDB.id == connection_id).first()
+                if not conn:
+                    raise HTTPException(status_code=404, detail="Action runner connection not found")
+                if conn.provider != "azure_devops":
+                    raise HTTPException(status_code=400, detail="Connection is not Azure DevOps")
+
+                repo_with_pat = (
+                    db.query(RepositoryDB)
+                    .filter(
+                        RepositoryDB.action_runner_connection_id == conn.id,
+                        RepositoryDB.provider == 'azure_devops',
+                        RepositoryDB.azure_pat.isnot(None),
+                        RepositoryDB.azure_pat != ''
+                    )
+                    .order_by(RepositoryDB.id.asc())
+                    .first()
+                )
+                if not repo_with_pat or not repo_with_pat.azure_pat:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="No Azure PAT found. Set Azure PAT on any repository linked to this connection first."
+                    )
+
+                org_url = f"https://dev.azure.com/{conn.organization}"
+                if getattr(repo_with_pat, "url", None):
+                    try:
+                        from urllib.parse import urlparse
+                        parsed = urlparse(repo_with_pat.url)
+                        if parsed.scheme in ("http", "https") and parsed.netloc:
+                            if "visualstudio.com" in parsed.netloc:
+                                org_url = f"{parsed.scheme}://{parsed.netloc}"
+                            elif "dev.azure.com" in parsed.netloc:
+                                org_url = f"{parsed.scheme}://{parsed.netloc}/{conn.organization}"
+                    except Exception:
+                        pass
+                auth_string = base64.b64encode(f":{repo_with_pat.azure_pat}".encode()).decode()
+                headers = {
+                    "Authorization": f"Basic {auth_string}",
+                    "Accept": "application/json",
+                    "User-Agent": "PR-Agent-Dashboard",
+                }
+                url = f"{org_url}/_apis/distributedtask/pools?api-version=7.1"
+                response = requests.get(url, headers=headers, timeout=20)
+                if response.status_code != 200:
+                    detail = f"Azure API failed ({response.status_code}) while listing agent pools."
+                    try:
+                        err = response.json()
+                        detail = err.get("message", detail)
+                    except Exception:
+                        pass
+                    raise HTTPException(status_code=400, detail=detail)
+
+                payload = response.json() if response.content else {}
+                pools_raw = payload.get("value", []) if isinstance(payload, dict) else []
+                pools = []
+                for p in pools_raw:
+                    if not isinstance(p, dict):
+                        continue
+                    pools.append({
+                        "id": p.get("id"),
+                        "name": p.get("name"),
+                        "is_hosted": p.get("isHosted", False),
+                    })
+                pools.sort(key=lambda x: (x.get("name") or "").lower())
+
+                return APIResponse(
+                    data={"pools": pools, "organization": conn.organization, "current_pool": conn.agent_pool},
+                    message="Azure agent pools retrieved",
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.exception("Error listing Azure agent pools for connection %s: %s", connection_id, e)
+                raise HTTPException(status_code=500, detail=str(e))
+
         @self.app.post("/api/action-runner-connections/{connection_id}/provision")
         async def provision_runner_vm(connection_id: int, body: Optional[ProvisionRunnerRequest] = None, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Provision a GCP Compute Engine VM for this runner connection.
-            For azure_devops: pass ado_pat in the body to auto-register the agent (no SSH needed)."""
+            For azure_devops: auto-registers the agent (no SSH needed) using the
+            connection's agent_pool and Azure PAT from linked repositories; ado_pat in body can override."""
             try:
-                from models import ActionRunnerConnectionDB
+                from models import ActionRunnerConnectionDB, RepositoryDB
                 from config import settings
                 from services.gcp_runner_service import GCPRunnerService
                 conn = db.query(ActionRunnerConnectionDB).filter(ActionRunnerConnectionDB.id == connection_id).first()
@@ -1513,6 +1634,60 @@ class DashboardApplication:
                 dashboard_api_key = getattr(settings, 'dashboard_api_key', '') or ''
                 ado_pat = (body.ado_pat if body and body.ado_pat else '') or ''
                 agent_pool = (body.agent_pool if body and body.agent_pool else '') or conn.agent_pool or ''
+                ado_org_url = f"https://dev.azure.com/{conn.organization}"
+
+                # Fully automated Azure runner registration:
+                # if PAT is not explicitly supplied at provision time, reuse an existing
+                # Azure PAT from any repository linked to this runner connection.
+                repo_with_pat = None
+                if conn.provider == 'azure_devops' and not ado_pat:
+                    repo_with_pat = (
+                        db.query(RepositoryDB)
+                        .filter(
+                            RepositoryDB.action_runner_connection_id == conn.id,
+                            RepositoryDB.provider == 'azure_devops',
+                            RepositoryDB.azure_pat.isnot(None),
+                            RepositoryDB.azure_pat != ''
+                        )
+                        .order_by(RepositoryDB.id.asc())
+                        .first()
+                    )
+                    if repo_with_pat and repo_with_pat.azure_pat:
+                        ado_pat = repo_with_pat.azure_pat
+                elif conn.provider == 'azure_devops':
+                    repo_with_pat = (
+                        db.query(RepositoryDB)
+                        .filter(
+                            RepositoryDB.action_runner_connection_id == conn.id,
+                            RepositoryDB.provider == 'azure_devops',
+                        )
+                        .order_by(RepositoryDB.id.asc())
+                        .first()
+                    )
+
+                if conn.provider == 'azure_devops' and repo_with_pat and getattr(repo_with_pat, 'url', None):
+                    try:
+                        from urllib.parse import urlparse
+                        parsed = urlparse(repo_with_pat.url)
+                        if parsed.scheme in ('http', 'https') and parsed.netloc:
+                            if 'visualstudio.com' in parsed.netloc:
+                                ado_org_url = f"{parsed.scheme}://{parsed.netloc}"
+                            elif 'dev.azure.com' in parsed.netloc:
+                                ado_org_url = f"{parsed.scheme}://{parsed.netloc}/{conn.organization}"
+                    except Exception:
+                        pass
+
+                if conn.provider == 'azure_devops':
+                    if not agent_pool:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Azure DevOps auto-registration requires an agent pool on the connection."
+                        )
+                    if not ado_pat:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Azure DevOps auto-registration requires an Azure PAT. Set it on any repository linked to this connection (azure_pat), then provision again."
+                        )
 
                 if agent_pool and agent_pool != conn.agent_pool:
                     conn.agent_pool = agent_pool
@@ -1532,7 +1707,14 @@ class DashboardApplication:
                     pr_agent_runner_image=pr_agent_runner_image,
                     ado_pat=ado_pat,
                 )
-                result = svc.provision(conn.id, conn.provider, conn.organization, conn.project, agent_pool=agent_pool)
+                result = svc.provision(
+                    conn.id,
+                    conn.provider,
+                    conn.organization,
+                    conn.project,
+                    agent_pool=agent_pool,
+                    ado_org_url=ado_org_url,
+                )
                 if not result.get('success'):
                     raise HTTPException(status_code=400, detail=result.get('error', 'Provision failed'))
                 conn.gcp_instance_name = result.get('instance_name')
@@ -1576,6 +1758,144 @@ class DashboardApplication:
                 raise
             except Exception as e:
                 logger.exception("Error deprovisioning runner VM: %s", e)
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/action-runner-connections/{connection_id}/provision-status")
+        async def get_runner_provision_status(connection_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """Get progress for runner provisioning: VM status, startup script milestones, and Azure agent online state."""
+            try:
+                import base64
+                import requests
+                from models import ActionRunnerConnectionDB, RepositoryDB
+                from config import settings
+                from services.gcp_runner_service import GCPRunnerService
+
+                conn = db.query(ActionRunnerConnectionDB).filter(ActionRunnerConnectionDB.id == connection_id).first()
+                if not conn:
+                    raise HTTPException(status_code=404, detail="Action runner connection not found")
+
+                if not conn.gcp_instance_name or not conn.gcp_zone:
+                    return APIResponse(data={
+                        "connection_id": connection_id,
+                        "instance_name": conn.gcp_instance_name,
+                        "zone": conn.gcp_zone,
+                        "vm_status": None,
+                        "vm_running": False,
+                        "startup": {},
+                        "azure_agent": {},
+                        "complete": False,
+                    }, message="No VM provisioned yet")
+
+                project_id = getattr(settings, 'gcp_runner_project_id', '') or ''
+                if not project_id:
+                    raise HTTPException(status_code=400, detail="GCP runner not configured.")
+
+                svc = GCPRunnerService(
+                    project_id=project_id,
+                    region=getattr(settings, 'gcp_runner_region', 'us-central1') or 'us-central1',
+                    zone=getattr(settings, 'gcp_runner_zone', '') or None,
+                    machine_type=getattr(settings, 'gcp_runner_machine_type', 'e2-medium') or 'e2-medium',
+                    subnet=getattr(settings, 'gcp_runner_subnet', '') or None,
+                    name_prefix=getattr(settings, 'gcp_runner_prefix', 'pr-agent-runner') or 'pr-agent-runner',
+                )
+
+                vm_status = svc.get_instance_status(conn.gcp_instance_name, conn.gcp_zone)
+                vm_running = vm_status == "RUNNING"
+                startup = svc.get_startup_progress(conn.gcp_instance_name, conn.gcp_zone) if vm_running else {}
+
+                azure_agent = {}
+                if conn.provider == "azure_devops":
+                    repo_with_pat = (
+                        db.query(RepositoryDB)
+                        .filter(
+                            RepositoryDB.action_runner_connection_id == conn.id,
+                            RepositoryDB.provider == 'azure_devops',
+                            RepositoryDB.azure_pat.isnot(None),
+                            RepositoryDB.azure_pat != ''
+                        )
+                        .order_by(RepositoryDB.id.asc())
+                        .first()
+                    )
+                    if conn.agent_pool and repo_with_pat and repo_with_pat.azure_pat:
+                        try:
+                            org_url = f"https://dev.azure.com/{conn.organization}"
+                            if getattr(repo_with_pat, "url", None):
+                                try:
+                                    from urllib.parse import urlparse
+                                    parsed = urlparse(repo_with_pat.url)
+                                    if parsed.scheme in ("http", "https") and parsed.netloc:
+                                        if "visualstudio.com" in parsed.netloc:
+                                            org_url = f"{parsed.scheme}://{parsed.netloc}"
+                                        elif "dev.azure.com" in parsed.netloc:
+                                            org_url = f"{parsed.scheme}://{parsed.netloc}/{conn.organization}"
+                                except Exception:
+                                    pass
+                            auth_string = base64.b64encode(f":{repo_with_pat.azure_pat}".encode()).decode()
+                            headers = {
+                                "Authorization": f"Basic {auth_string}",
+                                "Accept": "application/json",
+                                "User-Agent": "PR-Agent-Dashboard",
+                            }
+                            pools_resp = requests.get(f"{org_url}/_apis/distributedtask/pools?api-version=7.1", headers=headers, timeout=15)
+                            if pools_resp.status_code == 200:
+                                pools = (pools_resp.json() or {}).get("value", [])
+                                pool = next((p for p in pools if (p.get("name") or "").strip().lower() == conn.agent_pool.strip().lower()), None)
+                                if pool and pool.get("id") is not None:
+                                    pool_id = pool["id"]
+                                    agents_resp = requests.get(
+                                        f"{org_url}/_apis/distributedtask/pools/{pool_id}/agents?includeCapabilities=false&api-version=7.1",
+                                        headers=headers,
+                                        timeout=15,
+                                    )
+                                    if agents_resp.status_code == 200:
+                                        agents = (agents_resp.json() or {}).get("value", [])
+                                        target_name = (conn.gcp_instance_name or "").strip().lower()
+                                        agent = next((a for a in agents if (a.get("name") or "").strip().lower() == target_name), None)
+                                        if agent:
+                                            azure_agent = {
+                                                "pool_name": conn.agent_pool,
+                                                "found": True,
+                                                "online": bool(agent.get("status", "").lower() == "online"),
+                                                "enabled": bool(agent.get("enabled", False)),
+                                                "name": agent.get("name"),
+                                            }
+                                        else:
+                                            azure_agent = {"pool_name": conn.agent_pool, "found": False, "online": False, "enabled": False}
+                                    else:
+                                        azure_agent = {"pool_name": conn.agent_pool, "error": f"agents_query_failed_{agents_resp.status_code}"}
+                                else:
+                                    azure_agent = {"pool_name": conn.agent_pool, "error": "pool_not_found"}
+                            else:
+                                azure_agent = {"pool_name": conn.agent_pool, "error": f"pools_query_failed_{pools_resp.status_code}"}
+                        except Exception as e:
+                            azure_agent = {"pool_name": conn.agent_pool, "error": str(e)}
+                    else:
+                        azure_agent = {
+                            "pool_name": conn.agent_pool,
+                            "found": False,
+                            "online": False,
+                            "missing_pool": not bool(conn.agent_pool),
+                            "missing_pat": not bool(repo_with_pat and repo_with_pat.azure_pat),
+                        }
+
+                complete = bool(vm_running and startup.get("startup_complete")) if conn.provider != "azure_devops" else bool(
+                    vm_running and startup.get("startup_complete") and azure_agent.get("found") and azure_agent.get("online")
+                )
+
+                return APIResponse(data={
+                    "connection_id": connection_id,
+                    "instance_name": conn.gcp_instance_name,
+                    "zone": conn.gcp_zone,
+                    "vm_status": vm_status,
+                    "vm_running": vm_running,
+                    "startup": startup,
+                    "azure_agent": azure_agent,
+                    "complete": complete,
+                }, message="Provision status retrieved")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.exception("Error retrieving runner provision status: %s", e)
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.post("/api/repositories/update-configs")

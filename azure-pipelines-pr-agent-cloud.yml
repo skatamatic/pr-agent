@@ -2,7 +2,7 @@
 #  PR-Agent on a CLOUD runner (GCE VM provisioned by the dashboard)
 #  – Runs as a PR check. Agent pool = pool where you registered the VM.
 #  – No local Python/pip: VM has /opt/pr-agent and /opt/pr-agent-runner/env.
-#  See docs/RUNNER_VM_AND_PR_AGENT_FLOW.md for setup (provision VM → register as ADO Linux agent).
+#  See docs/RUNNER_VM_AND_PR_AGENT_FLOW.md for setup (provision VM; ADO agent auto-registers).
 # ────────────────────────────────────────────────────────────────
 
 trigger: none
@@ -12,9 +12,7 @@ pr:
   branches:
     include: ['*']
 
-# Use the agent pool where your dashboard-provisioned GCE VM is registered.
-# In Azure DevOps: Project settings > Agent pools > Add agent > Linux; run the
-# registration script on the VM. Then set this pool name below (or use a variable).
+# Use the agent pool where your dashboard-provisioned GCE VM auto-registers.
 pool:
   name: 'PRAgent_Cloud'   # Replace with your pool name, or use: $(PR_AGENT_AGENT_POOL)
   demands:

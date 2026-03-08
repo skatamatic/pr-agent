@@ -107,6 +107,12 @@ See **`cloudbuild.yaml`** in the repo root for a reference that:
 - Terraform only updates the Cloud Run services’ image when `backend_image` / `frontend_image` change. Cloud SQL, secrets, and VPC are unchanged unless you change variables.
 - Database migrations run inside the backend container on startup (`database.initialize_database()` → `migrate_database()`). No separate migration job; rolling out a new backend image is enough.
 
+### 3.4 Deploy pipeline (`cloudbuild-deploy.yaml`) and CORS
+
+The **`cloudbuild-deploy.yaml`** config (used by triggers created with `scripts/setup-cicd-gcp.sh` / `setup-cicd-gcp.ps1`) builds and pushes backend and frontend images, then deploys via **`gcloud run services update --image=...`** (it does **not** run Terraform). So env vars and CORS are not re-applied by Terraform on each deploy.
+
+To keep CORS working after every Cloud Build deploy, the pipeline includes a step that runs **after** the backend deploy and sets `DASHBOARD_CORS_ORIGINS` to the frontend's Cloud Run URL (`https://${_PREFIX}-frontend-${PROJECT_NUMBER}.${_REGION}.run.app`). No manual deploy or one-off `gcloud run services update` is needed; each run of the deploy trigger updates the backend image and then sets CORS.
+
 ---
 
 ## 4. GitHub integration
@@ -171,6 +177,20 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
 
 New setups that use `scripts/setup-cicd-gcp.sh` or `setup-cicd-gcp.ps1` already grant this role; the one-off above is for projects created before the role was added.
 
+### Terraform plan shows destroy of backend or "index out of range for count"
+
+If you run `terraform plan` (or `terraform apply`) from `terraform/gcp` **without** passing `-var=backend_image=...` and `-var=frontend_image=...`, Terraform uses the default empty string for those variables. The Terraform config uses `count = local.backend_image_set ? 1 : 0` (and similar for frontend), so when `backend_image` is `""`, the backend Cloud Run service and related IAM resources have `count = 0` and Terraform plans to **destroy** them.
+
+**Cause:** The generated `terraform.tfvars` only contains `project_id`, `region`, and `prefix`; it does not persist image URLs. So a bare `terraform plan` or `terraform apply` in that directory sees no images and plans to remove the services.
+
+**Fix:** The setup scripts (`setup-cicd-gcp.sh` / `setup-cicd-gcp.ps1`) write the current backend and frontend image URLs to **`terraform/gcp/terraform.auto.tfvars`** after the first deploy (or when re-running and existing images are found). Terraform loads this file automatically, so subsequent runs of `terraform plan` or `terraform apply` from `terraform/gcp` without `-var=` will keep the services. The file is in `.gitignore` because it is project-specific. If you ever run Terraform from a clean clone or without having run the setup script, pass the current image URLs explicitly, e.g.:
+
+```bash
+BACKEND_IMAGE=$(gcloud run services describe PREFIX-backend --region=REGION --format='value(spec.template.spec.containers[0].image)')
+FRONTEND_IMAGE=$(gcloud run services describe PREFIX-frontend --region=REGION --format='value(spec.template.spec.containers[0].image)')
+terraform apply -var="backend_image=$BACKEND_IMAGE" -var="frontend_image=$FRONTEND_IMAGE"
+```
+
 ---
 
 ## 8. Summary checklist
@@ -196,4 +216,5 @@ New setups that use `scripts/setup-cicd-gcp.sh` or `setup-cicd-gcp.ps1` already 
 | `scripts/build-push-gcp.sh` / `build-push-gcp.ps1` | Build and push backend + frontend to Artifact Registry |
 | `terraform/gcp/*` | Infra and Cloud Run; Terraform state can live in GCS for CI/CD |
 | `cloudbuild.yaml` | Reference Cloud Build: build + push images (no Terraform in same file) |
+| `cloudbuild-deploy.yaml` | Full deploy: build, push, `gcloud run services update` for backend and frontend, then set `DASHBOARD_CORS_ORIGINS` on the backend so CORS works after every run |
 | `.github/workflows/deploy-gcp.yaml` | Reference GitHub Actions: deploy on push to `main` (optional; requires `GCP_PROJECT_ID` and `GCP_SA_KEY` secrets) |
