@@ -92,6 +92,85 @@ class ConfigService:
     def is_path_valid(self) -> bool:
         return self.validate_current_path().get("valid", False)
 
+    async def ensure_cloud_config(self) -> Dict[str, Any]:
+        """Auto-seed dashboard connection info and default azure_devops_config into GCS.
+
+        Called once on backend startup. Only fills in values that are missing so
+        user edits are never overwritten. Requires GCS backend; silently no-ops for local.
+        """
+        if not isinstance(self.backend, GCSConfigBackend):
+            return {"seeded": False, "reason": "not_gcs"}
+
+        seeded = []
+        try:
+            # ---- configuration.toml: dashboard.url + azure_devops_config defaults ----
+            raw_cfg = self.backend.get(CONFIG_KEY) or ""
+            cfg = {}
+            try:
+                cfg = toml.loads(raw_cfg) if raw_cfg.strip() else {}
+            except toml.TomlDecodeError:
+                logger.warning("GCS configuration.toml is invalid TOML; skipping auto-seed for it")
+                cfg = None
+
+            if cfg is not None:
+                changed = False
+                dashboard_section = cfg.setdefault("dashboard", {})
+                if not dashboard_section.get("url") and getattr(settings, "backend_base_url", ""):
+                    dashboard_section["url"] = settings.backend_base_url
+                    changed = True
+                    seeded.append("dashboard.url")
+
+                ado_section = cfg.setdefault("azure_devops_config", {})
+                ado_defaults = {
+                    "auto_describe": True,
+                    "auto_review": True,
+                    "auto_improve": True,
+                    "enable_output": True,
+                    "pr_actions": ["pullrequest"],
+                }
+                for k, v in ado_defaults.items():
+                    if k not in ado_section:
+                        ado_section[k] = v
+                        changed = True
+                        seeded.append(f"azure_devops_config.{k}")
+
+                if not cfg.get("config", {}).get("git_provider"):
+                    cfg.setdefault("config", {})["git_provider"] = "azure"
+                    changed = True
+                    seeded.append("config.git_provider")
+
+                if changed:
+                    self.backend.put(CONFIG_KEY, toml.dumps(cfg))
+
+            # ---- secrets.toml: dashboard.api_key ----
+            raw_sec = self.backend.get(SECRETS_KEY) or ""
+            sec = {}
+            try:
+                sec = toml.loads(raw_sec) if raw_sec.strip() else {}
+            except toml.TomlDecodeError:
+                logger.warning("GCS secrets.toml is invalid TOML; skipping auto-seed for it")
+                sec = None
+
+            if sec is not None:
+                changed_sec = False
+                dash_sec = sec.setdefault("dashboard", {})
+                api_key = getattr(settings, "dashboard_api_key", "")
+                if api_key and not dash_sec.get("api_key"):
+                    dash_sec["api_key"] = api_key
+                    changed_sec = True
+                    seeded.append("dashboard.api_key")
+
+                if changed_sec:
+                    self.backend.put(SECRETS_KEY, toml.dumps(sec))
+
+        except Exception as e:
+            logger.error("Auto-seed GCS config failed: %s", e)
+            return {"seeded": False, "error": str(e)}
+
+        if seeded:
+            logger.info("Auto-seeded GCS config: %s", ", ".join(seeded))
+        return {"seeded": bool(seeded), "keys": seeded}
+
     def _create_rotated_backup(self) -> None:
         """Create a named/dated backup of all config keys and keep at most MAX_BACKUPS."""
         now = datetime.now(timezone.utc)
@@ -206,12 +285,21 @@ class ConfigService:
                 config = self._deep_merge(config, main_config)
             secrets_config = self._load_toml_from_backend(SECRETS_KEY)
             if secrets_config:
-                # Merge API keys and other secrets
-                if 'api_keys' in secrets_config:
-                    config.setdefault('api_keys', {}).update(secrets_config['api_keys'])
-                # Merge any other secret sections
+                # Build api_keys for API/UI from PR-Agent native TOML sections (no bridge in PR-Agent)
+                def _read(key: str, native_section: str, native_field: str) -> str:
+                    if isinstance(secrets_config.get(native_section), dict) and secrets_config[native_section].get(native_field):
+                        return secrets_config[native_section][native_field]
+                    if isinstance(secrets_config.get('api_keys'), dict) and secrets_config['api_keys'].get(key):
+                        return secrets_config['api_keys'][key]
+                    return ""
+                config['api_keys'] = {
+                    'openai': _read('openai', 'openai', 'key'),
+                    'anthropic': _read('anthropic', 'anthropic', 'key'),
+                    'google': _read('google', 'google_ai_studio', 'gemini_api_key'),
+                }
+                # Merge any other secret sections (e.g. dashboard)
                 for key, value in secrets_config.items():
-                    if key != 'api_keys':
+                    if key not in ('api_keys', 'openai', 'anthropic', 'google_ai_studio'):
                         config[key] = self._deep_merge(config.get(key, {}), value) if isinstance(value, dict) else value
             
             context_config = self._load_toml_from_backend(CSHARP_CONFIG_KEY)
@@ -286,11 +374,18 @@ class ConfigService:
             for section_key, section_value in config_data.items():
                 logger.debug("Processing section: %s", section_key)
                 if section_key == 'api_keys':
+                    # Write PR-Agent native TOML sections so no bridge is needed in config_loader
                     if isinstance(section_value, dict):
-                        filtered = {k: v for k, v in section_value.items() if v not in (None, '', '***')}
-                        if filtered:
-                            secrets_config['api_keys'] = filtered
-                    logger.debug("Added %s to secrets config", section_key)
+                        openai_val = section_value.get('openai') or ''
+                        anthropic_val = section_value.get('anthropic') or ''
+                        google_val = section_value.get('google') or ''
+                        if openai_val and openai_val != '***':
+                            secrets_config['openai'] = {'key': openai_val}
+                        if anthropic_val and anthropic_val != '***':
+                            secrets_config['anthropic'] = {'key': anthropic_val}
+                        if google_val and google_val != '***':
+                            secrets_config['google_ai_studio'] = {'gemini_api_key': google_val}
+                    logger.debug("Added api_keys to secrets config (native openai/anthropic/google_ai_studio)")
                 elif section_key == 'csharp_code_context_service':
                     # Split context: non-secret -> config file, username/password -> secrets file
                     ctx = section_value if isinstance(section_value, dict) else {}

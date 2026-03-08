@@ -337,6 +337,16 @@ else
 fi
 terraform apply -input=false $TF_APPLY_EXTRA $AUTO_APPROVE
 
+# Persist image URLs so a bare 'terraform plan/apply' later does not plan to destroy Cloud Run
+if [[ -n "$EXISTING_BACKEND_IMAGE" || -n "$EXISTING_FRONTEND_IMAGE" ]]; then
+  {
+    echo "# Written by setup-cicd-gcp.sh so Terraform has current images (avoids destructive plan)."
+    [[ -n "$EXISTING_BACKEND_IMAGE" ]]  && echo "backend_image  = \"${EXISTING_BACKEND_IMAGE}\""
+    [[ -n "$EXISTING_FRONTEND_IMAGE" ]] && echo "frontend_image = \"${EXISTING_FRONTEND_IMAGE}\""
+  } > "${TF_DIR}/terraform.auto.tfvars"
+  echo "  Wrote terraform.auto.tfvars (current Cloud Run images)"
+fi
+
 # ========================== Initial build + deploy =========================
 
 if [[ -n "$SKIP_INITIAL_DEPLOY" ]]; then
@@ -396,6 +406,14 @@ else
       -var="frontend_base_url=${FRONTEND_URL}" \
       $AUTO_APPROVE
   fi
+
+  # Persist images so future 'terraform plan/apply' without -var= does not destroy Cloud Run
+  {
+    echo "# Written by setup-cicd-gcp.sh so Terraform has current images (avoids destructive plan)."
+    echo "backend_image  = \"${BACKEND_IMAGE}\""
+    echo "frontend_image = \"${FRONTEND_IMAGE}\""
+  } > "${TF_DIR}/terraform.auto.tfvars"
+  echo "  Wrote terraform.auto.tfvars (current Cloud Run images)"
 
   echo ""
   echo "=== Waiting for backend health (up to 120s) ==="

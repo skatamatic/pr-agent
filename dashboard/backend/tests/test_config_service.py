@@ -245,9 +245,10 @@ class TestConfigServiceApiKeyMasking:
     async def test_get_config_masks_api_keys(self, config_service):
         from services.config_backend import CONFIG_KEY, SECRETS_KEY
         backend = MagicMock()
+        # Native format (dashboard writes these; PR-Agent reads them directly)
         backend.get.side_effect = lambda k: {
             CONFIG_KEY: "[config]\nmodel = 'x'",
-            SECRETS_KEY: "[api_keys]\nopenai = 'sk-real-key'\nanthropic = 'ant-real-key'",
+            SECRETS_KEY: "[openai]\nkey = 'sk-real-key'\n[anthropic]\nkey = 'ant-real-key'",
         }.get(k, None)
         backend.exists.return_value = True
         config_service.backend = backend
@@ -257,16 +258,27 @@ class TestConfigServiceApiKeyMasking:
         assert api_keys.get("anthropic") == "***"
         assert api_keys.get("google", "") in ("", None)
 
+    async def test_get_config_masks_api_keys_legacy_format(self, config_service):
+        """Legacy [api_keys] in secrets still works for read."""
+        from services.config_backend import CONFIG_KEY, SECRETS_KEY
+        backend = MagicMock()
+        backend.get.side_effect = lambda k: {
+            CONFIG_KEY: "[config]\nmodel = 'x'",
+            SECRETS_KEY: "[api_keys]\nopenai = 'sk-legacy'\nanthropic = 'ant-legacy'",
+        }.get(k, None)
+        backend.exists.return_value = True
+        config_service.backend = backend
+        result = await config_service.get_config()
+        api_keys = result.get("api_keys", {})
+        assert api_keys.get("openai") == "***"
+        assert api_keys.get("anthropic") == "***"
+
     async def test_update_config_masked_api_keys_not_written(self, config_service):
-        """Sending *** for API keys must not overwrite real keys in secrets."""
+        """Sending *** for API keys must not overwrite real keys. We do not write secrets when only masked/empty."""
         from services.config_backend import SECRETS_KEY
-        import toml
         backend = MagicMock()
         backend.exists.return_value = False
-        backend.get.side_effect = lambda k: (
-            toml.dumps({"api_keys": {"openai": "sk-real-key"}})
-            if k == SECRETS_KEY else None
-        )
+        backend.get.return_value = None
         config_service.backend = backend
         config_service._create_rotated_backup = MagicMock()
         config_data = {
@@ -274,10 +286,29 @@ class TestConfigServiceApiKeyMasking:
         }
         await config_service.update_config(config_data)
         put_calls = {c[0][0]: c[0][1] for c in backend.put.call_args_list}
-        if SECRETS_KEY in put_calls:
-            secrets = toml.loads(put_calls[SECRETS_KEY])
-            assert secrets.get("api_keys", {}).get("openai") == "sk-real-key"
-            assert "***" not in str(secrets)
+        # No secrets update when only masked/empty keys sent
+        assert SECRETS_KEY not in put_calls
+
+    async def test_update_config_writes_native_secrets_format(self, config_service):
+        """Saving real API keys writes PR-Agent native [openai] key, [anthropic] key, etc."""
+        from services.config_backend import SECRETS_KEY
+        import toml
+        backend = MagicMock()
+        backend.exists.return_value = False
+        backend.get.return_value = None
+        config_service.backend = backend
+        config_service._create_rotated_backup = MagicMock()
+        config_data = {
+            "config": {"model": "x"},
+            "api_keys": {"openai": "sk-new", "anthropic": "", "google": ""},
+        }
+        await config_service.update_config(config_data)
+        put_calls = {c[0][0]: c[0][1] for c in backend.put.call_args_list}
+        assert SECRETS_KEY in put_calls
+        secrets = toml.loads(put_calls[SECRETS_KEY])
+        assert secrets.get("openai") == {"key": "sk-new"}
+        assert "anthropic" not in secrets or secrets.get("anthropic", {}).get("key") in ("", None)
+        assert "api_keys" not in secrets
 
 
 @pytest.mark.asyncio

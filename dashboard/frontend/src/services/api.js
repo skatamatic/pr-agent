@@ -125,7 +125,7 @@ const apiService = {
   getRepositoryHealth: () => api.get('/api/repositories/health'),
   getActionRunnerConnections: () => api.get('/api/action-runner-connections'),
   createActionRunnerConnection: (data) => api.post('/api/action-runner-connections', data),
-  provisionRunnerVm: (connectionId) => api.post(`/api/action-runner-connections/${connectionId}/provision`),
+  provisionRunnerVm: (connectionId, body = null) => api.post(`/api/action-runner-connections/${connectionId}/provision`, body),
   deprovisionRunnerVm: (connectionId) => api.post(`/api/action-runner-connections/${connectionId}/deprovision`),
   
   // Repository health actions

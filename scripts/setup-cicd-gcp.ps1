@@ -290,6 +290,15 @@ try {
     terraform apply @tfApplyArgs
     if ($LASTEXITCODE -ne 0) { throw "terraform apply failed" }
 
+    # Persist image URLs so a bare 'terraform plan/apply' later does not plan to destroy Cloud Run
+    if ($ExistingBackendImage -or $ExistingFrontendImage) {
+        $autoTfvars = @("# Written by setup-cicd-gcp.ps1 so Terraform has current images (avoids destructive plan).")
+        if ($ExistingBackendImage)  { $autoTfvars += "backend_image  = `"$ExistingBackendImage`"" }
+        if ($ExistingFrontendImage) { $autoTfvars += "frontend_image = `"$ExistingFrontendImage`"" }
+        $autoTfvars | Set-Content -Path (Join-Path $TfDir "terraform.auto.tfvars") -Encoding UTF8
+        Write-Host "  Wrote terraform.auto.tfvars (current Cloud Run images)"
+    }
+
     # ========================== Initial build + deploy =========================
 
     if ($SkipDeploy) {
@@ -364,6 +373,14 @@ try {
             terraform apply @tfApplyArgs
             if ($LASTEXITCODE -ne 0) { throw "terraform apply (CORS) failed" }
         }
+
+        # Persist images so future 'terraform plan/apply' without -var= does not destroy Cloud Run
+        @(
+            "# Written by setup-cicd-gcp.ps1 so Terraform has current images (avoids destructive plan)."
+            "backend_image  = `"$BackendImage`""
+            "frontend_image = `"$FrontendImage`""
+        ) | Set-Content -Path (Join-Path $TfDir "terraform.auto.tfvars") -Encoding UTF8
+        Write-Host "  Wrote terraform.auto.tfvars (current Cloud Run images)"
 
         Write-Host ""
         Write-Host "=== Waiting for backend health (up to 120s) ==="

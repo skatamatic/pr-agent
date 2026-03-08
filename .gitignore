@@ -14,3 +14,4 @@ docs/.cache/
 .qodo
 poetry.lock
 pr_agent/settings/csharp_code_context.secrets.toml
+terraform/gcp/terraform.auto.tfvars

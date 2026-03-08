@@ -114,6 +114,19 @@ steps:
       - '--region=${_REGION}'
     waitFor: ['push-backend']
 
+  # ---------- Set backend CORS so frontend can call API (after every deploy) ----------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: update-backend-cors
+    args:
+      - gcloud
+      - run
+      - services
+      - update
+      - '${_PREFIX}-backend'
+      - '--region=${_REGION}'
+      - '--update-env-vars=DASHBOARD_CORS_ORIGINS=https://${_PREFIX}-frontend-${PROJECT_NUMBER}.${_REGION}.run.app'
+    waitFor: ['deploy-backend']
+
   # ---------- Deploy frontend to Cloud Run ----------
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: deploy-frontend

@@ -50,19 +50,23 @@ def get_setting_or_env(key: str, default: Union[str, bool, None] = None) -> Unio
 
 
 async def run_action():
-    # Get Azure DevOps environment variables
+    # ── Azure DevOps system variables (MUST come from the pipeline) ──
     BUILD_REASON = os.environ.get('BUILD_REASON')
     SYSTEM_PULLREQUEST_PULLREQUESTID = os.environ.get('SYSTEM_PULLREQUEST_PULLREQUESTID')
     SYSTEM_TEAMPROJECT = os.environ.get('SYSTEM_TEAMPROJECT')
     BUILD_REPOSITORY_NAME = os.environ.get('BUILD_REPOSITORY_NAME')
     SYSTEM_COLLECTIONURI = os.environ.get('SYSTEM_COLLECTIONURI')
-    
-    # Authentication and AI keys
     AZURE_DEVOPS_PAT = os.environ.get('AZURE_DEVOPS_PAT') or os.environ.get('SYSTEM_ACCESSTOKEN')
+
+    # ── Config sourcing: env vars override GCS-loaded settings ──
+    # API keys, dashboard config, and azure_devops_config are loaded from GCS
+    # via config_loader.py from GCS (secrets use native [openai] key, [anthropic] key, etc.).
+    # Env vars below only override if explicitly set; otherwise GCS config wins.
     OPENAI_KEY = os.environ.get('OPENAI_KEY') or os.environ.get('OPENAI.KEY')
     OPENAI_ORG = os.environ.get('OPENAI_ORG') or os.environ.get('OPENAI.ORG')
-    
-    # Setup dashboard integration (error resilient)
+
+    # Setup dashboard integration (reads DASHBOARD.URL / DASHBOARD.API_KEY from
+    # GCS-loaded settings or env vars; error-resilient)
     dashboard_enabled = False
     if DASHBOARD_AVAILABLE:
         try:
@@ -71,45 +75,44 @@ async def run_action():
         except Exception as e:
             get_logger().debug(f"Dashboard setup failed: {e}")
 
-    # Check if required environment variables are set
+    # ── Validate required Azure system variables ──
     if not BUILD_REASON:
         print("BUILD_REASON not set")
         return
     if BUILD_REASON != 'PullRequest':
         print(f"BUILD_REASON is '{BUILD_REASON}', not 'PullRequest' - skipping")
         return
-    if not SYSTEM_PULLREQUEST_PULLREQUESTID:
-        print("SYSTEM_PULLREQUEST_PULLREQUESTID not set")
-        return
-    if not SYSTEM_TEAMPROJECT:
-        print("SYSTEM_TEAMPROJECT not set")
-        return
-    if not BUILD_REPOSITORY_NAME:
-        print("BUILD_REPOSITORY_NAME not set")
-        return
-    if not SYSTEM_COLLECTIONURI:
-        print("SYSTEM_COLLECTIONURI not set")
-        return
+    for var_name, var_val in [
+        ("SYSTEM_PULLREQUEST_PULLREQUESTID", SYSTEM_PULLREQUEST_PULLREQUESTID),
+        ("SYSTEM_TEAMPROJECT", SYSTEM_TEAMPROJECT),
+        ("BUILD_REPOSITORY_NAME", BUILD_REPOSITORY_NAME),
+        ("SYSTEM_COLLECTIONURI", SYSTEM_COLLECTIONURI),
+    ]:
+        if not var_val:
+            print(f"{var_name} not set")
+            return
     if not AZURE_DEVOPS_PAT:
         print("AZURE_DEVOPS_PAT or SYSTEM_ACCESSTOKEN not set")
         return
 
-    # Set the environment variables in the settings
+    # ── Apply env-var overrides on top of GCS-loaded settings ──
     if OPENAI_KEY:
         get_settings().set("OPENAI.KEY", OPENAI_KEY)
-    else:
-        # Might not be set if the user is using models not from OpenAI
-        print("OPENAI_KEY not set")
+    elif not get_settings().get("OPENAI.KEY", None):
+        get_logger().info("OPENAI_KEY not in env or GCS config (ok if using non-OpenAI models)")
     if OPENAI_ORG:
         get_settings().set("OPENAI.ORG", OPENAI_ORG)
-    
-    # Configure Azure DevOps settings
+
+    # Azure DevOps PAT and org are per-build; always set from pipeline
     get_settings().set("AZURE_DEVOPS.PAT", AZURE_DEVOPS_PAT)
     get_settings().set("AZURE_DEVOPS.ORG", SYSTEM_COLLECTIONURI)
-    get_settings().set("CONFIG.GIT_PROVIDER", "azure")  # Set git provider for Azure DevOps
+
+    # git_provider + azure_devops_config may already be in GCS config; ensure defaults
+    if not get_settings().get("CONFIG.GIT_PROVIDER", None):
+        get_settings().set("CONFIG.GIT_PROVIDER", "azure")
     enable_output = get_setting_or_env("AZURE_DEVOPS_CONFIG.ENABLE_OUTPUT", True)
     get_settings().set("AZURE_DEVOPS_CONFIG.ENABLE_OUTPUT", enable_output)
-    get_settings().set("CONFIG.PUBLISH_OUTPUT_PROGRESS", False)  # Disable progress output in pipeline
+    get_settings().set("CONFIG.PUBLISH_OUTPUT_PROGRESS", False)
 
     # Construct PR URL from Azure DevOps environment variables
     # Format: https://dev.azure.com/{organization}/{project}/_git/{repo}/pullrequest/{pr_id}

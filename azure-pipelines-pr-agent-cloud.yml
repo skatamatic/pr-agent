@@ -1,0 +1,107 @@
+# ────────────────────────────────────────────────────────────────
+#  PR-Agent on a CLOUD runner (GCE VM provisioned by the dashboard)
+#  – Runs as a PR check. Agent pool = pool where you registered the VM.
+#  – No local Python/pip: VM has /opt/pr-agent and /opt/pr-agent-runner/env.
+#  See docs/RUNNER_VM_AND_PR_AGENT_FLOW.md for setup (provision VM → register as ADO Linux agent).
+# ────────────────────────────────────────────────────────────────
+
+trigger: none
+name: AI Review Agent
+
+pr:
+  branches:
+    include: ['*']
+
+# Use the agent pool where your dashboard-provisioned GCE VM is registered.
+# In Azure DevOps: Project settings > Agent pools > Add agent > Linux; run the
+# registration script on the VM. Then set this pool name below (or use a variable).
+pool:
+  name: 'PRAgent_Cloud'   # Replace with your pool name, or use: $(PR_AGENT_AGENT_POOL)
+  demands:
+  - agent.os -equals Linux
+
+# ───────────── Variables & Secrets ─────────────
+variables:
+- name: PYTHONUTF8
+  value: 1
+# PR-Agent config (duplicate keys it expects)
+- name: OPENAI__KEY
+  value: $(OPENAI_KEY)
+- name: ANTHROPIC__KEY
+  value: $(ANTHROPIC_KEY)
+- name: AZURE_DEVOPS_CONFIG.PR_ACTIONS
+  value: '["pullrequest"]'
+
+# Optional: C# Code Context Service (set in Pipeline Variables / Variable group if used)
+# - name: CSHARP_CODE_CONTEXT_SERVICE__BASE_URL
+#   value: $(CSHARP_CODE_CONTEXT_SERVICE__BASE_URL)
+# - name: CSHARP_CODE_CONTEXT_SERVICE__USERNAME
+#   value: $(CSHARP_CODE_CONTEXT_SERVICE__USERNAME)
+
+stages:
+- stage: pr_agent
+  displayName: 'PR‑Agent'
+
+  jobs:
+  - job: run_agent
+    displayName: 'Run PR‑Agent tools'
+    timeoutInMinutes: 45
+
+    steps:
+    # ----------------------------------------------------------------
+    # 1. Checkout repository with credentials for PR analysis
+    # ----------------------------------------------------------------
+    - checkout: self
+      clean: true
+      persistCredentials: true
+      displayName: 'Checkout repository for PR analysis'
+
+    # ----------------------------------------------------------------
+    # 2. Set dotted env vars (AUTO_* etc.) that YAML variables can't express
+    # ----------------------------------------------------------------
+    - bash: |
+        echo '##vso[task.setvariable variable=AZURE_DEVOPS_CONFIG.AUTO_IMPROVE]true'
+        echo '##vso[task.setvariable variable=AZURE_DEVOPS_CONFIG.AUTO_REVIEW]true'
+        echo '##vso[task.setvariable variable=AZURE_DEVOPS_CONFIG.AUTO_DESCRIBE]true'
+        echo '##vso[task.setvariable variable=AZURE_DEVOPS_CONFIG.ENABLE_OUTPUT]true'
+      displayName: 'Set AZDO dotted config vars'
+
+    # ----------------------------------------------------------------
+    # 3. Run PR-Agent using VM env (DASHBOARD_URL, GCS config) + pipeline vars
+    # ----------------------------------------------------------------
+    - bash: |
+        set -e
+        source /opt/pr-agent-runner/env
+        export PYTHONPATH=/opt/pr-agent
+        python3 /opt/pr-agent/pr_agent/servers/azuredevops_pipeline_runner.py
+      workingDirectory: $(System.DefaultWorkingDirectory)
+      displayName: 'Execute PR‑Agent'
+      env:
+        # Azure DevOps (auto-provided)
+        BUILD_REASON: $(Build.Reason)
+        SYSTEM_PULLREQUEST_PULLREQUESTID: $(System.PullRequest.PullRequestId)
+        SYSTEM_TEAMPROJECT: $(System.TeamProject)
+        BUILD_REPOSITORY_NAME: $(Build.Repository.Name)
+        SYSTEM_COLLECTIONURI: $(System.CollectionUri)
+        # Auth: set ADO_PAT in Pipeline Variables (secret), or runner uses System.AccessToken
+        AZURE_DEVOPS_PAT: $(ADO_PAT)
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+        # AI keys (Pipeline Variables / Variable group)
+        OPENAI_KEY: $(OPENAI_KEY)
+        OPENAI_API_KEY: $(OPENAI_KEY)
+        ANTHROPIC_KEY: $(ANTHROPIC_KEY)
+        ANTHROPIC_API_KEY: $(ANTHROPIC_KEY)
+        # Dashboard (optional; also set by /opt/pr-agent-runner/env on VM)
+        DASHBOARD_URL: $(DASHBOARD_URL)
+        DASHBOARD_API_KEY: $(DASHBOARD_API_KEY)
+        # Dotted config (set in step 2; runner reads AZURE_DEVOPS_CONFIG.*)
+        AZURE_DEVOPS_CONFIG.AUTO_DESCRIBE: $(AZURE_DEVOPS_CONFIG.AUTO_DESCRIBE)
+        AZURE_DEVOPS_CONFIG.AUTO_REVIEW: $(AZURE_DEVOPS_CONFIG.AUTO_REVIEW)
+        AZURE_DEVOPS_CONFIG.AUTO_IMPROVE: $(AZURE_DEVOPS_CONFIG.AUTO_IMPROVE)
+        AZURE_DEVOPS_CONFIG.ENABLE_OUTPUT: $(AZURE_DEVOPS_CONFIG.ENABLE_OUTPUT)
+        AZURE_DEVOPS_CONFIG.PR_ACTIONS: $(AZURE_DEVOPS_CONFIG.PR_ACTIONS)
+        # Optional C# context (uncomment and set variables if used)
+        # CSHARP_CODE_CONTEXT_SERVICE__BASE_URL: $(CSHARP_CODE_CONTEXT_SERVICE__BASE_URL)
+        # CSHARP_CODE_CONTEXT_SERVICE__USERNAME: $(CSHARP_CODE_CONTEXT_SERVICE__USERNAME)
+        # CSHARP_CODE_CONTEXT_SERVICE__PASSWORD: $(CSHARP_CODE_CONTEXT_SERVICE__PASSWORD)
+        PYTHONUTF8: 1

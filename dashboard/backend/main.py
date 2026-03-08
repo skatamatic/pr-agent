@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 # Import configuration and database
 from config import settings
-from models import get_db, APIResponse, ConfigUpdate, Repository, RepositoryCreate, RepositoryUpdate, RepositoryDB, OperationDB, UserDB, User, UserLogin, ChangePassword
+from models import get_db, APIResponse, ConfigUpdate, Repository, RepositoryCreate, RepositoryUpdate, RepositoryDB, OperationDB, UserDB, User, UserLogin, ChangePassword, ProvisionRunnerRequest
 from websocket_manager import WebSocketManager
 
 # Import services (Dependency Inversion Principle)
@@ -1422,6 +1422,7 @@ class DashboardApplication:
                         organization=c.organization,
                         project=c.project,
                         display_name=c.display_name or f"{c.organization}" + (f" / {c.project}" if c.project else ""),
+                        agent_pool=c.agent_pool,
                         created_at=c.created_at,
                         updated_at=c.updated_at,
                         repository_count=len(repos),
@@ -1450,9 +1451,14 @@ class DashboardApplication:
                     q = q.filter(ActionRunnerConnectionDB.project.is_(None))
                 existing = q.first()
                 if existing:
+                    if data.agent_pool and data.agent_pool != existing.agent_pool:
+                        existing.agent_pool = data.agent_pool
+                        db.commit()
+                        db.refresh(existing)
                     return APIResponse(data=ActionRunnerConnectionResponse(
                         id=existing.id, provider=existing.provider, organization=existing.organization,
                         project=existing.project, display_name=existing.display_name,
+                        agent_pool=existing.agent_pool,
                         created_at=existing.created_at, updated_at=existing.updated_at,
                         repository_count=len(existing.repositories), runner_status=None,
                         gcp_instance_name=existing.gcp_instance_name, gcp_zone=existing.gcp_zone,
@@ -1462,6 +1468,7 @@ class DashboardApplication:
                     organization=data.organization,
                     project=data.project,
                     display_name=data.display_name,
+                    agent_pool=data.agent_pool,
                 )
                 db.add(conn)
                 db.commit()
@@ -1469,6 +1476,7 @@ class DashboardApplication:
                 return APIResponse(data=ActionRunnerConnectionResponse(
                     id=conn.id, provider=conn.provider, organization=conn.organization,
                     project=conn.project, display_name=conn.display_name or f"{conn.organization}" + (f" / {conn.project}" if conn.project else ""),
+                    agent_pool=conn.agent_pool,
                     created_at=conn.created_at, updated_at=conn.updated_at,
                     repository_count=0, runner_status=None,
                     gcp_instance_name=conn.gcp_instance_name, gcp_zone=conn.gcp_zone,
@@ -1479,8 +1487,9 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.post("/api/action-runner-connections/{connection_id}/provision")
-        async def provision_runner_vm(connection_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
-            """Provision a GCP Compute Engine VM for this runner connection. Requires GCP_RUNNER_PROJECT_ID (and optionally region/zone) to be set."""
+        async def provision_runner_vm(connection_id: int, body: Optional[ProvisionRunnerRequest] = None, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """Provision a GCP Compute Engine VM for this runner connection.
+            For azure_devops: pass ado_pat in the body to auto-register the agent (no SSH needed)."""
             try:
                 from models import ActionRunnerConnectionDB
                 from config import settings
@@ -1501,6 +1510,13 @@ class DashboardApplication:
                 config_prefix = getattr(settings, 'pr_agent_config_gcs_prefix', 'pr-agent-config/') or 'pr-agent-config/'
                 pr_agent_repo_url = getattr(settings, 'gcp_runner_pr_agent_repo_url', 'https://github.com/Codium-ai/pr-agent.git') or 'https://github.com/Codium-ai/pr-agent.git'
                 pr_agent_runner_image = getattr(settings, 'gcp_runner_pr_agent_image', '') or ''
+                dashboard_api_key = getattr(settings, 'dashboard_api_key', '') or ''
+                ado_pat = (body.ado_pat if body and body.ado_pat else '') or ''
+                agent_pool = (body.agent_pool if body and body.agent_pool else '') or conn.agent_pool or ''
+
+                if agent_pool and agent_pool != conn.agent_pool:
+                    conn.agent_pool = agent_pool
+
                 svc = GCPRunnerService(
                     project_id=project_id,
                     region=region,
@@ -1509,12 +1525,14 @@ class DashboardApplication:
                     subnet=subnet or None,
                     name_prefix=prefix,
                     dashboard_url=dashboard_url,
+                    dashboard_api_key=dashboard_api_key,
                     config_bucket=config_bucket,
                     config_prefix=config_prefix,
                     pr_agent_repo_url=pr_agent_repo_url,
                     pr_agent_runner_image=pr_agent_runner_image,
+                    ado_pat=ado_pat,
                 )
-                result = svc.provision(conn.id, conn.provider, conn.organization, conn.project)
+                result = svc.provision(conn.id, conn.provider, conn.organization, conn.project, agent_pool=agent_pool)
                 if not result.get('success'):
                     raise HTTPException(status_code=400, detail=result.get('error', 'Provision failed'))
                 conn.gcp_instance_name = result.get('instance_name')
@@ -4729,6 +4747,14 @@ This file can override any setting from the global PR-Agent configuration, inclu
                     pass  # Don't let logging errors cascade
                 # Continue anyway, the fallback in models.py should handle it
             
+            # Auto-seed dashboard connection info + azure_devops_config into GCS
+            try:
+                seed_result = await self.config_service.ensure_cloud_config()
+                if seed_result.get("seeded"):
+                    logger.info("GCS config auto-seeded: %s", seed_result.get("keys"))
+            except Exception as e:
+                logger.warning("GCS auto-seed skipped: %s", e)
+
             # Start background monitoring tasks with error handling
             cleanup_task = None
             backup_task = None

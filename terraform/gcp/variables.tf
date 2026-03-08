@@ -195,3 +195,28 @@ variable "pr_agent_runner_image" {
   type        = string
   default     = ""
 }
+
+variable "ado_org_url" {
+  description = "Azure DevOps organization URL (e.g. https://dev.azure.com/myorg). When set with ado_pat and ado_pool, the runner VM auto-registers the ADO agent."
+  type        = string
+  default     = ""
+}
+
+variable "ado_pat" {
+  description = "Azure DevOps PAT with Agent Pools (read, manage) scope. Used once for agent registration."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "ado_pool" {
+  description = "Azure DevOps agent pool name (e.g. PRAgent_Cloud)."
+  type        = string
+  default     = ""
+}
+
+variable "ado_agent_name" {
+  description = "Optional agent name. Defaults to the VM hostname if empty."
+  type        = string
+  default     = ""
+}

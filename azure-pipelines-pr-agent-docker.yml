@@ -1,0 +1,128 @@
+# ────────────────────────────────────────────────────────────────
+#  PR-Agent on a GCP-provisioned runner using Docker
+#
+#  All config (API keys, dashboard, azure_devops_config, C# context
+#  service, etc.) is loaded from the GCS config bucket automatically.
+#  The pipeline only passes Azure DevOps system variables and the
+#  GCS bootstrap coordinates (which come from the VM's env file).
+#
+#  No Python/pip on the agent: everything runs inside the container.
+#  No Azure DevOps Docker Registry service connection needed; the VM
+#  authenticates to Artifact Registry via its GCE service account.
+#
+#  Setup:
+#  1. Provision a runner VM via the dashboard (provide an ADO PAT with
+#     Agent Pools scope -- the agent auto-registers, no SSH needed).
+#  2. Set API keys in the dashboard's Config Editor (they flow to
+#     GCS and are loaded by the runner automatically).
+#  3. (Optional) Set PR_AGENT_IMAGE in Pipeline Variables to override
+#     the image baked into the VM's /opt/pr-agent-runner/env.
+#  4. Set the pool name below to match your GCP VM's pool.
+# ────────────────────────────────────────────────────────────────
+
+trigger: none
+
+pr:
+  branches:
+    include: ['*']
+
+pool:
+  name: 'PRAgent_Cloud'   # match your GCP VM's Azure agent pool
+  demands:
+  - agent.os -equals Linux
+
+variables:
+- name: PYTHONUTF8
+  value: 1
+
+stages:
+- stage: pr_agent
+  displayName: 'PR‑Agent'
+
+  jobs:
+  - job: run_agent
+    displayName: 'Run PR‑Agent tools'
+    timeoutInMinutes: 45
+
+    steps:
+    # ----------------------------------------------------------------
+    # 1. Checkout
+    # ----------------------------------------------------------------
+    - checkout: self
+      clean: true
+      persistCredentials: true
+      displayName: 'Checkout'
+
+    # ----------------------------------------------------------------
+    # 2. Load VM env, authenticate Docker, pull image
+    # ----------------------------------------------------------------
+    - bash: |
+        set -e
+        # Source the env file written by the VM startup script
+        source /opt/pr-agent-runner/env 2>/dev/null || true
+
+        IMAGE="${PR_AGENT_IMAGE_OVERRIDE:-${GCP_RUNNER_PR_AGENT_IMAGE:-}}"
+        if [ -z "$IMAGE" ]; then
+          echo "##vso[task.logissue type=error]No PR-Agent image found. Set it in Pipeline Variables (PR_AGENT_IMAGE) or verify the VM was provisioned correctly."
+          exit 1
+        fi
+
+        # Authenticate Docker with Artifact Registry using GCE metadata token
+        if echo "$IMAGE" | grep -q "docker.pkg.dev"; then
+          REGISTRY=$(echo "$IMAGE" | cut -d/ -f1)
+          TOKEN=$(curl -s -H "Metadata-Flavor: Google" \
+            "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+          echo "$TOKEN" | docker login -u oauth2accesstoken --password-stdin "https://$REGISTRY"
+        fi
+
+        docker pull "$IMAGE"
+
+        # Export resolved values for the run step
+        echo "##vso[task.setvariable variable=RESOLVED_IMAGE]$IMAGE"
+        echo "##vso[task.setvariable variable=VM_GCS_BUCKET]${PR_AGENT_CONFIG_GCS_BUCKET:-}"
+        echo "##vso[task.setvariable variable=VM_GCS_PREFIX]${PR_AGENT_CONFIG_GCS_PREFIX:-}"
+      displayName: 'Pull image & load VM config'
+      env:
+        PR_AGENT_IMAGE_OVERRIDE: $(PR_AGENT_IMAGE)
+
+    # ----------------------------------------------------------------
+    # 3. Run PR-Agent inside the container
+    #
+    #    --network=host: gives the container access to the GCE metadata
+    #    server (for ADC/GCS) and any localhost services on the VM
+    #    (e.g. C# context service if configured).
+    #    --entrypoint overrides the Dockerfile ENTRYPOINT (github runner).
+    #    Only Azure system vars + GCS coordinates are injected.
+    #    API keys, dashboard config, and all other settings are loaded
+    #    inside the container from GCS via config_loader.py.
+    # ----------------------------------------------------------------
+    - bash: |
+        docker run --rm \
+          --network=host \
+          --entrypoint python \
+          -v "${SOURCE_DIR}:${SOURCE_DIR}" \
+          -w "${SOURCE_DIR}" \
+          -e BUILD_REASON \
+          -e SYSTEM_PULLREQUEST_PULLREQUESTID \
+          -e SYSTEM_TEAMPROJECT \
+          -e BUILD_REPOSITORY_NAME \
+          -e SYSTEM_COLLECTIONURI \
+          -e SYSTEM_ACCESSTOKEN \
+          -e PR_AGENT_CONFIG_GCS_BUCKET \
+          -e PR_AGENT_CONFIG_GCS_PREFIX \
+          -e PYTHONUTF8=1 \
+          "${RESOLVED_IMAGE}" \
+          /app/pr_agent/servers/azuredevops_pipeline_runner.py
+      displayName: 'Execute PR‑Agent'
+      env:
+        SOURCE_DIR: $(Build.SourcesDirectory)
+        RESOLVED_IMAGE: $(RESOLVED_IMAGE)
+        BUILD_REASON: $(Build.Reason)
+        SYSTEM_PULLREQUEST_PULLREQUESTID: $(System.PullRequest.PullRequestId)
+        SYSTEM_TEAMPROJECT: $(System.TeamProject)
+        BUILD_REPOSITORY_NAME: $(Build.Repository.Name)
+        SYSTEM_COLLECTIONURI: $(System.CollectionUri)
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+        PR_AGENT_CONFIG_GCS_BUCKET: $(VM_GCS_BUCKET)
+        PR_AGENT_CONFIG_GCS_PREFIX: $(VM_GCS_PREFIX)

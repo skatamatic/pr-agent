@@ -22,7 +22,7 @@ IMAGE_TAG="${IMAGE_TAG:-deploy-$(date +%s)}"
 SKIP_PR_AGENT_IMAGE="${SKIP_PR_AGENT_IMAGE:-0}"
 echo "Image tag: $IMAGE_TAG"
 
-# Project ID from env or tfvars
+# Project ID and repo ID from env or tfvars
 if [ -n "$TF_VAR_project_id" ]; then PROJECT_ID="$TF_VAR_project_id"; fi
 if [ -z "$PROJECT_ID" ] && [ -f "${TF_DIR}/terraform.tfvars" ]; then
   PROJECT_ID=$(grep -E '^\s*project_id\s*=' "${TF_DIR}/terraform.tfvars" | sed -E 's/.*=\s*"([^"]+)".*/\1/' | head -1)
@@ -30,6 +30,11 @@ fi
 if [ -z "$PROJECT_ID" ]; then
   echo "Set PROJECT_ID (e.g. export PROJECT_ID=my-project) or project_id in ${TF_DIR}/terraform.tfvars" >&2
   exit 1
+fi
+# Repo ID must match Terraform: repository_id = "${prefix}-repo"
+if [ "$REPO_ID" = "pr-agent-dash-repo" ] && [ -f "${TF_DIR}/terraform.tfvars" ]; then
+  PREFIX=$(grep -E '^\s*prefix\s*=' "${TF_DIR}/terraform.tfvars" | sed -E 's/.*=\s*"([^"]+)".*/\1/' | head -1)
+  [ -n "$PREFIX" ] && REPO_ID="${PREFIX}-repo"
 fi
 
 REGISTRY="${REGION}-docker.pkg.dev"

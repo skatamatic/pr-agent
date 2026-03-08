@@ -318,8 +318,9 @@ locals {
   frontend_image_set = var.frontend_image != ""
   cloud_run_sa      = "serviceAccount:${data.google_project.project.number}-compute@developer.gserviceaccount.com"
   # Cloud Run can be reached via hash-style URL (.uri) or project-number URL; allow both for CORS.
-  frontend_alt_url   = "https://${var.prefix}-frontend-${data.google_project.project.number}.${var.region}.run.app"
-  cors_origins_list  = var.frontend_base_url != "" ? join(",", distinct([var.frontend_base_url, local.frontend_alt_url])) : ""
+  frontend_alt_url  = "https://${var.prefix}-frontend-${data.google_project.project.number}.${var.region}.run.app"
+  # Always include the known Cloud Run frontend URL(s) so CORS works even when frontend_base_url is not set.
+  cors_origins_list = join(",", distinct(concat([local.frontend_alt_url], var.frontend_base_url != "" ? [var.frontend_base_url] : [])))
 }
 
 # IAM: allow Cloud Run to read secrets
@@ -611,10 +612,15 @@ resource "google_compute_instance" "runner" {
 
   metadata_startup_script = templatefile("${path.module}/runner-startup.sh.tpl", {
     dashboard_url     = var.backend_base_url
+    dashboard_api_key = local.dashboard_api_key
     config_bucket     = google_storage_bucket.config.name
     config_prefix     = local.config_prefix
     pr_agent_repo_url = var.pr_agent_repo_url
     pr_agent_image    = var.pr_agent_runner_image
+    ado_org_url       = var.ado_org_url
+    ado_pat           = var.ado_pat
+    ado_pool          = var.ado_pool
+    ado_agent_name    = var.ado_agent_name
   })
 
   service_account {

@@ -248,6 +248,12 @@ def migrate_database():
                 conn.execute(text("ALTER TABLE action_runner_connections ADD COLUMN gcp_zone VARCHAR"))
                 conn.commit()
             print("Added gcp_zone column to action_runner_connections table")
+        if not check_column_exists(engine, 'action_runner_connections', 'agent_pool'):
+            print("Adding agent_pool column to action_runner_connections table...")
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE action_runner_connections ADD COLUMN agent_pool VARCHAR"))
+                conn.commit()
+            print("Added agent_pool column to action_runner_connections table")
     
     # Check if repositories table needs new columns for runner health tracking
     if check_table_exists(engine, 'repositories'):

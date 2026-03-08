@@ -24,12 +24,21 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = (Get-Item $PSScriptRoot).Parent.FullName
 $TfDir = Join-Path $RepoRoot "terraform\gcp"
 
-# Resolve project ID from env or tfvars
+# Resolve project ID and repo ID from env or tfvars
 if (-not $ProjectId -and $env:TF_VAR_project_id) { $ProjectId = $env:TF_VAR_project_id }
 if (-not $ProjectId -and $env:PROJECT_ID) { $ProjectId = $env:PROJECT_ID }
-if (-not $ProjectId -and (Test-Path (Join-Path $TfDir "terraform.tfvars"))) {
-    $line = Get-Content (Join-Path $TfDir "terraform.tfvars") | Where-Object { $_ -match '^\s*project_id\s*=' } | Select-Object -First 1
-    if ($line -match '"([^"]+)"') { $ProjectId = $Matches[1] }
+$tfvarsPath = Join-Path $TfDir "terraform.tfvars"
+if (Test-Path $tfvarsPath) {
+    $tfvars = Get-Content $tfvarsPath
+    if (-not $ProjectId) {
+        $line = $tfvars | Where-Object { $_ -match '^\s*project_id\s*=' } | Select-Object -First 1
+        if ($line -match '"([^"]+)"') { $ProjectId = $Matches[1] }
+    }
+    # Repo ID must match Terraform: repository_id = "${prefix}-repo"
+    if ($RepoId -eq "pr-agent-dash-repo") {
+        $line = $tfvars | Where-Object { $_ -match '^\s*prefix\s*=' } | Select-Object -First 1
+        if ($line -match '"([^"]+)"') { $RepoId = $Matches[1] + "-repo" }
+    }
 }
 if (-not $ProjectId) {
     Write-Error "Set ProjectId (e.g. -ProjectId my-project) or PROJECT_ID / project_id in terraform.tfvars"

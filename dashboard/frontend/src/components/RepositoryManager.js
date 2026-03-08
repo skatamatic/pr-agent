@@ -129,10 +129,12 @@ const RepositoryManager = () => {
   const [provisioningConnectionId, setProvisioningConnectionId] = useState(null);
   const [deprovisioningConnectionId, setDeprovisioningConnectionId] = useState(null);
   const [lastProvisionResult, setLastProvisionResult] = useState(null);
+  const [provisionAdoPat, setProvisionAdoPat] = useState('');
   // Inline create connection (when no connections for provider)
   const [newConnectionOrg, setNewConnectionOrg] = useState('');
   const [newConnectionProject, setNewConnectionProject] = useState('');
   const [newConnectionDisplayName, setNewConnectionDisplayName] = useState('');
+  const [newConnectionAgentPool, setNewConnectionAgentPool] = useState('');
   const [creatingConnection, setCreatingConnection] = useState(false);
 
   const fetchRepositories = useCallback(async () => {
@@ -2028,6 +2030,15 @@ const RepositoryManager = () => {
                           className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm w-32"
                         />
                       )}
+                      {formData.provider === 'azure_devops' && (
+                        <input
+                          type="text"
+                          placeholder="Agent Pool (e.g. PRAgent_Cloud)"
+                          value={newConnectionAgentPool}
+                          onChange={(e) => setNewConnectionAgentPool(e.target.value)}
+                          className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm w-44"
+                        />
+                      )}
                       <input
                         type="text"
                         placeholder="Display name (optional)"
@@ -2045,6 +2056,7 @@ const RepositoryManager = () => {
                             organization: newConnectionOrg.trim(),
                             project: formData.provider === 'azure_devops' ? (newConnectionProject.trim() || null) : null,
                             display_name: newConnectionDisplayName.trim() || undefined,
+                            agent_pool: formData.provider === 'azure_devops' ? (newConnectionAgentPool.trim() || undefined) : undefined,
                           })
                             .then((res) => {
                               const created = res.data?.data;
@@ -2053,6 +2065,7 @@ const RepositoryManager = () => {
                                 setNewConnectionOrg('');
                                 setNewConnectionProject('');
                                 setNewConnectionDisplayName('');
+                                setNewConnectionAgentPool('');
                                 fetchActionRunnerConnections().then(() => {
                                   setFormData((f) => ({ ...f, action_runner_connection_id: created.id }));
                                 });
@@ -2128,19 +2141,45 @@ const RepositoryManager = () => {
                         </div>
                       ) : (
                         <div className="space-y-2">
-                          <p className="text-gray-600 dark:text-gray-400">No VM provisioned for this connection. Provision a GCP VM to run the runner/agent (then install via SSH using provider instructions).</p>
+                          <p className="text-gray-600 dark:text-gray-400">No VM provisioned yet.</p>
+                          {conn.provider === 'azure_devops' && (
+                            <div className="space-y-2">
+                              {!conn.agent_pool && (
+                                <p className="text-yellow-600 dark:text-yellow-400 text-xs">Set an Agent Pool name on the connection to enable auto-registration.</p>
+                              )}
+                              <div className="flex flex-wrap items-end gap-2">
+                                <div className="flex flex-col">
+                                  <label className="text-xs text-gray-500 dark:text-gray-400 mb-0.5">ADO PAT (Agent Pools scope)</label>
+                                  <input
+                                    type="password"
+                                    placeholder="PAT for agent registration"
+                                    value={provisionAdoPat}
+                                    onChange={(e) => setProvisionAdoPat(e.target.value)}
+                                    className="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm w-56"
+                                  />
+                                </div>
+                              </div>
+                              {provisionAdoPat && conn.agent_pool && (
+                                <p className="text-green-600 dark:text-green-400 text-xs">Agent will auto-register in pool "{conn.agent_pool}" (no SSH needed).</p>
+                              )}
+                            </div>
+                          )}
                           <button
                             type="button"
                             disabled={provisioning}
                             onClick={() => {
                               setProvisioningConnectionId(conn.id);
                               setLastProvisionResult(null);
-                              api.provisionRunnerVm(conn.id)
+                              const body = (conn.provider === 'azure_devops' && provisionAdoPat)
+                                ? { ado_pat: provisionAdoPat }
+                                : null;
+                              api.provisionRunnerVm(conn.id, body)
                                 .then((res) => {
                                   const data = res.data?.data;
                                   if (data?.success) {
                                     showSuccess('Runner VM', data.message || 'VM creation started.');
                                     setLastProvisionResult(data);
+                                    setProvisionAdoPat('');
                                     setActionRunnerConnections((prev) => prev.map((c) => c.id === conn.id ? { ...c, gcp_instance_name: data.instance_name, gcp_zone: data.zone } : c));
                                     fetchActionRunnerConnections();
                                   } else {
@@ -2166,7 +2205,9 @@ const RepositoryManager = () => {
                           </button>
                           {lastProvisionResult?.install_instructions && (
                             <details className="mt-2" open>
-                              <summary className="cursor-pointer text-gray-600 dark:text-gray-400">Install instructions</summary>
+                              <summary className="cursor-pointer text-gray-600 dark:text-gray-400">
+                                {lastProvisionResult.agent_auto_registered ? 'Auto-registration details' : 'Install instructions'}
+                              </summary>
                               <pre className="mt-1 p-2 bg-gray-200 dark:bg-gray-700 rounded text-xs overflow-x-auto">{lastProvisionResult.install_instructions.ssh_command}</pre>
                               <p className="mt-1 text-gray-600 dark:text-gray-400">{lastProvisionResult.install_instructions.steps}</p>
                               {lastProvisionResult.install_instructions.docs_url && (

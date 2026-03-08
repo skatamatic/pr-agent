@@ -110,6 +110,7 @@ class ActionRunnerConnectionDB(Base):
     organization = Column(String, nullable=False)
     project = Column(String, nullable=True)  # ADO project; null for GitHub (org-level)
     display_name = Column(String, nullable=True)  # e.g. "MyOrg (ADO)" or "my-org"
+    agent_pool = Column(String, nullable=True)  # ADO agent pool name (e.g. "PRAgent_Cloud")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     # GCP-provisioned runner VM (when dashboard creates the VM)
@@ -683,6 +684,13 @@ class ActionRunnerConnectionCreate(BaseModel):
     organization: str = Field(..., description="Org name (GitHub org or ADO org)")
     project: Optional[str] = Field(default=None, description="ADO project; null for GitHub")
     display_name: Optional[str] = None
+    agent_pool: Optional[str] = Field(default=None, description="ADO agent pool name (e.g. 'PRAgent_Cloud')")
+
+
+class ProvisionRunnerRequest(BaseModel):
+    """Optional body for provisioning; ADO PAT is needed once for agent auto-registration."""
+    ado_pat: Optional[str] = Field(default=None, description="Azure DevOps PAT with Agent Pools (read, manage) scope. Used once for registration, not stored.")
+    agent_pool: Optional[str] = Field(default=None, description="Override agent pool (defaults to connection's agent_pool)")
 
 
 class ActionRunnerConnectionResponse(BaseModel):
@@ -691,10 +699,11 @@ class ActionRunnerConnectionResponse(BaseModel):
     organization: str
     project: Optional[str]
     display_name: Optional[str]
+    agent_pool: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     repository_count: int = 0
-    runner_status: Optional[str] = None  # Aggregated from repos in this connection
+    runner_status: Optional[str] = None
     gcp_instance_name: Optional[str] = None
     gcp_zone: Optional[str] = None
 
