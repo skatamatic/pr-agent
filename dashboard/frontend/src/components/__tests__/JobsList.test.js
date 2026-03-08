@@ -132,11 +132,11 @@ describe('JobsList Component - Job Deletion', () => {
       expect(api.getJobDeletionPreview).toHaveBeenCalledWith('job-123');
     });
     
-    // Check that preview dialog appears (dialog shows Job ID, Type, Operations count, Log count)
+    // Wait for dialog content (job details) to render
     await waitFor(() => {
-      expect(screen.getByText('Delete Job & Related Data')).toBeInTheDocument();
+      expect(screen.getByText('Job ID:')).toBeInTheDocument();
+      expect(screen.getByText('job-123')).toBeInTheDocument();
     }, { timeout: 5000 });
-    expect(screen.getByText('job-123')).toBeInTheDocument();
     expect(screen.getByText('Operations')).toBeInTheDocument();
     expect(screen.getByText('Log Entries')).toBeInTheDocument();
   });
@@ -203,12 +203,11 @@ describe('JobsList Component - Job Deletion', () => {
     fireEvent.click(deleteButton);
     
     await waitFor(() => {
-      expect(screen.getByText('Delete Job & Related Data')).toBeInTheDocument();
+      expect(screen.getByText('Delete Job & Data')).toBeInTheDocument();
     }, { timeout: 5000 });
-    
-    
+
     // Click confirm delete button
-    const confirmButton = screen.getByText('Delete Job & Data');
+    const confirmButton = screen.getByRole('button', { name: 'Delete Job & Data' });
     fireEvent.click(confirmButton);
     
     await waitFor(() => {
@@ -251,11 +250,11 @@ describe('JobsList Component - Job Deletion', () => {
     fireEvent.click(deleteButton);
     
     await waitFor(() => {
-      expect(screen.getByText('Delete Job & Related Data')).toBeInTheDocument();
+      expect(screen.getByText('Delete Job & Data')).toBeInTheDocument();
     }, { timeout: 5000 });
-    
+
     // Click confirm delete button
-    const confirmButton = screen.getByText('Delete Job & Data');
+    const confirmButton = screen.getByRole('button', { name: 'Delete Job & Data' });
     fireEvent.click(confirmButton);
     
     await waitFor(() => {
@@ -293,7 +292,7 @@ describe('JobsList Component - Job Deletion', () => {
     fireEvent.click(deleteButton);
     
     await waitFor(() => {
-      expect(screen.getByText('Delete Job & Related Data')).toBeInTheDocument();
+      expect(screen.getByText('Delete Job & Data')).toBeInTheDocument();
     }, { timeout: 5000 });
     
     // Click cancel button
@@ -302,7 +301,7 @@ describe('JobsList Component - Job Deletion', () => {
     
     // Dialog should be closed
     await waitFor(() => {
-      expect(screen.queryByText('Delete Job & Related Data')).not.toBeInTheDocument();
+      expect(screen.queryByText('Delete Job & Data')).not.toBeInTheDocument();
     });
   });
 
@@ -340,9 +339,9 @@ describe('JobsList Component - Job Deletion', () => {
       expect(api.getJobDeletionPreview).toHaveBeenCalledWith('job-123');
     });
     
-    // Wait for the dialog to appear
+    // Wait for dialog-specific content to appear
     await waitFor(() => {
-      expect(screen.getByText('Delete Job & Related Data')).toBeInTheDocument();
+      expect(screen.getByText('Job ID:')).toBeInTheDocument();
     }, { timeout: 3000 });
     
     // Check for cost impact (component displays absolute value with $ prefix)

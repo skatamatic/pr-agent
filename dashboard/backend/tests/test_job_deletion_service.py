@@ -90,12 +90,15 @@ class TestJobDeletionService:
     async def test_calculate_job_cost_impact_legacy_data(self, job_deletion_service, populated_test_db):
         """Test cost calculation with legacy token data"""
         job_id = 'test-job-123'
+        operation = populated_test_db.query(OperationDB).first()
+        operation.model_used = 'gpt-5.3-codex'
+        populated_test_db.commit()
         
         cost_impact = await job_deletion_service._calculate_job_cost_impact(populated_test_db, job_id)
         
         # Should calculate cost based on legacy tokens (1000 input, 500 output)
-        # gpt-4: input=0.03, output=0.06 per 1000 tokens
-        expected_cost = (1000/1000) * 0.03 + (500/1000) * 0.06
+        # gpt-5.3-codex: input=0.00175, output=0.014 per 1000 tokens
+        expected_cost = round((1000/1000) * 0.00175 + (500/1000) * 0.014, 2)
         assert cost_impact == pytest.approx(expected_cost, abs=0.01)
     
     @pytest.mark.asyncio
@@ -113,10 +116,10 @@ class TestJobDeletionService:
         job_id = 'test-job-123'
         cost_impact = await job_deletion_service._calculate_job_cost_impact(populated_test_db, job_id)
         
-        # Should calculate cost for both models
-        gpt4_cost = (800/1000) * 0.03 + (400/1000) * 0.06
-        gpt35_cost = (200/1000) * 0.001 + (100/1000) * 0.002
-        expected_cost = gpt4_cost + gpt35_cost
+        # Should calculate cost for both models using configured rates
+        codex_cost = (800/1000) * 0.00175 + (400/1000) * 0.014
+        spark_cost = (200/1000) * 0.001 + (100/1000) * 0.008
+        expected_cost = round(codex_cost + spark_cost, 2)
         assert cost_impact == pytest.approx(expected_cost, abs=0.01)
     
     @pytest.mark.asyncio

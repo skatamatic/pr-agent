@@ -15,3 +15,25 @@ docs/.cache/
 poetry.lock
 pr_agent/settings/csharp_code_context.secrets.toml
 terraform/gcp/terraform.auto.tfvars
+
+# Local dashboard databases and generated backups
+dashboard.db
+dashboard/dashboard.db
+dashboard/backend/dashboard.db
+dashboard/backend/backups/
+
+# Local PR-Agent runtime backup snapshots
+pr_agent/settings/backups/
+pr_agent/pr_agent/settings/backups/
+pr_agent/pr_agent/settings/*.backup
+pr_agent/pr_agent/settings/configuration.toml
+pr_agent/pr_agent/settings/csharp_code_context.config.toml
+
+# Terraform local working/state artifacts
+terraform/gcp/.terraform/
+terraform/gcp/*.tfstate
+terraform/gcp/*.tfstate.*
+
+# Local scratch/debug artifacts
+frontend_debug_console.js
+deployment-review.md
