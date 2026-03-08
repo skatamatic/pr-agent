@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useContext, useCallback, useRef } from 'react';
+import DOMPurify from 'dompurify';
 import { 
   Plus, 
   Edit, 
@@ -36,6 +37,7 @@ import PrAgentConfigEditor from './PrAgentConfigEditor';
 import { formatTimestamp } from '../utils/timeUtils';
 import GitHubActionConfigEditor from './GitHubActionConfigEditor';
 import AzurePipelineConfigEditor from './AzurePipelineConfigEditor';
+import SearchableSelect from './SearchableSelect';
 
 export const getAzureRepoKey = (repo) => String(repo?.id || repo?.url || repo?.display_name || '');
 
@@ -109,6 +111,7 @@ const RepositoryManager = () => {
   const [savingBestPractices, setSavingBestPractices] = useState({});
   const [isEditingGeneral, setIsEditingGeneral] = useState({});
   const [editedGeneralData, setEditedGeneralData] = useState({});
+  const [savingGeneral, setSavingGeneral] = useState(new Set());
   const [loadingBestPractices, setLoadingBestPractices] = useState(new Set());
   
   // PR-Agent config states
@@ -128,6 +131,18 @@ const RepositoryManager = () => {
   const [loadingAzurePipelineConfig, setLoadingAzurePipelineConfig] = useState(new Set());
   const [checkingGithubActionPrStatus, setCheckingGithubActionPrStatus] = useState(new Set());
   const [checkingAzurePipelinePrStatus, setCheckingAzurePipelinePrStatus] = useState(new Set());
+
+  // Pipeline sync & policy states
+  const [syncStatusData, setSyncStatusData] = useState({});
+  const [policiesData, setPoliciesData] = useState({});
+  const [branchesData, setBranchesData] = useState({});
+  const [loadingSyncStatus, setLoadingSyncStatus] = useState(new Set());
+  const [pushingYaml, setPushingYaml] = useState(new Set());
+  const [loadingPolicies, setLoadingPolicies] = useState(new Set());
+  const [savingPolicy, setSavingPolicy] = useState(new Set());
+  const [deletingPolicy, setDeletingPolicy] = useState(new Set());
+  const [showAddPolicy, setShowAddPolicy] = useState({});
+  const [newPolicyForm, setNewPolicyForm] = useState({});
 
   // Runner service states
   const [runnerServiceNames, setRunnerServiceNames] = useState({});
@@ -155,6 +170,7 @@ const RepositoryManager = () => {
   const [provisionProgressByConnection, setProvisionProgressByConnection] = useState({});
   const checkRunnerServiceRef = useRef(null);
   const consoleEndRef = useRef(null);
+  const pendingTimeoutsRef = useRef(new Set());
   const [showRunnersPanel, setShowRunnersPanel] = useState(false);
   const [deletingRunner, setDeletingRunner] = useState(null);
   const [showCreateRunner, setShowCreateRunner] = useState(false);
@@ -174,6 +190,11 @@ const RepositoryManager = () => {
     provisioning: false,
     provisioned: false,
     skipRunner: false,
+    setupPipeline: true,
+    pipelineBranch: '',
+    pipelineIsBlocking: false,
+    pipelineSetupDone: false,
+    pipelineSetupResult: null,
   });
 
   const fetchRepositories = useCallback(async () => {
@@ -230,6 +251,22 @@ const RepositoryManager = () => {
       consoleEndRef.current.scrollTop = consoleEndRef.current.scrollHeight;
     }
   }, [provisionProgressByConnection]);
+
+  const safeTimeout = useCallback((fn, delay) => {
+    const id = setTimeout(() => {
+      pendingTimeoutsRef.current.delete(id);
+      fn();
+    }, delay);
+    pendingTimeoutsRef.current.add(id);
+    return id;
+  }, []);
+
+  useEffect(() => {
+    const timeouts = pendingTimeoutsRef.current;
+    return () => {
+      timeouts.forEach(id => clearTimeout(id));
+    };
+  }, []);
 
   const fetchActionRunnerConnections = useCallback(() => {
     return api.getActionRunnerConnections()
@@ -579,29 +616,28 @@ const RepositoryManager = () => {
           }
         }
       } else {
+        const newRepoName = formData.name;
         await api.createRepository(formData);
         showSuccess('Success', 'Repository added successfully');
         
-        // For new repositories, also trigger health and config checks
+        resetForm();
+        
+        // For new repositories, trigger health and config checks after a delay
         fetchRepositories().then(() => {
-          // Find the newly created repository and trigger checks
-          setTimeout(async () => {
-            const updatedRepos = await api.getRepositories();
-            const newRepo = updatedRepos.data.data.find(r => r.name === formData.name);
-            if (newRepo) {
-              try {
+          safeTimeout(async () => {
+            try {
+              const updatedRepos = await api.getRepositories();
+              const newRepo = updatedRepos.data.data.find(r => r.name === newRepoName);
+              if (newRepo) {
                 await checkRunnerHealth(newRepo.id);
                 await checkRepositoryConfig(newRepo.id);
-              } catch (error) {
-                console.warn('Failed to trigger initial health/config checks:', error);
               }
+            } catch (error) {
+              console.warn('Failed to trigger initial health/config checks:', error);
             }
           }, 1000);
         });
       }
-      
-      resetForm();
-      fetchRepositories();
     } catch (error) {
       const errorMsg = error.response?.data?.detail || 'Failed to save repository';
       showError('Error', errorMsg);
@@ -707,6 +743,11 @@ const RepositoryManager = () => {
       provisioning: false,
       provisioned: false,
       skipRunner: false,
+      setupPipeline: false,
+      pipelineBranch: '',
+      pipelineIsBlocking: false,
+      pipelineSetupDone: false,
+      pipelineSetupResult: null,
     });
   };
 
@@ -1208,20 +1249,9 @@ const RepositoryManager = () => {
 
   const saveGeneralChanges = async (repoId) => {
     if (!editedGeneralData[repoId]) return;
-    
+    setSavingGeneral(prev => new Set([...prev, repoId]));
     try {
-      const response = await fetch(`/api/repositories/${repoId}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(editedGeneralData[repoId]),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to update repository');
-      }
+      await api.updateRepository(repoId, editedGeneralData[repoId]);
 
       // Refresh the repositories list
       await fetchRepositories();
@@ -1234,6 +1264,8 @@ const RepositoryManager = () => {
     } catch (error) {
       console.error('Failed to update repository:', error);
       showError('Failed to update repository', error.message || 'Failed to update repository');
+    } finally {
+      setSavingGeneral(prev => { const next = new Set(prev); next.delete(repoId); return next; });
     }
   };
 
@@ -1257,9 +1289,7 @@ const RepositoryManager = () => {
       // If there's a pending PR, check its status automatically
       if (data.pr_status === 'pending') {
         // Check PR status after a short delay to avoid overwhelming the API
-        setTimeout(() => {
-          checkPrAgentConfigPRStatus(repoId);
-        }, 1000);
+        safeTimeout(() => checkPrAgentConfigPRStatus(repoId), 1000);
       }
       
     } catch (error) {
@@ -1380,9 +1410,7 @@ const RepositoryManager = () => {
       // If there's a pending PR, check its status automatically
       if (data.has_pending_pr && data.pr_number) {
         // Check PR status after a short delay to avoid overwhelming the API
-        setTimeout(() => {
-          checkGithubActionConfigPRStatus(repoId);
-        }, 1000);
+        safeTimeout(() => checkGithubActionConfigPRStatus(repoId), 1000);
       }
     } catch (error) {
       console.error('Error loading GitHub Action config:', error);
@@ -1594,6 +1622,141 @@ const RepositoryManager = () => {
       });
     }
   };
+
+  // ── Pipeline sync, push, branches, policy handlers ──
+
+  const loadSyncStatus = useCallback(async (repoId) => {
+    try {
+      setLoadingSyncStatus(prev => new Set([...prev, repoId]));
+      const resp = await api.getPipelineSyncStatus(repoId);
+      const data = resp.data?.data || resp.data || {};
+      setSyncStatusData(prev => ({ ...prev, [repoId]: data }));
+      return data;
+    } catch (err) {
+      console.error('Error loading sync status:', err);
+      return null;
+    } finally {
+      setLoadingSyncStatus(prev => { const s = new Set(prev); s.delete(repoId); return s; });
+    }
+  }, []);
+
+  const handlePushYaml = async (repoId, content = null) => {
+    try {
+      setPushingYaml(prev => new Set([...prev, repoId]));
+      const resp = await api.pushPipelineYaml(repoId, content);
+      const result = resp.data?.data || resp.data || {};
+      if (result.success) {
+        showSuccess('Pipeline Updated', result.pipeline_created
+          ? 'YAML pushed and pipeline definition created.'
+          : 'Pipeline YAML pushed to default branch.');
+        await loadSyncStatus(repoId);
+      } else {
+        showError('Push Failed', result.error || 'Unknown error');
+      }
+    } catch (err) {
+      showError('Push Failed', err.response?.data?.detail || err.message);
+    } finally {
+      setPushingYaml(prev => { const s = new Set(prev); s.delete(repoId); return s; });
+    }
+  };
+
+  const loadBranches = useCallback(async (repoId) => {
+    try {
+      const resp = await api.getRepoBranches(repoId);
+      const data = resp.data?.data || resp.data || {};
+      setBranchesData(prev => ({ ...prev, [repoId]: data }));
+      return data;
+    } catch (err) {
+      console.error('Error loading branches:', err);
+      return null;
+    }
+  }, []);
+
+  const loadPolicies = useCallback(async (repoId) => {
+    try {
+      setLoadingPolicies(prev => new Set([...prev, repoId]));
+      const resp = await api.getPipelinePolicies(repoId);
+      const data = resp.data?.data || resp.data || {};
+      setPoliciesData(prev => ({ ...prev, [repoId]: data }));
+      return data;
+    } catch (err) {
+      console.error('Error loading policies:', err);
+      return null;
+    } finally {
+      setLoadingPolicies(prev => { const s = new Set(prev); s.delete(repoId); return s; });
+    }
+  }, []);
+
+  const handleAddPolicy = async (repoId) => {
+    const form = newPolicyForm[repoId] || {};
+    if (!form.branch || !form.pipeline_definition_id) {
+      showError('Validation', 'Branch and pipeline are required');
+      return;
+    }
+    try {
+      setSavingPolicy(prev => new Set([...prev, repoId]));
+      const resp = await api.ensurePipelinePolicy(repoId, {
+        branch: form.branch,
+        pipeline_definition_id: form.pipeline_definition_id,
+        is_blocking: form.is_blocking || false,
+      });
+      const result = resp.data?.data || resp.data || {};
+      if (result.success) {
+        showSuccess('Policy Added', result.created ? 'Build validation policy created.' : 'Policy updated.');
+        setShowAddPolicy(prev => ({ ...prev, [repoId]: false }));
+        setNewPolicyForm(prev => ({ ...prev, [repoId]: {} }));
+        await loadPolicies(repoId);
+      } else {
+        showError('Policy Error', result.error || 'Failed to create policy');
+      }
+    } catch (err) {
+      showError('Policy Error', err.response?.data?.detail || err.message);
+    } finally {
+      setSavingPolicy(prev => { const s = new Set(prev); s.delete(repoId); return s; });
+    }
+  };
+
+  const handleDeletePolicy = async (repoId, policyId) => {
+    try {
+      setDeletingPolicy(prev => new Set([...prev, policyId]));
+      const resp = await api.deletePipelinePolicy(repoId, policyId);
+      const result = resp.data?.data || resp.data || {};
+      if (result.success) {
+        showSuccess('Policy Removed', 'Build validation policy deleted.');
+        await loadPolicies(repoId);
+      } else {
+        showError('Delete Failed', result.error || 'Failed to delete policy');
+      }
+    } catch (err) {
+      showError('Delete Failed', err.response?.data?.detail || err.message);
+    } finally {
+      setDeletingPolicy(prev => { const s = new Set(prev); s.delete(policyId); return s; });
+    }
+  };
+
+  // Load sync status for Azure DevOps repos when repo list changes
+  useEffect(() => {
+    repositories.filter(r => r.provider === 'azure_devops' && r.azure_pat).forEach(r => {
+      if (!syncStatusData[r.id] && !loadingSyncStatus.has(r.id)) {
+        loadSyncStatus(r.id);
+      }
+    });
+  }, [repositories, syncStatusData, loadingSyncStatus, loadSyncStatus]);
+
+  // Load branches when wizard enters Pipeline step (step 3)
+  useEffect(() => {
+    if (wizardStep === 3 && formData.id && !branchesData['wizard']) {
+      (async () => {
+        const data = await loadBranches(formData.id);
+        if (data) {
+          setBranchesData(prev => ({ ...prev, wizard: data }));
+          if (data.default_branch && !wizardState.pipelineBranch) {
+            setWizardState(prev => ({ ...prev, pipelineBranch: data.default_branch }));
+          }
+        }
+      })();
+    }
+  }, [wizardStep, formData.id, branchesData, loadBranches, wizardState.pipelineBranch]);
 
   // Get overall repository status for the main badge
   const getRepositoryStatus = (repo) => {
@@ -1970,9 +2133,7 @@ const RepositoryManager = () => {
       showSuccess('Success', 'Azure agent service name saved successfully');
       
       // Automatically check the service status after saving
-      setTimeout(() => {
-        checkAzureAgentService(repoId);
-      }, 500);
+      safeTimeout(() => checkAzureAgentService(repoId), 500);
       
     } catch (error) {
       console.error('Error saving Azure agent service name:', error);
@@ -2315,18 +2476,15 @@ const RepositoryManager = () => {
                       <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Step 2 - Select Repository</h4>
                       <div>
                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Discovered Repository</label>
-                        <select
+                        <SearchableSelect
+                          options={wizardState.repos.map((r) => ({
+                            value: String(r.id || r.url || r.display_name),
+                            label: r.display_name
+                          }))}
                           value={wizardState.selectedRepoKey}
-                          onChange={(e) => handleAzureDiscoveredRepoSelect(e.target.value)}
-                          className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                        >
-                          <option value="">Select repository</option>
-                          {wizardState.repos.map((r) => (
-                            <option key={String(r.id || r.url || r.display_name)} value={String(r.id || r.url || r.display_name)}>
-                              {r.display_name}
-                            </option>
-                          ))}
-                        </select>
+                          onChange={(val) => handleAzureDiscoveredRepoSelect(val)}
+                          placeholder="Search and select repository..."
+                        />
                       </div>
                       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                         <div>
@@ -2377,18 +2535,16 @@ const RepositoryManager = () => {
                       <p className="text-xs text-gray-600 dark:text-gray-400">Choose an agent pool and provision now, or skip and configure later.</p>
                       <div>
                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Azure Agent Pool</label>
-                        <select
+                        <SearchableSelect
+                          options={wizardState.pools.map((p) => ({
+                            value: p.name,
+                            label: `${p.name}${p.is_hosted ? ' (hosted)' : ''}`
+                          }))}
                           value={wizardState.selectedPool}
-                          onChange={(e) => setWizardState((prev) => ({ ...prev, selectedPool: e.target.value }))}
-                          className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                        >
-                          <option value="">Select pool</option>
-                          {wizardState.pools.map((p) => (
-                            <option key={String(p.id || p.name)} value={p.name}>
-                              {p.name}{p.is_hosted ? ' (hosted)' : ''}
-                            </option>
-                          ))}
-                        </select>
+                          onChange={(val) => setWizardState((prev) => ({ ...prev, selectedPool: val }))}
+                          placeholder="Search and select agent pool..."
+                          disabled={wizardState.provisioned || wizardState.provisioning}
+                        />
                       </div>
 
                       {(formData.action_runner_connection_id || wizardState.connectionId) && (() => {
@@ -2534,7 +2690,7 @@ const RepositoryManager = () => {
                                 onClick={() => setWizardStep(3)}
                                 className={`px-4 py-2 rounded text-white ${isComplete ? 'bg-green-600 hover:bg-green-700' : 'bg-gray-600 hover:bg-gray-700'}`}
                               >
-                                {isComplete ? 'Continue to Review' : 'Continue (setup still running…)'}
+                                {isComplete ? 'Continue to Pipeline Setup' : 'Continue (setup still running…)'}
                               </button>
                             );
                           })()}
@@ -2545,8 +2701,154 @@ const RepositoryManager = () => {
 
                   {wizardStep === 3 && (
                     <div className="space-y-4">
+                      <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-4">
+                        <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Step 4 - Pipeline & Policy Setup</h4>
+                        <p className="text-xs text-gray-600 dark:text-gray-400">Deploy the PR-Agent pipeline YAML and set up a build validation check so PR-Agent runs on every pull request.</p>
+
+                        {/* Bot identity info */}
+                        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3">
+                          <div className="flex items-start">
+                            <Info className="h-4 w-4 text-blue-600 dark:text-blue-400 mr-2 mt-0.5 flex-shrink-0" />
+                            <div className="text-xs text-blue-700 dark:text-blue-300 space-y-1">
+                              <p className="font-medium">PR comment identity</p>
+                              <p>By default, PR-Agent comments appear as "Project Collection Build Service" using the pipeline&apos;s built-in <code className="bg-blue-100 dark:bg-blue-900/40 px-1 rounded">SYSTEM_ACCESSTOKEN</code>. For a custom bot name, create a dedicated Azure DevOps user (e.g. "AI Review Bot") and use its PAT instead.</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <label className="flex items-center space-x-3 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={wizardState.setupPipeline}
+                            onChange={(e) => setWizardState(prev => ({ ...prev, setupPipeline: e.target.checked }))}
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
+                          />
+                          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Set up AI review pipeline</span>
+                        </label>
+
+                        {wizardState.setupPipeline && (
+                          <div className="space-y-3 pl-7">
+                            <div>
+                              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Branch to protect</label>
+                              <SearchableSelect
+                                options={(branchesData['wizard']?.branches || []).map(b => ({ value: b.name, label: `${b.name}${b.is_default ? ' (default)' : ''}` }))}
+                                value={wizardState.pipelineBranch}
+                                onChange={(val) => setWizardState(prev => ({ ...prev, pipelineBranch: val }))}
+                                placeholder={branchesData['wizard'] ? 'Select branch...' : 'Loading branches...'}
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Policy type</label>
+                              <div className="flex items-center space-x-3">
+                                <button
+                                  onClick={() => setWizardState(prev => ({ ...prev, pipelineIsBlocking: false }))}
+                                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                                    !wizardState.pipelineIsBlocking ? 'bg-blue-600 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                                  }`}
+                                >Optional</button>
+                                <button
+                                  onClick={() => setWizardState(prev => ({ ...prev, pipelineIsBlocking: true }))}
+                                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                                    wizardState.pipelineIsBlocking ? 'bg-red-600 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                                  }`}
+                                >Required</button>
+                              </div>
+                            </div>
+
+                            {wizardState.pipelineSetupResult && (
+                              <div className={`rounded-lg p-3 text-sm ${
+                                wizardState.pipelineSetupResult.success
+                                  ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800'
+                                  : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800'
+                              }`}>
+                                {wizardState.pipelineSetupResult.success ? (
+                                  <div className="space-y-1">
+                                    {wizardState.pipelineSetupResult.yaml_pushed && <p><CheckCircle className="h-4 w-4 inline mr-1" /> Pipeline YAML deployed</p>}
+                                    {wizardState.pipelineSetupResult.pipeline_created && <p><CheckCircle className="h-4 w-4 inline mr-1" /> Pipeline definition created</p>}
+                                    {wizardState.pipelineSetupResult.policy_created && <p><CheckCircle className="h-4 w-4 inline mr-1" /> Build validation policy added</p>}
+                                    {wizardState.pipelineSetupResult.policy_updated && <p><CheckCircle className="h-4 w-4 inline mr-1" /> Build validation policy updated</p>}
+                                  </div>
+                                ) : (
+                                  <p>{wizardState.pipelineSetupResult.error}</p>
+                                )}
+                              </div>
+                            )}
+
+                            {!wizardState.pipelineSetupDone && (
+                              <button
+                                onClick={async () => {
+                                  try {
+                                    setWizardState(prev => ({ ...prev, loading: true }));
+                                    const pushResp = await api.pushPipelineYaml(formData.id || 0);
+                                    const pushResult = pushResp.data?.data || pushResp.data || {};
+                                    if (!pushResult.success) {
+                                      setWizardState(prev => ({ ...prev, loading: false, pipelineSetupResult: { success: false, error: pushResult.error || 'Failed to push YAML' } }));
+                                      return;
+                                    }
+                                    let policyResult = {};
+                                    if (wizardState.pipelineBranch && pushResult.pipeline_id) {
+                                      const polResp = await api.ensurePipelinePolicy(formData.id || 0, {
+                                        branch: wizardState.pipelineBranch,
+                                        pipeline_definition_id: pushResult.pipeline_id,
+                                        is_blocking: wizardState.pipelineIsBlocking,
+                                      });
+                                      policyResult = polResp.data?.data || polResp.data || {};
+                                    }
+                                    setWizardState(prev => ({
+                                      ...prev,
+                                      loading: false,
+                                      pipelineSetupDone: true,
+                                      pipelineSetupResult: {
+                                        success: true,
+                                        yaml_pushed: pushResult.yaml_pushed,
+                                        pipeline_created: pushResult.pipeline_created,
+                                        policy_created: policyResult.created || false,
+                                        policy_updated: policyResult.updated || false,
+                                      }
+                                    }));
+                                  } catch (err) {
+                                    setWizardState(prev => ({
+                                      ...prev,
+                                      loading: false,
+                                      pipelineSetupResult: { success: false, error: err.response?.data?.detail || err.message }
+                                    }));
+                                  }
+                                }}
+                                disabled={wizardState.loading}
+                                className="flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-50"
+                              >
+                                {wizardState.loading ? <><RefreshCw className="h-4 w-4 mr-1.5 animate-spin" /> Setting up...</> : <><Settings className="h-4 w-4 mr-1.5" /> Set Up Pipeline & Check</>}
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex justify-between pt-4 border-t border-gray-200 dark:border-gray-700">
+                        <button type="button" onClick={() => setWizardStep(2)}
+                          className="px-6 py-2.5 text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                          Back
+                        </button>
+                        <div className="space-x-3">
+                          <button type="button" onClick={() => setWizardStep(4)}
+                            className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                            {wizardState.setupPipeline ? 'Skip' : 'Continue'}
+                          </button>
+                          {wizardState.pipelineSetupDone && (
+                            <button type="button" onClick={() => setWizardStep(4)}
+                              className="px-6 py-2.5 text-sm font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors shadow-sm">
+                              Continue to Review
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {wizardStep === 4 && (
+                    <div className="space-y-4">
                       <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 border border-gray-200 dark:border-gray-600">
-                        <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Step 4 - Review & Save</h4>
+                        <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Step 5 - Review & Save</h4>
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 text-sm">
                           <div className="text-gray-700 dark:text-gray-300"><span className="font-medium">Repository:</span> {formData.name || 'Not selected'}</div>
                           <div className="text-gray-700 dark:text-gray-300"><span className="font-medium">URL:</span> {formData.url || 'Not selected'}</div>
@@ -2588,7 +2890,7 @@ const RepositoryManager = () => {
                       <div className="flex justify-between pt-4 border-t border-gray-200 dark:border-gray-700">
                         <button
                           type="button"
-                          onClick={() => setWizardStep(2)}
+                          onClick={() => setWizardStep(3)}
                           className="px-6 py-2.5 text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
                         >
                           Back
@@ -2889,6 +3191,32 @@ const RepositoryManager = () => {
                             {React.createElement(getRepositoryStatusIcon(getRepositoryStatus(repo)), { className: "h-3 w-3 mr-1" })}
                             {formatRepositoryStatus(getRepositoryStatus(repo))}
                           </span>
+                          {repo.provider === 'azure_devops' && syncStatusData[repo.id] && (
+                            <>
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                                syncStatusData[repo.id].sync_status === 'up_to_date'
+                                  ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                                  : syncStatusData[repo.id].sync_status === 'outdated'
+                                    ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+                                    : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
+                              }`}>
+                                {syncStatusData[repo.id].sync_status === 'up_to_date' ? 'Pipeline: Synced'
+                                  : syncStatusData[repo.id].sync_status === 'outdated' ? 'Pipeline: Outdated'
+                                  : 'Pipeline: Missing'}
+                              </span>
+                              {policiesData[repo.id]?.policies && (
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                                  policiesData[repo.id].policies.length > 0
+                                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                                    : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
+                                }`}>
+                                  {policiesData[repo.id].policies.length > 0
+                                    ? `Check: ${policiesData[repo.id].policies.length} Active`
+                                    : 'Check: None'}
+                                </span>
+                              )}
+                            </>
+                          )}
                         </div>
                         <div className="mt-2 flex items-center text-sm text-gray-500 dark:text-gray-400">
                           <Globe className="h-4 w-4 mr-2 flex-shrink-0" />
@@ -3469,10 +3797,11 @@ const RepositoryManager = () => {
                                     </button>
                                     <button
                                       onClick={() => saveGeneralChanges(repo.id)}
-                                      className="flex items-center px-3 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                      disabled={savingGeneral.has(repo.id)}
+                                      className="flex items-center px-3 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
                                       <Save className="h-4 w-4 mr-2" />
-                                      Save Changes
+                                      {savingGeneral.has(repo.id) ? 'Saving...' : 'Save Changes'}
                                     </button>
                                   </>
                                 )}
@@ -4156,7 +4485,7 @@ const RepositoryManager = () => {
                                       <div 
                                         className="prose prose-sm max-w-none best-practices-markdown"
                                         dangerouslySetInnerHTML={{
-                                          __html: bestPracticesData[repo.id].content_html || 'No content available'
+                                          __html: DOMPurify.sanitize(bestPracticesData[repo.id].content_html || 'No content available')
                                         }}
                                       />
                                     </div>
@@ -4371,139 +4700,282 @@ const RepositoryManager = () => {
                         {/* Azure Pipeline Config Tab */}
                         {getRepoActiveTab(repo.id) === 'azure-pipeline-config' && (
                           <div className="space-y-6 tab-enter">
-                            <div className="flex items-center justify-between">
-                              <h4 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
-                                <Server className="h-5 w-5 mr-2 text-blue-600 dark:text-blue-400" />
-                                Azure Pipeline Configuration
-                              </h4>
-                              <div className="flex items-center space-x-2">
-                                {/* PR Status Check Button */}
-                                {azurePipelineConfigData[repo.id]?.has_pending_pr && (
+                            {/* ── Panel A: Pipeline YAML Status ── */}
+                            <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-sm">
+                              <div className="p-5 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                                <h4 className="text-base font-semibold text-gray-900 dark:text-white flex items-center">
+                                  <FileText className="h-5 w-5 mr-2 text-blue-600 dark:text-blue-400" />
+                                  Pipeline YAML
+                                </h4>
+                                <div className="flex items-center space-x-2">
                                   <button
-                                    onClick={() => checkAzurePipelineConfigPRStatus(repo.id)}
-                                    disabled={checkingAzurePipelinePrStatus.has(repo.id)}
-                                    className="flex items-center px-3 py-2 text-sm font-medium text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg hover:bg-orange-100 dark:hover:bg-orange-900/30 transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                    onClick={() => { loadSyncStatus(repo.id); loadPolicies(repo.id); }}
+                                    disabled={loadingSyncStatus.has(repo.id)}
+                                    className="flex items-center px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
                                   >
-                                    <RefreshCw className={`h-4 w-4 mr-2 ${checkingAzurePipelinePrStatus.has(repo.id) ? 'animate-spin' : ''}`} />
-                                    {checkingAzurePipelinePrStatus.has(repo.id) ? 'Checking PR...' : `Check PR #${azurePipelineConfigData[repo.id].pr_number}`}
+                                    <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${loadingSyncStatus.has(repo.id) ? 'animate-spin' : ''}`} />
+                                    Refresh
                                   </button>
-                                )}
-                                {azurePipelineConfigData[repo.id]?.has_pending_pr && (
-                                  <a
-                                    href={azurePipelineConfigData[repo.id].pr_url}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="flex items-center px-3 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors duration-200 shadow-sm"
-                                  >
-                                    <ExternalLink className="h-4 w-4 mr-2" />
-                                    View PR #{azurePipelineConfigData[repo.id].pr_number}
-                                  </a>
-                                )}
-                                <button
-                                  onClick={() => loadAzurePipelineConfig(repo.id, true)}
-                                  disabled={loadingAzurePipelineConfig.has(repo.id)}
-                                  className="flex items-center px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  <RefreshCw className={`h-4 w-4 mr-2 ${loadingAzurePipelineConfig.has(repo.id) ? 'animate-spin' : ''}`} />
-                                  {loadingAzurePipelineConfig.has(repo.id) ? 'Loading...' : 'Refresh'}
-                                </button>
-                                <button
-                                  onClick={() => openAzurePipelineConfigEditor(repo.id)}
-                                  className="flex items-center px-3 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 rounded-lg transition-colors duration-200 shadow-sm"
-                                >
-                                  <FileText className="h-4 w-4 mr-2" />
-                                  {azurePipelineConfigData[repo.id]?.exists ? 'Edit' : 'Create'} Configuration
-                                </button>
-                              </div>
-                            </div>
-                            
-                            {/* Configuration Content */}
-                            {loadingAzurePipelineConfig.has(repo.id) ? (
-                              <div className="flex items-center justify-center py-8">
-                                <RefreshCw className="h-6 w-6 animate-spin mr-3 text-blue-600 dark:text-blue-400" />
-                                <span className="text-gray-600 dark:text-gray-400">Loading Azure Pipeline configuration...</span>
-                              </div>
-                            ) : azurePipelineConfigData[repo.id]?.error ? (
-                              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
-                                <div className="flex items-start">
-                                  <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 mr-3 mt-0.5 flex-shrink-0" />
-                                  <div>
-                                    <h5 className="font-medium text-red-800 dark:text-red-200 mb-1">Configuration Error</h5>
-                                    <p className="text-red-700 dark:text-red-300 text-sm mt-1">{azurePipelineConfigData[repo.id].error}</p>
-                                  </div>
-                                </div>
-                              </div>
-                            ) : azurePipelineConfigData[repo.id]?.exists ? (
-                              <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-6 shadow-sm">
-                                <div className="flex items-center justify-between mb-4">
-                                  <h5 className="font-medium text-gray-900 dark:text-white flex items-center">
-                                    <Check className="h-5 w-5 text-green-500 mr-2" />
-                                    Azure Pipeline Configuration Found
-                                  </h5>
-                                  {azurePipelineConfigData[repo.id]?.last_fetched && (
-                                    <span className="text-sm text-gray-500 dark:text-gray-400">
-                                      Updated: {formatTimestamp(azurePipelineConfigData[repo.id].last_fetched)}
-                                    </span>
+                                  {syncStatusData[repo.id]?.pipelines_url && (
+                                    <a href={syncStatusData[repo.id].pipelines_url} target="_blank" rel="noopener noreferrer"
+                                      className="flex items-center px-3 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                                      onClick={(e) => e.stopPropagation()}>
+                                      <ExternalLink className="h-3.5 w-3.5 mr-1" /> View in Azure DevOps
+                                    </a>
                                   )}
                                 </div>
-                                
-                                {/* Environment Variables */}
-                                {azurePipelineConfigData[repo.id]?.env_vars && Object.keys(azurePipelineConfigData[repo.id].env_vars).length > 0 ? (
-                                  <div className="space-y-3">
-                                    <h6 className="font-medium text-gray-900 dark:text-gray-200 text-sm">
-                                      Required Environment Variables:
-                                    </h6>
-                                    <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4 space-y-2">
-                                      {Object.entries(azurePipelineConfigData[repo.id].env_vars).map(([key, value]) => (
-                                        <div key={key} className="flex items-center justify-between py-1">
-                                          <code className="text-sm font-mono text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 px-2 py-1 rounded">
-                                            {key}
-                                          </code>
-                                          <span className="text-xs text-gray-500 dark:text-gray-400 ml-3">
-                                            {value?.description || 'No description'}
-                                          </span>
-                                        </div>
-                                      ))}
+                              </div>
+                              <div className="p-5">
+                                {loadingSyncStatus.has(repo.id) && !syncStatusData[repo.id] ? (
+                                  <div className="flex items-center justify-center py-6">
+                                    <RefreshCw className="h-5 w-5 animate-spin mr-2 text-blue-500" />
+                                    <span className="text-sm text-gray-500">Checking sync status...</span>
+                                  </div>
+                                ) : syncStatusData[repo.id]?.error ? (
+                                  <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+                                    <div className="flex items-start">
+                                      <AlertCircle className="h-5 w-5 text-red-500 mr-2 mt-0.5 flex-shrink-0" />
+                                      <p className="text-sm text-red-700 dark:text-red-300">{syncStatusData[repo.id].error}</p>
                                     </div>
                                   </div>
-                                ) : (
+                                ) : syncStatusData[repo.id] ? (() => {
+                                  const ss = syncStatusData[repo.id];
+                                  return (
+                                    <div className="space-y-4">
+                                      <div className="flex items-center justify-between">
+                                        <div className="flex items-center space-x-3">
+                                          {ss.sync_status === 'up_to_date' && (
+                                            <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
+                                              <CheckCircle className="h-4 w-4 mr-1.5" /> Up to date
+                                            </span>
+                                          )}
+                                          {ss.sync_status === 'outdated' && (
+                                            <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+                                              <AlertCircle className="h-4 w-4 mr-1.5" /> Outdated ({ss.diff_lines_changed} lines differ)
+                                            </span>
+                                          )}
+                                          {ss.sync_status === 'missing' && (
+                                            <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300">
+                                              <X className="h-4 w-4 mr-1.5" /> Missing
+                                            </span>
+                                          )}
+                                          {ss.pipeline_exists && (
+                                            <span className="text-xs text-gray-500 dark:text-gray-400">Pipeline definition exists</span>
+                                          )}
+                                        </div>
+                                        <div className="flex items-center space-x-2">
+                                          {(ss.sync_status === 'missing' || ss.sync_status === 'outdated') && (
+                                            <button
+                                              onClick={() => handlePushYaml(repo.id)}
+                                              disabled={pushingYaml.has(repo.id)}
+                                              className={`flex items-center px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors shadow-sm disabled:opacity-50 ${
+                                                ss.sync_status === 'missing'
+                                                  ? 'bg-green-600 hover:bg-green-700'
+                                                  : 'bg-amber-600 hover:bg-amber-700'
+                                              }`}
+                                            >
+                                              {pushingYaml.has(repo.id) ? (
+                                                <><RefreshCw className="h-4 w-4 mr-1.5 animate-spin" /> Pushing...</>
+                                              ) : ss.sync_status === 'missing' ? (
+                                                <><Plus className="h-4 w-4 mr-1.5" /> Deploy Pipeline YAML</>
+                                              ) : (
+                                                <><RefreshCw className="h-4 w-4 mr-1.5" /> Update Pipeline YAML</>
+                                              )}
+                                            </button>
+                                          )}
+                                          <button
+                                            onClick={() => openAzurePipelineConfigEditor(repo.id)}
+                                            className="flex items-center px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
+                                          >
+                                            <Edit className="h-4 w-4 mr-1.5" /> Edit
+                                          </button>
+                                        </div>
+                                      </div>
+                                      {ss.sync_status === 'outdated' && ss.remote_content && (
+                                        <details className="bg-gray-50 dark:bg-gray-900/30 rounded-lg border border-gray-200 dark:border-gray-700">
+                                          <summary className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 rounded-t-lg">
+                                            View diff (remote vs canonical)
+                                          </summary>
+                                          <div className="px-4 py-3 overflow-x-auto">
+                                            <pre className="text-xs font-mono text-gray-600 dark:text-gray-400 whitespace-pre-wrap max-h-96 overflow-y-auto">{ss.remote_content}</pre>
+                                          </div>
+                                        </details>
+                                      )}
+                                      {ss.sync_status === 'missing' && ss.canonical_content && (
+                                        <details className="bg-blue-50 dark:bg-blue-900/10 rounded-lg border border-blue-200 dark:border-blue-800">
+                                          <summary className="px-4 py-2 text-sm font-medium text-blue-700 dark:text-blue-300 cursor-pointer hover:bg-blue-100 dark:hover:bg-blue-900/20 rounded-t-lg">
+                                            Preview template that will be deployed
+                                          </summary>
+                                          <div className="px-4 py-3 overflow-x-auto">
+                                            <pre className="text-xs font-mono text-gray-600 dark:text-gray-400 whitespace-pre-wrap max-h-96 overflow-y-auto">{ss.canonical_content}</pre>
+                                          </div>
+                                        </details>
+                                      )}
+                                    </div>
+                                  );
+                                })() : (
                                   <div className="text-center py-6">
-                                    <Info className="h-8 w-8 text-blue-400 mx-auto mb-2" />
-                                    <p className="text-gray-600 dark:text-gray-400 text-sm">
-                                      Azure Pipeline configuration exists but no environment variables detected.
-                                    </p>
+                                    <Server className="mx-auto h-10 w-10 text-gray-400 dark:text-gray-500 mb-3" />
+                                    <p className="text-sm text-gray-500 dark:text-gray-400">Click Refresh to check pipeline sync status.</p>
                                   </div>
                                 )}
                               </div>
-                            ) : azurePipelineConfigData[repo.id] !== undefined ? (
-                              <div className="text-center py-8">
-                                <FileText className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500 mb-4" />
-                                <h5 className="text-lg font-medium text-gray-900 dark:text-white mb-2">No Azure Pipeline Configuration</h5>
-                                <p className="text-gray-500 dark:text-gray-400 mb-6">
-                                  No azure-pipelines.yml file found in your repository. Click "Create Configuration" to set up PR-Agent automation.
-                                </p>
-                                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 text-left max-w-2xl mx-auto">
-                                  <div className="flex items-start">
-                                    <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-3 mt-0.5 flex-shrink-0" />
-                                    <div>
-                                      <h6 className="font-medium text-blue-800 dark:text-blue-200 mb-2">Azure DevOps Pipeline Integration</h6>
-                                      <div className="text-sm text-blue-700 dark:text-blue-300 space-y-2">
-                                        <p>• Configure Azure DevOps pipeline for automatic PR processing</p>
-                                        <p>• Set up PR-Agent environment variables and secrets</p>
-                                        <p>• Enable automated code reviews and improvements</p>
-                                        <p>• Support for both hosted and self-hosted agents</p>
+                            </div>
+
+                            {/* ── Panel B: Build Validation Policies ── */}
+                            <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-sm">
+                              <div className="p-5 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                                <h4 className="text-base font-semibold text-gray-900 dark:text-white flex items-center">
+                                  <Shield className="h-5 w-5 mr-2 text-purple-600 dark:text-purple-400" />
+                                  Build Validation Policies (Checks)
+                                </h4>
+                                <button
+                                  onClick={() => loadPolicies(repo.id)}
+                                  disabled={loadingPolicies.has(repo.id)}
+                                  className="flex items-center px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
+                                >
+                                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${loadingPolicies.has(repo.id) ? 'animate-spin' : ''}`} />
+                                  Refresh
+                                </button>
+                              </div>
+                              <div className="p-5">
+                                {loadingPolicies.has(repo.id) && !policiesData[repo.id] ? (
+                                  <div className="flex items-center justify-center py-4">
+                                    <RefreshCw className="h-5 w-5 animate-spin mr-2 text-purple-500" />
+                                    <span className="text-sm text-gray-500">Loading policies...</span>
+                                  </div>
+                                ) : policiesData[repo.id]?.error ? (
+                                  <p className="text-sm text-red-600 dark:text-red-400">{policiesData[repo.id].error}</p>
+                                ) : (
+                                  <div className="space-y-4">
+                                    {(policiesData[repo.id]?.policies || []).length > 0 ? (
+                                      <div className="divide-y divide-gray-100 dark:divide-gray-700">
+                                        {policiesData[repo.id].policies.map((pol) => (
+                                          <div key={pol.policy_id} className="flex items-center justify-between py-3">
+                                            <div className="flex items-center space-x-3">
+                                              <GitBranch className="h-4 w-4 text-gray-400" />
+                                              <span className="text-sm font-medium text-gray-900 dark:text-white">{pol.branch || 'all branches'}</span>
+                                              <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                                                pol.is_blocking
+                                                  ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+                                                  : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+                                              }`}>
+                                                {pol.is_blocking ? 'Required' : 'Optional'}
+                                              </span>
+                                              {!pol.is_enabled && (
+                                                <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400">Disabled</span>
+                                              )}
+                                            </div>
+                                            <button
+                                              onClick={() => handleDeletePolicy(repo.id, pol.policy_id)}
+                                              disabled={deletingPolicy.has(pol.policy_id)}
+                                              className="text-red-500 hover:text-red-700 dark:hover:text-red-400 text-xs disabled:opacity-50"
+                                            >
+                                              {deletingPolicy.has(pol.policy_id) ? 'Removing...' : 'Remove'}
+                                            </button>
+                                          </div>
+                                        ))}
                                       </div>
-                                    </div>
+                                    ) : (
+                                      <p className="text-sm text-gray-500 dark:text-gray-400 text-center py-3">No build validation policies configured.</p>
+                                    )}
+
+                                    {/* Add Policy form */}
+                                    {showAddPolicy[repo.id] ? (
+                                      <div className="bg-gray-50 dark:bg-gray-900/30 rounded-lg p-4 space-y-3 border border-gray-200 dark:border-gray-700">
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                          <div>
+                                            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Branch</label>
+                                            <SearchableSelect
+                                              options={(branchesData[repo.id]?.branches || []).map(b => ({ value: b.name, label: `${b.name}${b.is_default ? ' (default)' : ''}` }))}
+                                              value={(newPolicyForm[repo.id] || {}).branch || ''}
+                                              onChange={(val) => setNewPolicyForm(prev => ({ ...prev, [repo.id]: { ...prev[repo.id], branch: val } }))}
+                                              placeholder="Select branch..."
+                                            />
+                                          </div>
+                                          <div>
+                                            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Pipeline</label>
+                                            <SearchableSelect
+                                              options={(syncStatusData[repo.id]?.pipeline_definitions || []).map(p => ({ value: p.id, label: p.name }))}
+                                              value={(newPolicyForm[repo.id] || {}).pipeline_definition_id || ''}
+                                              onChange={(val) => setNewPolicyForm(prev => ({ ...prev, [repo.id]: { ...prev[repo.id], pipeline_definition_id: val } }))}
+                                              placeholder="Select pipeline..."
+                                            />
+                                          </div>
+                                          <div>
+                                            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Type</label>
+                                            <div className="flex items-center h-[42px] space-x-3">
+                                              <button
+                                                onClick={() => setNewPolicyForm(prev => ({ ...prev, [repo.id]: { ...prev[repo.id], is_blocking: false } }))}
+                                                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                                                  !(newPolicyForm[repo.id] || {}).is_blocking
+                                                    ? 'bg-blue-600 text-white'
+                                                    : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                                                }`}
+                                              >Optional</button>
+                                              <button
+                                                onClick={() => setNewPolicyForm(prev => ({ ...prev, [repo.id]: { ...prev[repo.id], is_blocking: true } }))}
+                                                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                                                  (newPolicyForm[repo.id] || {}).is_blocking
+                                                    ? 'bg-red-600 text-white'
+                                                    : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                                                }`}
+                                              >Required</button>
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <div className="flex items-center justify-end space-x-2">
+                                          <button
+                                            onClick={() => { setShowAddPolicy(prev => ({ ...prev, [repo.id]: false })); setNewPolicyForm(prev => ({ ...prev, [repo.id]: {} })); }}
+                                            className="px-3 py-1.5 text-xs text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-white"
+                                          >Cancel</button>
+                                          <button
+                                            onClick={() => handleAddPolicy(repo.id)}
+                                            disabled={savingPolicy.has(repo.id)}
+                                            className="flex items-center px-4 py-1.5 text-xs font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-md transition-colors disabled:opacity-50"
+                                          >
+                                            {savingPolicy.has(repo.id) ? <><RefreshCw className="h-3 w-3 mr-1 animate-spin" /> Saving...</> : <><Plus className="h-3 w-3 mr-1" /> Add Build Validation</>}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        onClick={() => {
+                                          setShowAddPolicy(prev => ({ ...prev, [repo.id]: true }));
+                                          if (!branchesData[repo.id]) loadBranches(repo.id).then(data => {
+                                            if (data?.default_branch) setNewPolicyForm(prev => ({ ...prev, [repo.id]: { ...prev[repo.id], branch: data.default_branch } }));
+                                          });
+                                          if (!syncStatusData[repo.id]) loadSyncStatus(repo.id);
+                                        }}
+                                        className="flex items-center px-3 py-2 text-sm font-medium text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-lg transition-colors"
+                                      >
+                                        <Plus className="h-4 w-4 mr-1.5" /> Add Check
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Legacy PR status section */}
+                            {azurePipelineConfigData[repo.id]?.has_pending_pr && (
+                              <div className="bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg p-4">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-sm text-orange-700 dark:text-orange-300">
+                                    Pending config PR #{azurePipelineConfigData[repo.id].pr_number}
+                                  </span>
+                                  <div className="flex items-center space-x-2">
+                                    <button
+                                      onClick={() => checkAzurePipelineConfigPRStatus(repo.id)}
+                                      disabled={checkingAzurePipelinePrStatus.has(repo.id)}
+                                      className="text-xs text-orange-600 hover:text-orange-800 disabled:opacity-50"
+                                    >
+                                      {checkingAzurePipelinePrStatus.has(repo.id) ? 'Checking...' : 'Check Status'}
+                                    </button>
+                                    <a href={azurePipelineConfigData[repo.id].pr_url} target="_blank" rel="noopener noreferrer"
+                                      className="text-xs text-blue-600 hover:underline">View PR</a>
                                   </div>
                                 </div>
-                              </div>
-                            ) : (
-                              <div className="text-center py-8">
-                                <Server className="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500 mb-4" />
-                                <h5 className="text-lg font-medium text-gray-900 dark:text-white mb-2">Azure Pipeline Configuration</h5>
-                                <p className="text-gray-500 dark:text-gray-400 mb-4">
-                                  Click "Refresh" to check for Azure Pipeline configuration in your repository.
-                                </p>
                               </div>
                             )}
                           </div>

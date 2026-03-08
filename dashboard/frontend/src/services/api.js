@@ -177,6 +177,23 @@ const apiService = {
   listAzureAgentServices: (repoId) => 
     api.get(`/api/repositories/${repoId}/azure-agent-service/list`),
 
+  // Pipeline sync, push, branches, and policy management
+  getPipelineSyncStatus: (repoId) =>
+    api.get(`/api/repositories/${repoId}/azure-pipeline-config/sync-status`),
+  pushPipelineYaml: (repoId, content = null) =>
+    api.post(`/api/repositories/${repoId}/azure-pipeline-config/push`, content ? { content } : {}),
+  getRepoBranches: (repoId) =>
+    api.get(`/api/repositories/${repoId}/branches`),
+  getPipelinePolicies: (repoId) =>
+    api.get(`/api/repositories/${repoId}/azure-pipeline-config/policies`),
+  ensurePipelinePolicy: (repoId, body) =>
+    api.post(`/api/repositories/${repoId}/azure-pipeline-config/policies`, body),
+  deletePipelinePolicy: (repoId, policyId) =>
+    api.delete(`/api/repositories/${repoId}/azure-pipeline-config/policies/${policyId}`),
+
+  cleanupAzureResources: (repoId, options = {}) =>
+    api.post(`/api/repositories/${repoId}/azure-cleanup`, options),
+
   // Token testing
   testRepositoryToken: (repoId) => 
     api.post(`/api/repositories/${repoId}/test-token`),

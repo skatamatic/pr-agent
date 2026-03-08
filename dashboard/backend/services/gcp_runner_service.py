@@ -5,6 +5,7 @@ and the dashboard is configured for GCP (GCP_RUNNER_PROJECT_ID, etc.).
 """
 import logging
 import re
+import shlex
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -12,19 +13,30 @@ logger = logging.getLogger(__name__)
 # Optional: only required when GCP runner provisioning is used
 try:
     from google.cloud import compute_v1
+    from google.api_core.exceptions import NotFound as GCPNotFound
     GCP_COMPUTE_AVAILABLE = True
 except ImportError:
     GCP_COMPUTE_AVAILABLE = False
     compute_v1 = None
+    GCPNotFound = None
 
 
-def _safe_instance_name(name: str) -> str:
+def _safe_instance_name(name: str, unique_id: str = "") -> str:
     """GCE instance names must match [a-z]([-a-z0-9]*[a-z0-9])? (RFC 1035, 1-63 chars)."""
     s = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")
     if not s or not s[0].isalpha():
         s = "r-" + s
-    s = s[:63].rstrip("-")
+    if unique_id:
+        suffix = "-" + str(unique_id)
+        s = s[:63 - len(suffix)].rstrip("-") + suffix
+    else:
+        s = s[:63].rstrip("-")
     return s or "runner"
+
+
+def _shell_safe(value: str) -> str:
+    """Escape a value for safe embedding in a shell script."""
+    return shlex.quote(str(value)) if value else "''"
 
 
 def _get_startup_script(
@@ -42,6 +54,17 @@ def _get_startup_script(
     """Build startup script equivalent to terraform/gcp/runner-startup.sh.tpl.
     Keep in sync: same sections, env vars, and optional pre-pull block.
     When ado_org_url + ado_pat + ado_pool are provided, auto-registers the Azure DevOps agent."""
+    dashboard_url = _shell_safe(dashboard_url)
+    config_bucket = _shell_safe(config_bucket)
+    config_prefix = _shell_safe(config_prefix)
+    pr_agent_repo_url = _shell_safe(pr_agent_repo_url)
+    pr_agent_image_safe = _shell_safe(pr_agent_image) if pr_agent_image else ""
+    dashboard_api_key = _shell_safe(dashboard_api_key)
+    ado_org_url = _shell_safe(ado_org_url)
+    ado_pat = _shell_safe(ado_pat)
+    ado_pool = _shell_safe(ado_pool)
+    ado_agent_name = _shell_safe(ado_agent_name)
+
     pre_pull_block = ""
     if pr_agent_image:
         ar_auth_block = ""
@@ -49,7 +72,7 @@ def _get_startup_script(
             ar_auth_block = f"""
 # Authenticate Docker with Artifact Registry (GCE metadata token)
 log "Authenticating Docker with Artifact Registry..."
-_AR_REGISTRY=$(echo "{pr_agent_image}" | cut -d/ -f1)
+_AR_REGISTRY=$(echo {pr_agent_image_safe} | cut -d/ -f1)
 _AR_TOKEN=$(curl -sf -H "Metadata-Flavor: Google" \\
   "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \\
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
@@ -58,18 +81,18 @@ echo "$_AR_TOKEN" | docker login -u oauth2accesstoken --password-stdin "https://
   || {{ log "FATAL: Docker auth with Artifact Registry failed."; exit 1; }}
 """
         pre_pull_block = f"""{ar_auth_block}
-log "Pulling Docker image: {pr_agent_image}"
-docker pull "{pr_agent_image}"
+log "Pulling Docker image: {pr_agent_image_safe}"
+docker pull {pr_agent_image_safe}
 log "Docker image pulled successfully."
 log "Smoke-testing Docker image..."
-docker run --rm "{pr_agent_image}" python3 -c "print('pr-agent container OK')" \\
+docker run --rm --entrypoint python3 {pr_agent_image_safe} -c "import pr_agent; print('pr-agent container OK')" \\
   && log "Docker smoke test passed." \\
   || {{ log "WARN: Docker smoke test command failed (image may still work for pipeline)."; }}
 """
 
     ado_agent_block = ""
     if ado_org_url and ado_pat and ado_pool:
-        agent_name_expr = f'"{ado_agent_name}"' if ado_agent_name else '"$(hostname)"'
+        agent_name_expr = f'{ado_agent_name}' if ado_agent_name else '"$(hostname)"'
         ado_agent_block = f"""
 # --- Azure DevOps agent auto-registration ---
 AGENT_DIR=/opt/azagent
@@ -82,9 +105,9 @@ if [ ! -f "$AGENT_DIR/.agent" ]; then
   cd "$AGENT_DIR"
 
   # Resolve latest agent package URL from Azure DevOps API
-  _ADO_PAT_B64=$(echo -n ":{ado_pat}" | base64 -w0)
+  _ADO_PAT_B64=$(echo -n :{ado_pat} | base64 -w0)
   AGENT_URL=$(curl -s -H "Authorization: Basic $_ADO_PAT_B64" \\
-    "{ado_org_url}/_apis/distributedtask/packages/agent?platform=linux-x64&\\$top=1&api-version=7.0" \\
+    {ado_org_url}"/_apis/distributedtask/packages/agent?platform=linux-x64&\\$top=1&api-version=7.0" \\
     | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['value'][0]['downloadUrl'])" 2>/dev/null) || true
 
   if [ -z "$AGENT_URL" ]; then
@@ -104,12 +127,12 @@ if [ ! -f "$AGENT_DIR/.agent" ]; then
   chown -R azagent:azagent "$AGENT_DIR"
 
   AGENT_NAME={agent_name_expr}
-  log "Configuring agent '$AGENT_NAME' for pool '{ado_pool}' at {ado_org_url}..."
+  log "Configuring agent '$AGENT_NAME' for pool {ado_pool} at {ado_org_url}..."
   sudo -u azagent ./config.sh --unattended \\
-    --url "{ado_org_url}" \\
+    --url {ado_org_url} \\
     --auth pat \\
-    --token "{ado_pat}" \\
-    --pool "{ado_pool}" \\
+    --token {ado_pat} \\
+    --pool {ado_pool} \\
     --agent "$AGENT_NAME" \\
     --acceptTeeEula \\
     --replace
@@ -118,7 +141,7 @@ if [ ! -f "$AGENT_DIR/.agent" ]; then
   ./svc.sh install azagent
   ./svc.sh start
 
-  log "Azure DevOps agent '$AGENT_NAME' registered in pool '{ado_pool}' and started."
+  log "Azure DevOps agent '$AGENT_NAME' registered in pool {ado_pool} and started."
 else
   log "Azure DevOps agent already configured at $AGENT_DIR."
 fi
@@ -131,7 +154,7 @@ fi
 PR_AGENT_DIR=/opt/pr-agent
 if [ ! -d "$PR_AGENT_DIR/.git" ]; then
   log "Cloning PR-Agent into $PR_AGENT_DIR..."
-  git clone --depth 1 "{pr_agent_repo_url}" "$PR_AGENT_DIR"
+  git clone --depth 1 {pr_agent_repo_url} "$PR_AGENT_DIR"
   pip3 install -r "$PR_AGENT_DIR/requirements.txt" --break-system-packages 2>/dev/null || pip3 install -r "$PR_AGENT_DIR/requirements.txt"
   log "PR-Agent clone and pip install done."
 else
@@ -143,6 +166,22 @@ fi
 # --- Skipping PR-Agent clone (Docker image configured; pipeline runs inside container) ---
 log "Docker image configured; skipping PR-Agent source clone."
 """
+
+    # Env file heredoc uses quoted delimiter ('ENVEOF') which prevents shell
+    # expansion, so values are safe from shell injection.  Python f-string
+    # substitution still happens at generation time; the original (unescaped)
+    # values are intentionally used here since the heredoc body is not
+    # interpreted by the shell.
+    def _strip_shell_quotes(v: str) -> str:
+        if len(v) >= 2 and v[0] == "'" and v[-1] == "'":
+            return v[1:-1]
+        return v
+
+    env_dashboard_url = _strip_shell_quotes(dashboard_url)
+    env_dashboard_api_key = _strip_shell_quotes(dashboard_api_key)
+    env_config_bucket = _strip_shell_quotes(config_bucket)
+    env_config_prefix = _strip_shell_quotes(config_prefix)
+    env_pr_agent_image = pr_agent_image  # original value, not escaped
 
     return f"""#!/bin/bash
 # Runner VM startup: Docker, env file, optional image pre-pull, optional ADO agent registration.
@@ -160,14 +199,27 @@ self_destruct() {{
   _NAME=$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/name") || true
   _PROJECT=$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/project/project-id") || true
   if [ -n "${{_ZONE:-}}" ] && [ -n "${{_NAME:-}}" ] && [ -n "${{_PROJECT:-}}" ]; then
-    _TOKEN=$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])" 2>/dev/null) || true
+    _TOKEN=$(curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \\
+      | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])" 2>/dev/null \\
+      || curl -sf -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \\
+      | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4) || true
     if [ -n "${{_TOKEN:-}}" ]; then
       log "Deleting VM $_NAME in zone $_ZONE (project $_PROJECT)..."
-      curl -sf -X DELETE -H "Authorization: Bearer $_TOKEN" \
-        "https://compute.googleapis.com/compute/v1/projects/$_PROJECT/zones/$_ZONE/instances/$_NAME" >/dev/null 2>&1 || true
+      for _attempt in 1 2 3; do
+        curl -sf -X DELETE -H "Authorization: Bearer $_TOKEN" \\
+          "https://compute.googleapis.com/compute/v1/projects/$_PROJECT/zones/$_ZONE/instances/$_NAME" >/dev/null 2>&1 && break
+        log "Self-destruct attempt $_attempt failed, retrying in 5s..."
+        sleep 5
+      done
       log "Self-destruct request sent."
     else
-      log "Could not obtain access token for self-destruct. Manual cleanup required."
+      log "Could not obtain access token for self-destruct."
+      if command -v gcloud &>/dev/null; then
+        log "Attempting self-destruct via gcloud..."
+        gcloud compute instances delete "$_NAME" --zone="$_ZONE" --project="$_PROJECT" --quiet 2>/dev/null || true
+      else
+        log "Manual cleanup required."
+      fi
     fi
   else
     log "Could not resolve instance metadata for self-destruct. Manual cleanup required."
@@ -216,11 +268,11 @@ fi
 # --- Env file for PR-Agent / pipeline ---
 mkdir -p /opt/pr-agent-runner
 cat > /opt/pr-agent-runner/env << 'ENVEOF'
-export DASHBOARD_URL="{dashboard_url}"
-export DASHBOARD_API_KEY="{dashboard_api_key}"
-export PR_AGENT_CONFIG_GCS_BUCKET="{config_bucket}"
-export PR_AGENT_CONFIG_GCS_PREFIX="{config_prefix}"
-export GCP_RUNNER_PR_AGENT_IMAGE="{pr_agent_image}"
+export DASHBOARD_URL="{env_dashboard_url}"
+export DASHBOARD_API_KEY="{env_dashboard_api_key}"
+export PR_AGENT_CONFIG_GCS_BUCKET="{env_config_bucket}"
+export PR_AGENT_CONFIG_GCS_PREFIX="{env_config_prefix}"
+export GCP_RUNNER_PR_AGENT_IMAGE="{env_pr_agent_image}"
 ENVEOF
 chmod 600 /opt/pr-agent-runner/env
 log "Env file written to /opt/pr-agent-runner/env."
@@ -317,6 +369,22 @@ class GCPRunnerService:
             resolved_ado_pool = agent_pool
 
         try:
+            existing_status = self.get_instance_status(name, self.zone)
+            if existing_status == "RUNNING":
+                logger.info("GCP runner VM %s already exists and is RUNNING; returning existing instance.", name)
+                agent_auto = bool(resolved_ado_org_url and resolved_ado_pat and resolved_ado_pool)
+                install_instructions = self._install_instructions(provider, name, auto_registered=agent_auto, agent_pool=resolved_ado_pool)
+                return {
+                    "success": True,
+                    "instance_name": name,
+                    "zone": self.zone,
+                    "message": "VM already exists and is running.",
+                    "agent_auto_registered": agent_auto,
+                    "agent_pool": resolved_ado_pool if agent_auto else None,
+                    "install_instructions": install_instructions,
+                    "operation_name": None,
+                }
+
             startup_script = _get_startup_script(
                 dashboard_url=self.dashboard_url,
                 config_bucket=self.config_bucket,
@@ -445,9 +513,9 @@ class GCPRunnerService:
                 "message": "VM deletion started.",
                 "operation_name": op.name if hasattr(op, "name") else None,
             }
+        except GCPNotFound:
+            return {"success": True, "message": "Instance already deleted or not found."}
         except Exception as e:
-            if "404" in str(e) or "not found" in str(e).lower():
-                return {"success": True, "message": "Instance already deleted or not found."}
             logger.exception("GCP deprovision failed for %s: %s", instance_name, e)
             return {"success": False, "error": str(e)}
 
@@ -553,7 +621,7 @@ class GCPRunnerService:
                 progress["pr_agent_ready"] = True
             if "pulling docker image" in c or "docker image pulled successfully" in c:
                 mark("docker_image_pull")
-            if "docker smoke test passed" in c:
+            if "docker smoke test passed" in c or "docker smoke test command failed" in c:
                 mark("docker_smoke_test")
             if "downloading agent from" in c or "agent package downloaded" in c:
                 mark("ado_agent_download")

@@ -113,7 +113,6 @@ global_settings = Dynaconf(
     settings_files=_build_settings_files(),
 )
 
-
 def get_settings(use_context=False):
     """
     Retrieves the current settings.

@@ -9,6 +9,7 @@ from pathlib import Path
 import asyncio
 import os
 import logging
+import threading
 from datetime import datetime, timedelta
 
 # Import configuration and database
@@ -201,6 +202,16 @@ class DashboardApplication:
                 )
         
         return check_maintenance_mode
+
+    _azure_settings_lock = threading.Lock()
+
+    @staticmethod
+    def _sanitize_error(error: Exception, pat: str = None) -> str:
+        """Remove sensitive tokens from error messages before logging."""
+        msg = str(error)
+        if pat and len(pat) > 8:
+            msg = msg.replace(pat, pat[:4] + '***')
+        return msg
 
     def _normalize_azure_org_url(self, org_url: str) -> str:
         """Normalize user input into an Azure DevOps organization base URL."""
@@ -1500,8 +1511,13 @@ class DashboardApplication:
             try:
                 repository = await self.repository_service.create_repository(db, repo_data)
                 return APIResponse(data=repository, message="Repository created successfully")
-            except Exception as e:
+            except HTTPException:
+                raise
+            except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
+            except Exception as e:
+                logger.error("Internal error: %s", e)
+                raise HTTPException(status_code=500, detail="Internal server error")
         
         @self.app.get("/api/repositories/names")
         async def get_repository_names(active_only: bool = True, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
@@ -1685,7 +1701,7 @@ class DashboardApplication:
                     )
 
                 org_url = self._resolve_azure_org_url(conn.organization, getattr(repo_with_pat, "url", None))
-                pools = self._fetch_azure_agent_pools(org_url, repo_with_pat.azure_pat)
+                pools = await asyncio.to_thread(self._fetch_azure_agent_pools, org_url, repo_with_pat.azure_pat)
 
                 return APIResponse(
                     data={"pools": pools, "organization": conn.organization, "current_pool": conn.agent_pool},
@@ -1751,7 +1767,7 @@ class DashboardApplication:
                         })
 
                 repositories.sort(key=lambda r: ((r.get("project") or "").lower(), (r.get("name") or "").lower()))
-                pools = self._fetch_azure_agent_pools(org_url, pat)
+                pools = await asyncio.to_thread(self._fetch_azure_agent_pools, org_url, pat)
 
                 return APIResponse(
                     data={
@@ -1766,7 +1782,7 @@ class DashboardApplication:
             except HTTPException:
                 raise
             except Exception as e:
-                logger.exception("Azure DevOps discovery failed: %s", e)
+                logger.error("Azure DevOps discovery failed: %s", self._sanitize_error(e, pat))
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.post("/api/action-runner-connections/{connection_id}/provision")
@@ -1838,7 +1854,7 @@ class DashboardApplication:
                             detail="Azure DevOps auto-registration requires an Azure PAT. Set it on any repository linked to this connection (azure_pat), then provision again."
                         )
                     if not agent_pool:
-                        pools = self._fetch_azure_agent_pools(ado_org_url, ado_pat)
+                        pools = await asyncio.to_thread(self._fetch_azure_agent_pools, ado_org_url, ado_pat)
                         if not pools:
                             raise HTTPException(
                                 status_code=400,
@@ -1854,7 +1870,9 @@ class DashboardApplication:
                         logger.info("Auto-selected Azure agent pool '%s' for connection %s", agent_pool, conn.id)
 
                 if agent_pool and agent_pool != conn.agent_pool:
-                    conn.agent_pool = agent_pool
+                    pending_agent_pool = agent_pool
+                else:
+                    pending_agent_pool = None
 
                 svc = GCPRunnerService(
                     project_id=project_id,
@@ -1883,12 +1901,14 @@ class DashboardApplication:
                     raise HTTPException(status_code=400, detail=result.get('error', 'Provision failed'))
                 conn.gcp_instance_name = result.get('instance_name')
                 conn.gcp_zone = result.get('zone')
+                if pending_agent_pool:
+                    conn.agent_pool = pending_agent_pool
                 db.commit()
                 return APIResponse(data=result, message=result.get('message', 'Runner VM provision started'))
             except HTTPException:
                 raise
             except Exception as e:
-                logger.exception("Error provisioning runner VM: %s", e)
+                logger.error("Error provisioning runner VM: %s", self._sanitize_error(e, ado_pat))
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.post("/api/action-runner-connections/{connection_id}/deprovision")
@@ -1918,7 +1938,8 @@ class DashboardApplication:
                     )
                     if repo_with_pat and repo_with_pat.azure_pat:
                         org_url = self._resolve_azure_org_url(conn.organization, getattr(repo_with_pat, 'url', None))
-                        results["azure_agent"] = self._deregister_azure_agent(
+                        results["azure_agent"] = await asyncio.to_thread(
+                            self._deregister_azure_agent,
                             org_url, repo_with_pat.azure_pat, conn.agent_pool, conn.gcp_instance_name
                         )
                         logger.info("Azure agent deregistration for connection %s: %s", conn.id, results["azure_agent"])
@@ -1946,7 +1967,7 @@ class DashboardApplication:
             except HTTPException:
                 raise
             except Exception as e:
-                logger.exception("Error deprovisioning runner VM: %s", e)
+                logger.error("Error deprovisioning runner VM: %s", self._sanitize_error(e))
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.delete("/api/action-runner-connections/{connection_id}")
@@ -1960,7 +1981,10 @@ class DashboardApplication:
                 if not conn:
                     raise HTTPException(status_code=404, detail="Action runner connection not found")
 
-                cleanup_results = {"vm": None, "azure_agent": None, "repos_unlinked": 0}
+                cleanup_results = {"vm": None, "azure_agent": None, "repos_unlinked": 0, "azure_resources": []}
+
+                # Gather linked repos before unlinking so we can clean up their Azure resources
+                linked_repos = db.query(RepositoryDB).filter(RepositoryDB.action_runner_connection_id == conn.id).all()
 
                 if conn.provider == "azure_devops" and conn.agent_pool and conn.gcp_instance_name:
                     repo_with_pat = (
@@ -1976,7 +2000,8 @@ class DashboardApplication:
                     )
                     if repo_with_pat and repo_with_pat.azure_pat:
                         org_url = self._resolve_azure_org_url(conn.organization, getattr(repo_with_pat, 'url', None))
-                        cleanup_results["azure_agent"] = self._deregister_azure_agent(
+                        cleanup_results["azure_agent"] = await asyncio.to_thread(
+                            self._deregister_azure_agent,
                             org_url, repo_with_pat.azure_pat, conn.agent_pool, conn.gcp_instance_name
                         )
                         logger.info("Azure agent cleanup for deletion of connection %s: %s", conn.id, cleanup_results["azure_agent"])
@@ -1993,7 +2018,30 @@ class DashboardApplication:
                         cleanup_results["vm"] = svc.deprovision(conn.gcp_instance_name, conn.gcp_zone)
                         logger.info("VM cleanup for deletion of connection %s: %s", conn.id, cleanup_results["vm"])
 
-                linked_repos = db.query(RepositoryDB).filter(RepositoryDB.action_runner_connection_id == conn.id).all()
+                # Clean up Azure resources (policies/pipelines) for each linked repo
+                if conn.provider == "azure_devops":
+                    try:
+                        azure_svc = self.azure_pipeline_config_service
+                        for repo in linked_repos:
+                            if repo.provider == 'azure_devops' and repo.azure_pat:
+                                try:
+                                    repo_cleanup = await azure_svc.cleanup_azure_resources(
+                                        {'url': repo.url, 'azure_pat': repo.azure_pat, 'provider': repo.provider},
+                                        remove_policies=True, remove_pipelines=True, remove_yaml=False,
+                                    )
+                                    cleanup_results["azure_resources"].append({
+                                        'repo_id': repo.id, 'repo_name': repo.name,
+                                        'result': repo_cleanup.get('summary', 'done')
+                                    })
+                                except Exception as e:
+                                    cleanup_results["azure_resources"].append({
+                                        'repo_id': repo.id, 'repo_name': repo.name,
+                                        'error': str(e)
+                                    })
+                                    logger.warning("Azure resource cleanup failed for repo %s during connection deletion: %s", repo.id, e)
+                    except Exception as e:
+                        logger.error("Azure resource cleanup import failed: %s", e)
+
                 for repo in linked_repos:
                     repo.action_runner_connection_id = None
                 cleanup_results["repos_unlinked"] = len(linked_repos)
@@ -2007,7 +2055,7 @@ class DashboardApplication:
             except HTTPException:
                 raise
             except Exception as e:
-                logger.exception("Error deleting action runner connection: %s", e)
+                logger.error("Error deleting action runner connection: %s", self._sanitize_error(e))
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.get("/api/action-runner-connections/{connection_id}/provision-status")
@@ -2277,20 +2325,98 @@ class DashboardApplication:
                 
                 return APIResponse(data=repository, message="Repository updated successfully")
             except HTTPException:
-                raise  # Re-raise HTTP exceptions
-            except Exception as e:
+                raise
+            except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
+            except Exception as e:
+                logger.error("Internal error: %s", e)
+                raise HTTPException(status_code=500, detail="Internal server error")
         
         @self.app.delete("/api/repositories/{repo_id}")
         async def delete_repository(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             try:
+                from models import RepositoryDB
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+
+                cleanup_results = {}
+
+                # Clean up Azure DevOps resources before deleting the DB record
+                if repo.provider == 'azure_devops' and repo.azure_pat:
+                    try:
+                        svc = self.azure_pipeline_config_service
+                        repo_data = {
+                            'url': repo.url,
+                            'azure_pat': repo.azure_pat,
+                            'provider': repo.provider,
+                            'id': repo.id,
+                        }
+                        cleanup_results = await svc.cleanup_azure_resources(
+                            repo_data, db_session=db,
+                            remove_policies=True,
+                            remove_pipelines=True,
+                            remove_yaml=False,
+                        )
+                        logger.info("Azure cleanup for repo %s (%s): %s",
+                                    repo_id, repo.name, cleanup_results.get('summary', 'done'))
+                    except Exception as e:
+                        logger.error("Azure cleanup failed for repo %s, proceeding with deletion: %s", repo_id, e)
+                        cleanup_results = {'error': str(e)}
+
                 deleted = await self.repository_service.delete_repository(db, repo_id)
                 if not deleted:
                     raise HTTPException(status_code=404, detail="Repository not found")
-                return APIResponse(data={"deleted": True}, message="Repository deleted successfully")
-            except Exception as e:
+                return APIResponse(
+                    data={"deleted": True, "azure_cleanup": cleanup_results},
+                    message="Repository deleted successfully"
+                )
+            except HTTPException:
+                raise
+            except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
-        
+            except Exception as e:
+                logger.error("Internal error: %s", e)
+                raise HTTPException(status_code=500, detail="Internal server error")
+
+        @self.app.post("/api/repositories/{repo_id}/azure-cleanup")
+        async def cleanup_repository_azure_resources(
+            repo_id: int, body: dict = None,
+            db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth),
+        ):
+            """Remove Azure DevOps resources (policies, pipelines) created by this dashboard for a repo.
+            
+            Body options (all default True except remove_yaml):
+              - remove_policies: bool
+              - remove_pipelines: bool
+              - remove_yaml: bool (default False)
+            """
+            try:
+                from models import RepositoryDB
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                if repo.provider != 'azure_devops':
+                    raise HTTPException(status_code=400, detail="Only Azure DevOps repositories support this operation")
+                if not repo.azure_pat:
+                    raise HTTPException(status_code=400, detail="Repository has no Azure DevOps PAT configured")
+
+                body = body or {}
+                svc = self.azure_pipeline_config_service
+                result = await svc.cleanup_azure_resources(
+                    {'url': repo.url, 'azure_pat': repo.azure_pat, 'provider': repo.provider, 'id': repo.id},
+                    db_session=db,
+                    remove_policies=body.get('remove_policies', True),
+                    remove_pipelines=body.get('remove_pipelines', True),
+                    remove_yaml=body.get('remove_yaml', False),
+                )
+                return APIResponse(data=result, message=result.get('summary', 'Cleanup complete'))
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error("Error during Azure cleanup for repo %s: %s", repo_id, e)
+                raise HTTPException(status_code=500, detail=str(e))
+
         @self.app.post("/api/repositories/{repo_id}/check-health")
         async def check_repository_health(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Trigger health check for a specific repository"""
@@ -2656,8 +2782,7 @@ class DashboardApplication:
                     git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
                 elif repo.provider == 'azure_devops' and repo.azure_pat:
                     # Azure DevOps PR creation using REST API
-                    from services.azure_pipeline_config_service import AzurePipelineConfigService
-                    azure_service = AzurePipelineConfigService()
+                    azure_service = self.azure_pipeline_config_service
                     
                     # Parse Azure URL to get org/project/repo info
                     org_info = azure_service._parse_azure_repo_url(repo.url)
@@ -3005,8 +3130,7 @@ This PR {'creates' if not repo.has_best_practices else 'updates'} the `best_prac
                     git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
                 elif repo.provider == 'azure_devops' and repo.azure_pat:
                     # Azure DevOps PR creation using REST API  
-                    from services.azure_pipeline_config_service import AzurePipelineConfigService
-                    azure_service = AzurePipelineConfigService()
+                    azure_service = self.azure_pipeline_config_service
                     
                     # Parse Azure URL to get org/project/repo info
                     org_info = azure_service._parse_azure_repo_url(repo.url)
@@ -3532,8 +3656,6 @@ This file can override any setting from the global PR-Agent configuration, inclu
         async def check_azure_pipeline_config(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Check Azure pipeline configuration status for a repository"""
             try:
-                from services.azure_pipeline_config_service import AzurePipelineConfigService
-                
                 # Get repository
                 repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
                 if not repo:
@@ -3545,7 +3667,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 if not repo.azure_pat:
                     raise HTTPException(status_code=400, detail="Azure PAT not configured for this repository")
                 
-                service = AzurePipelineConfigService()
+                service = self.azure_pipeline_config_service
                 
                 # Check pipeline configuration
                 pipeline_check = await service.check_azure_pipeline_config({
@@ -3575,8 +3697,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 if repo.provider != 'azure_devops':
                     raise HTTPException(status_code=400, detail="Repository is not an Azure DevOps repository")
                 
-                from services.azure_pipeline_config_service import AzurePipelineConfigService
-                service = AzurePipelineConfigService()
+                service = self.azure_pipeline_config_service
                 
                 # Parse Azure repo info
                 org_info = service._parse_azure_repo_url(repo.url)
@@ -3617,7 +3738,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                                 "   - AZURE_DEVOPS_ORG: Your organization name",
                                 "   - Any additional PR-Agent configuration variables"
                             ],
-                            "variables": service.get_environment_variables()
+                            "variables": service.get_azure_pipeline_env_vars()
                         },
                         {
                             "step": 3,
@@ -3674,6 +3795,158 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise
             except Exception as e:
                 logger.error(f"Error generating Azure pipeline installation guide: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        # ── Pipeline sync, direct push, branches, and policy endpoints ──
+
+        @self.app.get("/api/repositories/{repo_id}/azure-pipeline-config/sync-status")
+        async def get_pipeline_sync_status(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """Compare azure-pipelines.yml in the repo against the canonical template."""
+            try:
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                repo_data = {
+                    'id': repo.id, 'name': repo.name, 'provider': repo.provider,
+                    'url': repo.url, 'azure_pat': repo.azure_pat,
+                    'action_runner_connection_id': repo.action_runner_connection_id,
+                }
+                result = await self.azure_pipeline_config_service.get_sync_status(repo_data, db)
+                if 'error' in result:
+                    raise HTTPException(status_code=400, detail=result['error'])
+                return APIResponse(data=result, message="Sync status retrieved")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error getting pipeline sync status for repo {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/repositories/{repo_id}/azure-pipeline-config/push")
+        async def push_pipeline_yaml(repo_id: int, body: dict = None, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """Push azure-pipelines.yml directly to the default branch."""
+            try:
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                repo_data = {
+                    'id': repo.id, 'name': repo.name, 'provider': repo.provider,
+                    'url': repo.url, 'azure_pat': repo.azure_pat,
+                    'action_runner_connection_id': repo.action_runner_connection_id,
+                }
+                content = (body or {}).get('content')
+                result = await self.azure_pipeline_config_service.push_yaml_direct(repo_data, content, db)
+                if not result.get('success'):
+                    raise HTTPException(status_code=400, detail=result.get('error', 'Push failed'))
+                return APIResponse(data=result, message="Pipeline YAML pushed successfully")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error pushing pipeline YAML for repo {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/repositories/{repo_id}/branches")
+        async def list_repo_branches(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """List branches for an Azure DevOps repository."""
+            try:
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                if repo.provider != 'azure_devops':
+                    raise HTTPException(status_code=400, detail="This operation is only supported for Azure DevOps repositories")
+                if not repo.azure_pat:
+                    raise HTTPException(status_code=400, detail="Repository has no Azure DevOps PAT configured")
+                repo_data = {
+                    'url': repo.url, 'azure_pat': repo.azure_pat, 'provider': repo.provider,
+                }
+                result = await self.azure_pipeline_config_service.list_branches(repo_data)
+                if 'error' in result:
+                    raise HTTPException(status_code=400, detail=result['error'])
+                return APIResponse(data=result, message="Branches retrieved")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error listing branches for repo {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/repositories/{repo_id}/azure-pipeline-config/policies")
+        async def list_pipeline_policies(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """List build validation policies for a repository."""
+            try:
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                if repo.provider != 'azure_devops':
+                    raise HTTPException(status_code=400, detail="This operation is only supported for Azure DevOps repositories")
+                if not repo.azure_pat:
+                    raise HTTPException(status_code=400, detail="Repository has no Azure DevOps PAT configured")
+                repo_data = {
+                    'url': repo.url, 'azure_pat': repo.azure_pat, 'provider': repo.provider,
+                }
+                result = await self.azure_pipeline_config_service.list_build_policies(repo_data)
+                if 'error' in result:
+                    raise HTTPException(status_code=400, detail=result['error'])
+                return APIResponse(data=result, message="Policies retrieved")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error listing policies for repo {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/repositories/{repo_id}/azure-pipeline-config/policies")
+        async def ensure_pipeline_policy(repo_id: int, body: dict, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """Create or update a build validation policy."""
+            try:
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                if repo.provider != 'azure_devops':
+                    raise HTTPException(status_code=400, detail="This operation is only supported for Azure DevOps repositories")
+                if not repo.azure_pat:
+                    raise HTTPException(status_code=400, detail="Repository has no Azure DevOps PAT configured")
+                repo_data = {
+                    'url': repo.url, 'azure_pat': repo.azure_pat, 'provider': repo.provider,
+                }
+                branch = body.get('branch', 'main')
+                pipeline_definition_id = body.get('pipeline_definition_id')
+                is_blocking = body.get('is_blocking', False)
+                if not pipeline_definition_id:
+                    raise HTTPException(status_code=400, detail="pipeline_definition_id is required")
+                try:
+                    pipeline_def_id_int = int(pipeline_definition_id)
+                except (ValueError, TypeError):
+                    raise HTTPException(status_code=400, detail="pipeline_definition_id must be a valid integer")
+                result = await self.azure_pipeline_config_service.ensure_build_policy(repo_data, branch, pipeline_def_id_int, is_blocking)
+                if not result.get('success'):
+                    raise HTTPException(status_code=400, detail=result.get('error', 'Failed'))
+                return APIResponse(data=result, message="Policy configured")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error ensuring policy for repo {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.delete("/api/repositories/{repo_id}/azure-pipeline-config/policies/{policy_id}")
+        async def delete_pipeline_policy(repo_id: int, policy_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """Delete a build validation policy."""
+            try:
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                if repo.provider != 'azure_devops':
+                    raise HTTPException(status_code=400, detail="This operation is only supported for Azure DevOps repositories")
+                if not repo.azure_pat:
+                    raise HTTPException(status_code=400, detail="Repository has no Azure DevOps PAT configured")
+                repo_data = {
+                    'url': repo.url, 'azure_pat': repo.azure_pat, 'provider': repo.provider,
+                }
+                result = await self.azure_pipeline_config_service.delete_build_policy(repo_data, policy_id)
+                if not result.get('success'):
+                    raise HTTPException(status_code=400, detail=result.get('error', 'Failed'))
+                return APIResponse(data=result, message="Policy deleted")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error deleting policy {policy_id} for repo {repo_id}: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
 
         # Runner service management endpoints
@@ -5469,26 +5742,28 @@ This file can override any setting from the global PR-Agent configuration, inclu
             }
     
     def _configure_azure_devops_settings(self, repo):
-        """Configure Azure DevOps settings for provider initialization"""
+        """Configure Azure DevOps settings for provider initialization.
+        
+        Returns a settings snapshot to avoid mutating the global object, which
+        would cause concurrency issues when multiple repos are processed.
+        """
         from pr_agent.config_loader import get_settings
         settings = get_settings()
-        
-        # Parse organization from repository URL
+
         org_url = repo.url
         if 'dev.azure.com' in org_url:
-            # Extract organization from URL like https://dev.azure.com/organization/project/_git/repo
             org_parts = org_url.split('/')
             if len(org_parts) >= 4:
                 org_name = org_parts[3]
                 org_url = f"https://dev.azure.com/{org_name}"
         elif 'visualstudio.com' in org_url:
-            # Extract organization from URL like https://organization.visualstudio.com/project/_git/repo
             from urllib.parse import urlparse
             parsed_url = urlparse(org_url)
-            # For visualstudio.com, the organization is the subdomain
             org_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+
+        os.environ['AZURE_DEVOPS_ORG'] = org_url
+        os.environ['AZURE_DEVOPS_PAT'] = repo.azure_pat or ''
         
-        # Set Azure DevOps configuration in settings
         if not hasattr(settings, 'azure_devops'):
             settings.azure_devops = {}
         settings.azure_devops['org'] = org_url
@@ -5499,34 +5774,28 @@ This file can override any setting from the global PR-Agent configuration, inclu
         try:
             from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
         except ImportError as e:
-            logger.error(f"Failed to import AzureDevopsProvider: {e}")
+            logger.error(f"Could not import AzureDevopsProvider: {e}")
             return None
-        
-        # Configure Azure DevOps settings first
-        self._configure_azure_devops_settings(repo)
-        
-        try:
-            # Create a dummy PR URL for file access functionality
-            # The provider needs a PR URL structure to work properly
-            dummy_pr_url = f"{repo.url}/pullrequest/1"
-            git_provider = AzureDevopsProvider(pr_url=dummy_pr_url)
-            
-            # Set additional repository information
-            git_provider.repo = repo.name
-            git_provider.azure_pat = repo.azure_pat
-            
-            return git_provider
-        except Exception as e:
-            logger.warning(f"Failed to create Azure DevOps provider for {repo.name}: {e}")
+
+        with self._azure_settings_lock:
+            self._configure_azure_devops_settings(repo)
+
             try:
-                # Fallback: create provider without PR URL (some methods may not work)
-                git_provider = AzureDevopsProvider()
+                dummy_pr_url = f"{repo.url}/pullrequest/1"
+                git_provider = AzureDevopsProvider(pr_url=dummy_pr_url)
                 git_provider.repo = repo.name
                 git_provider.azure_pat = repo.azure_pat
                 return git_provider
-            except Exception as fallback_e:
-                logger.error(f"Failed to create fallback Azure DevOps provider for {repo.name}: {fallback_e}")
-                return None
+            except Exception as e:
+                logger.warning(f"Failed to create Azure DevOps provider for {repo.name}: {e}")
+                try:
+                    git_provider = AzureDevopsProvider()
+                    git_provider.repo = repo.name
+                    git_provider.azure_pat = repo.azure_pat
+                    return git_provider
+                except Exception as fallback_e:
+                    logger.error(f"Failed to create fallback Azure DevOps provider for {repo.name}: {fallback_e}")
+                    return None
 
     async def _test_github_token(self, repo):
         """Test GitHub token permissions"""

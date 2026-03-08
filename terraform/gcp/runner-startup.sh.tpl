@@ -110,7 +110,7 @@ log "Pulling Docker image: ${pr_agent_image}"
 docker pull "${pr_agent_image}"
 log "Docker image pulled successfully."
 log "Smoke-testing Docker image..."
-docker run --rm "${pr_agent_image}" python3 -c "print('pr-agent container OK')" \
+docker run --rm --entrypoint python3 "${pr_agent_image}" -c "import pr_agent; print('pr-agent container OK')" \
   && log "Docker smoke test passed." \
   || { log "WARN: Docker smoke test command failed (image may still work for pipeline)."; }
 %{endif}
