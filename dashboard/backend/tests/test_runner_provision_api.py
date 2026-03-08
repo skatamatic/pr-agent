@@ -87,8 +87,68 @@ class TestRunnerProvisionAPI:
         )
         assert response.status_code == 200
         data = response.json()
-        assert data.get("data", {}).get("success") is True
-        assert "message" in data.get("data", {})
+        vm_result = data.get("data", {}).get("vm", {})
+        assert vm_result.get("success") is True
+        assert "message" in vm_result
+
+    def test_delete_connection_not_found_returns_404(self, client_app, auth_headers):
+        response = client_app.delete(
+            "/api/action-runner-connections/99999",
+            headers=auth_headers,
+        )
+        assert response.status_code == 404
+
+    def test_delete_connection_removes_record(self, client_app, auth_headers):
+        create = client_app.post(
+            "/api/action-runner-connections",
+            json={"provider": "github", "organization": "del-test-org"},
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        conn_id = create.json()["data"]["id"]
+        response = client_app.delete(
+            f"/api/action-runner-connections/{conn_id}",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        payload = response.json().get("data", {})
+        assert payload.get("repos_unlinked") is not None
+        get_resp = client_app.get("/api/action-runner-connections", headers=auth_headers)
+        ids = [c["id"] for c in get_resp.json().get("data", [])]
+        assert conn_id not in ids
+
+    def test_delete_connection_unlinks_repos(self, client_app, auth_headers):
+        create_conn = client_app.post(
+            "/api/action-runner-connections",
+            json={"provider": "azure_devops", "organization": "unlink-org", "project": "Proj"},
+            headers=auth_headers,
+        )
+        assert create_conn.status_code == 200
+        conn_id = create_conn.json()["data"]["id"]
+        create_repo = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "Proj/UnlinkRepo",
+                "provider": "azure_devops",
+                "url": "https://dev.azure.com/unlink-org/Proj/_git/UnlinkRepo",
+                "action_runner_connection_id": conn_id,
+                "is_active": True,
+            },
+            headers=auth_headers,
+        )
+        assert create_repo.status_code == 200
+        repo_id = create_repo.json()["data"]["id"]
+        del_resp = client_app.delete(f"/api/action-runner-connections/{conn_id}", headers=auth_headers)
+        assert del_resp.status_code == 200
+        assert del_resp.json()["data"]["repos_unlinked"] == 1
+        repo_resp = client_app.get("/api/repositories", headers=auth_headers)
+        repo = next((r for r in repo_resp.json().get("data", []) if r["id"] == repo_id), None)
+        assert repo is not None
+        assert repo.get("action_runner_connection_id") is None
+
+    def test_delete_connection_without_auth_returns_401(self, client_app):
+        response = client_app.delete("/api/action-runner-connections/1")
+        assert response.status_code == 401
 
     def test_provision_status_no_vm_returns_not_complete(self, client_app, auth_headers):
         create = client_app.post(

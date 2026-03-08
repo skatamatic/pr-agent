@@ -284,6 +284,55 @@ class DashboardApplication:
                 })
         pools.sort(key=lambda x: (x.get("name") or "").lower())
         return pools
+
+    def _deregister_azure_agent(self, org_url: str, pat: str, pool_name: str, agent_name: str, timeout: int = 20) -> Dict[str, Any]:
+        """Remove an agent from an Azure DevOps pool by name. Returns status dict."""
+        import requests
+
+        headers = self._azure_auth_headers(pat)
+        try:
+            pools_resp = requests.get(
+                f"{org_url}/_apis/distributedtask/pools?api-version=7.1",
+                headers=headers, timeout=timeout,
+            )
+            if pools_resp.status_code != 200:
+                return {"success": False, "error": f"Failed to list pools ({pools_resp.status_code})"}
+
+            pools = (pools_resp.json() or {}).get("value", [])
+            pool = next(
+                (p for p in pools if (p.get("name") or "").strip().lower() == pool_name.strip().lower()),
+                None,
+            )
+            if not pool:
+                return {"success": False, "error": f"Pool '{pool_name}' not found"}
+
+            pool_id = pool["id"]
+            agents_resp = requests.get(
+                f"{org_url}/_apis/distributedtask/pools/{pool_id}/agents?api-version=7.1",
+                headers=headers, timeout=timeout,
+            )
+            if agents_resp.status_code != 200:
+                return {"success": False, "error": f"Failed to list agents ({agents_resp.status_code})"}
+
+            agents = (agents_resp.json() or {}).get("value", [])
+            target = agent_name.strip().lower()
+            agent = next(
+                (a for a in agents if (a.get("name") or "").strip().lower() == target),
+                None,
+            )
+            if not agent:
+                return {"success": True, "message": f"Agent '{agent_name}' not found in pool (already removed)"}
+
+            agent_id = agent["id"]
+            del_resp = requests.delete(
+                f"{org_url}/_apis/distributedtask/pools/{pool_id}/agents/{agent_id}?api-version=7.1",
+                headers=headers, timeout=timeout,
+            )
+            if del_resp.status_code in (200, 204):
+                return {"success": True, "message": f"Agent '{agent_name}' removed from pool '{pool_name}'"}
+            return {"success": False, "error": f"Delete agent returned {del_resp.status_code}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     def _setup_routes(self):
         """Setup all API routes using service methods"""
@@ -1844,35 +1893,121 @@ class DashboardApplication:
 
         @self.app.post("/api/action-runner-connections/{connection_id}/deprovision")
         async def deprovision_runner_vm(connection_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
-            """Remove the GCP Compute Engine VM for this runner connection (if one was provisioned)."""
+            """Remove the GCP VM and deregister the Azure DevOps agent (if applicable)."""
             try:
-                from models import ActionRunnerConnectionDB
+                from models import ActionRunnerConnectionDB, RepositoryDB
                 from config import settings
                 from services.gcp_runner_service import GCPRunnerService
                 conn = db.query(ActionRunnerConnectionDB).filter(ActionRunnerConnectionDB.id == connection_id).first()
                 if not conn:
                     raise HTTPException(status_code=404, detail="Action runner connection not found")
+
+                results = {"vm": None, "azure_agent": None}
+
+                if conn.provider == "azure_devops" and conn.agent_pool and conn.gcp_instance_name:
+                    repo_with_pat = (
+                        db.query(RepositoryDB)
+                        .filter(
+                            RepositoryDB.action_runner_connection_id == conn.id,
+                            RepositoryDB.provider == 'azure_devops',
+                            RepositoryDB.azure_pat.isnot(None),
+                            RepositoryDB.azure_pat != ''
+                        )
+                        .order_by(RepositoryDB.id.asc())
+                        .first()
+                    )
+                    if repo_with_pat and repo_with_pat.azure_pat:
+                        org_url = self._resolve_azure_org_url(conn.organization, getattr(repo_with_pat, 'url', None))
+                        results["azure_agent"] = self._deregister_azure_agent(
+                            org_url, repo_with_pat.azure_pat, conn.agent_pool, conn.gcp_instance_name
+                        )
+                        logger.info("Azure agent deregistration for connection %s: %s", conn.id, results["azure_agent"])
+
                 if not conn.gcp_instance_name or not conn.gcp_zone:
-                    return APIResponse(data={"success": True, "message": "No VM was provisioned for this connection."}, message="Nothing to deprovision")
-                project_id = getattr(settings, 'gcp_runner_project_id', '') or ''
-                if not project_id:
-                    raise HTTPException(status_code=400, detail="GCP runner not configured.")
-                svc = GCPRunnerService(
-                    project_id=project_id,
-                    region=getattr(settings, 'gcp_runner_region', 'us-central1') or 'us-central1',
-                    zone=getattr(settings, 'gcp_runner_zone', '') or None,
-                    name_prefix=getattr(settings, 'gcp_runner_prefix', 'pr-agent-runner') or 'pr-agent-runner',
-                )
-                result = svc.deprovision(conn.gcp_instance_name, conn.gcp_zone)
-                if result.get('success'):
-                    conn.gcp_instance_name = None
-                    conn.gcp_zone = None
-                    db.commit()
-                return APIResponse(data=result, message=result.get('message', 'Deprovision completed'))
+                    results["vm"] = {"success": True, "message": "No VM was provisioned for this connection."}
+                else:
+                    project_id = getattr(settings, 'gcp_runner_project_id', '') or ''
+                    if not project_id:
+                        raise HTTPException(status_code=400, detail="GCP runner not configured.")
+                    svc = GCPRunnerService(
+                        project_id=project_id,
+                        region=getattr(settings, 'gcp_runner_region', 'us-central1') or 'us-central1',
+                        zone=getattr(settings, 'gcp_runner_zone', '') or None,
+                        name_prefix=getattr(settings, 'gcp_runner_prefix', 'pr-agent-runner') or 'pr-agent-runner',
+                    )
+                    results["vm"] = svc.deprovision(conn.gcp_instance_name, conn.gcp_zone)
+                    if results["vm"].get('success'):
+                        conn.gcp_instance_name = None
+                        conn.gcp_zone = None
+                        db.commit()
+
+                overall_success = (results["vm"] or {}).get("success", True)
+                return APIResponse(data=results, message="Deprovision completed" if overall_success else "Deprovision had errors")
             except HTTPException:
                 raise
             except Exception as e:
                 logger.exception("Error deprovisioning runner VM: %s", e)
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.delete("/api/action-runner-connections/{connection_id}")
+        async def delete_action_runner_connection(connection_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """Delete an action runner connection: deprovision VM, deregister Azure agent, unlink repos, delete DB record."""
+            try:
+                from models import ActionRunnerConnectionDB, RepositoryDB
+                from config import settings
+                from services.gcp_runner_service import GCPRunnerService
+                conn = db.query(ActionRunnerConnectionDB).filter(ActionRunnerConnectionDB.id == connection_id).first()
+                if not conn:
+                    raise HTTPException(status_code=404, detail="Action runner connection not found")
+
+                cleanup_results = {"vm": None, "azure_agent": None, "repos_unlinked": 0}
+
+                if conn.provider == "azure_devops" and conn.agent_pool and conn.gcp_instance_name:
+                    repo_with_pat = (
+                        db.query(RepositoryDB)
+                        .filter(
+                            RepositoryDB.action_runner_connection_id == conn.id,
+                            RepositoryDB.provider == 'azure_devops',
+                            RepositoryDB.azure_pat.isnot(None),
+                            RepositoryDB.azure_pat != ''
+                        )
+                        .order_by(RepositoryDB.id.asc())
+                        .first()
+                    )
+                    if repo_with_pat and repo_with_pat.azure_pat:
+                        org_url = self._resolve_azure_org_url(conn.organization, getattr(repo_with_pat, 'url', None))
+                        cleanup_results["azure_agent"] = self._deregister_azure_agent(
+                            org_url, repo_with_pat.azure_pat, conn.agent_pool, conn.gcp_instance_name
+                        )
+                        logger.info("Azure agent cleanup for deletion of connection %s: %s", conn.id, cleanup_results["azure_agent"])
+
+                if conn.gcp_instance_name and conn.gcp_zone:
+                    project_id = getattr(settings, 'gcp_runner_project_id', '') or ''
+                    if project_id:
+                        svc = GCPRunnerService(
+                            project_id=project_id,
+                            region=getattr(settings, 'gcp_runner_region', 'us-central1') or 'us-central1',
+                            zone=getattr(settings, 'gcp_runner_zone', '') or None,
+                            name_prefix=getattr(settings, 'gcp_runner_prefix', 'pr-agent-runner') or 'pr-agent-runner',
+                        )
+                        cleanup_results["vm"] = svc.deprovision(conn.gcp_instance_name, conn.gcp_zone)
+                        logger.info("VM cleanup for deletion of connection %s: %s", conn.id, cleanup_results["vm"])
+
+                linked_repos = db.query(RepositoryDB).filter(RepositoryDB.action_runner_connection_id == conn.id).all()
+                for repo in linked_repos:
+                    repo.action_runner_connection_id = None
+                cleanup_results["repos_unlinked"] = len(linked_repos)
+
+                db.delete(conn)
+                db.commit()
+                logger.info("Deleted action runner connection %s (VM: %s, Azure agent: %s, repos unlinked: %s)",
+                            connection_id, cleanup_results["vm"], cleanup_results["azure_agent"], cleanup_results["repos_unlinked"])
+
+                return APIResponse(data=cleanup_results, message="Action runner connection deleted")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.exception("Error deleting action runner connection: %s", e)
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.get("/api/action-runner-connections/{connection_id}/provision-status")

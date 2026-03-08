@@ -154,6 +154,12 @@ const RepositoryManager = () => {
   // GCP runner VM provision/deprovision
   const [provisionProgressByConnection, setProvisionProgressByConnection] = useState({});
   const checkRunnerServiceRef = useRef(null);
+  const consoleEndRef = useRef(null);
+  const [showRunnersPanel, setShowRunnersPanel] = useState(false);
+  const [deletingRunner, setDeletingRunner] = useState(null);
+  const [showCreateRunner, setShowCreateRunner] = useState(false);
+  const [newRunnerForm, setNewRunnerForm] = useState({ provider: 'azure_devops', organization: '', project: '', display_name: '', agent_pool: '' });
+  const [creatingRunner, setCreatingRunner] = useState(false);
   const [wizardStep, setWizardStep] = useState(0);
   const [wizardState, setWizardState] = useState({
     orgUrl: '',
@@ -193,27 +199,37 @@ const RepositoryManager = () => {
     if (!conn || !conn.gcp_instance_name || !conn.gcp_zone) return undefined;
 
     let cancelled = false;
+    let timerId = null;
+
     const poll = () => {
       api.getRunnerProvisionStatus(connId)
         .then((res) => {
           if (cancelled) return;
+          const data = res.data?.data || {};
           setProvisionProgressByConnection((prev) => ({
             ...prev,
-            [connId]: res.data?.data || {},
+            [connId]: data,
           }));
+          const isComplete = !!data.complete;
+          timerId = setTimeout(poll, isComplete ? 15000 : 3000);
         })
         .catch(() => {
-          // keep UI calm; provisioning API errors are shown on explicit user actions
+          if (!cancelled) timerId = setTimeout(poll, 5000);
         });
     };
 
     poll();
-    const intervalId = setInterval(poll, 8000);
     return () => {
       cancelled = true;
-      clearInterval(intervalId);
+      if (timerId) clearTimeout(timerId);
     };
   }, [formData.action_runner_connection_id, wizardState.connectionId, actionRunnerConnections]);
+
+  useEffect(() => {
+    if (consoleEndRef.current) {
+      consoleEndRef.current.scrollTop = consoleEndRef.current.scrollHeight;
+    }
+  }, [provisionProgressByConnection]);
 
   const fetchActionRunnerConnections = useCallback(() => {
     return api.getActionRunnerConnections()
@@ -607,6 +623,53 @@ const RepositoryManager = () => {
       } catch (error) {
         showError('Error', 'Failed to delete repository');
       }
+    }
+  };
+
+  const handleDeleteRunner = async (conn) => {
+    const label = conn.display_name || `${conn.organization}${conn.project ? '/' + conn.project : ''}`;
+    const hasVm = !!(conn.gcp_instance_name && conn.gcp_zone);
+    const parts = ['delete this action runner connection'];
+    if (hasVm) parts.push('destroy the VM');
+    if (conn.provider === 'azure_devops' && conn.agent_pool) parts.push('deregister the Azure agent');
+    const msg = `This will ${parts.join(', ')}.\n\nRunner: ${label}\n${hasVm ? `VM: ${conn.gcp_instance_name} (${conn.gcp_zone})` : 'No VM provisioned'}\n\nLinked repositories will be unlinked but not deleted.\n\nContinue?`;
+    if (!window.confirm(msg)) return;
+    setDeletingRunner(conn.id);
+    try {
+      await api.deleteActionRunnerConnection(conn.id);
+      showSuccess('Runner deleted', `Action runner "${label}" and its resources have been cleaned up.`);
+      await fetchActionRunnerConnections();
+      await fetchRepositories();
+    } catch (error) {
+      const detail = error.response?.data?.detail || error.message;
+      showError('Delete failed', detail);
+    } finally {
+      setDeletingRunner(null);
+    }
+  };
+
+  const handleCreateRunner = async () => {
+    const org = newRunnerForm.organization.trim();
+    if (!org) { showWarning('Missing field', 'Organization is required.'); return; }
+    setCreatingRunner(true);
+    try {
+      const payload = {
+        provider: newRunnerForm.provider,
+        organization: org,
+        project: newRunnerForm.project.trim() || undefined,
+        display_name: newRunnerForm.display_name.trim() || undefined,
+        agent_pool: newRunnerForm.agent_pool.trim() || undefined,
+      };
+      await api.createActionRunnerConnection(payload);
+      showSuccess('Runner created', 'Action runner connection created successfully.');
+      await fetchActionRunnerConnections();
+      setShowCreateRunner(false);
+      setNewRunnerForm({ provider: 'azure_devops', organization: '', project: '', display_name: '', agent_pool: '' });
+    } catch (error) {
+      const detail = error.response?.data?.detail || error.message;
+      showError('Create failed', detail);
+    } finally {
+      setCreatingRunner(false);
     }
   };
 
@@ -2329,27 +2392,87 @@ const RepositoryManager = () => {
                         </select>
                       </div>
 
-                      {formData.action_runner_connection_id && (() => {
-                        const conn = actionRunnerConnections.find((c) => c.id === formData.action_runner_connection_id);
+                      {(formData.action_runner_connection_id || wizardState.connectionId) && (() => {
+                        const connId = formData.action_runner_connection_id || wizardState.connectionId;
+                        const conn = actionRunnerConnections.find((c) => c.id === connId);
                         if (!conn) return null;
                         const hasVm = !!(conn.gcp_instance_name && conn.gcp_zone);
-                        const provisionProgress = provisionProgressByConnection[conn.id] || {};
+                        const provisionProgress = provisionProgressByConnection[connId] || {};
                         const vmRunning = !!provisionProgress.vm_running;
-                        const startupComplete = !!provisionProgress.startup?.startup_complete;
+                        const startup = provisionProgress.startup || {};
+                        const milestones = startup.milestones || [];
+                        const consoleLines = startup.console_lines || [];
                         const agentFound = !!provisionProgress.azure_agent?.found;
                         const agentOnline = !!provisionProgress.azure_agent?.online;
+                        const isComplete = !!provisionProgress.complete;
+                        const startupComplete = !!startup.startup_complete;
+
+                        const allSteps = [
+                          { label: 'VM running', done: vmRunning, active: !vmRunning },
+                          ...milestones.map((m) => ({ label: m.label, done: m.done, active: false })),
+                          { label: 'Agent registered in pool', done: agentFound, active: startupComplete && !agentFound },
+                          { label: 'Agent online', done: agentOnline, active: agentFound && !agentOnline },
+                        ];
+                        const doneCount = allSteps.filter((s) => s.done).length;
+                        const totalSteps = allSteps.length;
+                        const overallPercent = totalSteps > 0 ? Math.round((doneCount / totalSteps) * 100) : 0;
+
                         return (
-                          <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30 p-3">
-                            <div className="text-sm font-medium text-gray-900 dark:text-white mb-2">Live setup progress</div>
-                            <div className="space-y-1 text-xs text-gray-700 dark:text-gray-300">
-                              <div className="flex items-center justify-between"><span>VM running</span><span>{vmRunning ? 'Done' : (provisionProgress.vm_status || 'Waiting')}</span></div>
-                              <div className="flex items-center justify-between"><span>Startup script completed</span><span>{startupComplete ? 'Done' : 'In progress'}</span></div>
-                              <div className="flex items-center justify-between"><span>Agent registered in pool</span><span>{agentFound ? 'Done' : 'Waiting'}</span></div>
-                              <div className="flex items-center justify-between"><span>Agent online</span><span>{agentOnline ? 'Done' : 'Waiting'}</span></div>
+                          <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30 p-4 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <div className="text-sm font-semibold text-gray-900 dark:text-white">Provisioning Progress</div>
+                              {isComplete ? (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">Complete</span>
+                              ) : (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">{overallPercent}%</span>
+                              )}
                             </div>
+
+                            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                              <div
+                                className={`h-2 rounded-full transition-all duration-500 ${isComplete ? 'bg-green-500' : 'bg-blue-500'}`}
+                                style={{ width: `${overallPercent}%` }}
+                              />
+                            </div>
+
+                            <div className="grid grid-cols-1 gap-1 max-h-48 overflow-y-auto pr-1">
+                              {allSteps.map((step, i) => (
+                                <div key={i} className="flex items-center gap-2 text-xs">
+                                  {step.done ? (
+                                    <svg className="w-4 h-4 text-green-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                                  ) : step.active ? (
+                                    <svg className="w-4 h-4 text-blue-500 shrink-0 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                                  ) : (
+                                    <svg className="w-4 h-4 text-gray-300 dark:text-gray-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><circle cx="12" cy="12" r="8" strokeWidth={2} /></svg>
+                                  )}
+                                  <span className={step.done ? 'text-green-700 dark:text-green-400' : step.active ? 'text-blue-700 dark:text-blue-300 font-medium' : 'text-gray-500 dark:text-gray-500'}>{step.label}</span>
+                                </div>
+                              ))}
+                            </div>
+
+                            {consoleLines.length > 0 && (
+                              <details className="group" open>
+                                <summary className="cursor-pointer text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 select-none">
+                                  Console output ({consoleLines.length} lines)
+                                </summary>
+                                <div
+                                  className="mt-2 bg-gray-900 rounded-md p-2 max-h-48 overflow-y-auto font-mono text-xs text-green-400 leading-relaxed scroll-smooth"
+                                  ref={consoleEndRef}
+                                >
+                                  {consoleLines.map((line, i) => (
+                                    <div key={i} className="whitespace-pre-wrap break-all">{line.replace(/\[pr-agent-runner-startup\]\s*/, '')}</div>
+                                  ))}
+                                </div>
+                              </details>
+                            )}
+
+                            {!startup.log_available && vmRunning && (
+                              <div className="text-xs text-gray-500 dark:text-gray-400 italic">Waiting for serial console output&hellip; (VM just started)</div>
+                            )}
+
                             {hasVm && (
-                              <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
-                                VM: {conn.gcp_instance_name} ({conn.gcp_zone})
+                              <div className="text-xs text-gray-500 dark:text-gray-500">
+                                VM: {conn.gcp_instance_name} &middot; {conn.gcp_zone}
                               </div>
                             )}
                           </div>
@@ -2517,6 +2640,179 @@ const RepositoryManager = () => {
           </div>
         </div>
       )}
+
+      {/* Action Runners Management */}
+      <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm">
+        <button
+          type="button"
+          onClick={() => { setShowRunnersPanel((p) => !p); if (!showRunnersPanel) fetchActionRunnerConnections(); }}
+          className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <Server className="h-5 w-5 text-indigo-500" />
+            <div>
+              <div className="text-sm font-semibold text-gray-900 dark:text-white">Action Runners</div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">
+                {actionRunnerConnections.length} connection{actionRunnerConnections.length !== 1 ? 's' : ''} configured
+              </div>
+            </div>
+          </div>
+          {showRunnersPanel ? <ChevronDown className="h-5 w-5 text-gray-400" /> : <ChevronRight className="h-5 w-5 text-gray-400" />}
+        </button>
+
+        {showRunnersPanel && (
+          <div className="border-t border-gray-200 dark:border-gray-700 px-6 py-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Self-hosted runner VMs that execute PR-Agent pipelines. Deleting a runner destroys the VM and deregisters the agent from Azure DevOps.
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowCreateRunner(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors shrink-0 ml-4"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                New Runner
+              </button>
+            </div>
+
+            {showCreateRunner && (
+              <div className="bg-gray-50 dark:bg-gray-900/40 rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-3">
+                <div className="text-sm font-medium text-gray-900 dark:text-white">Create Action Runner Connection</div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Provider</label>
+                    <select
+                      value={newRunnerForm.provider}
+                      onChange={(e) => setNewRunnerForm((f) => ({ ...f, provider: e.target.value }))}
+                      className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    >
+                      <option value="azure_devops">Azure DevOps</option>
+                      <option value="github">GitHub</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Organization *</label>
+                    <input
+                      type="text"
+                      value={newRunnerForm.organization}
+                      onChange={(e) => setNewRunnerForm((f) => ({ ...f, organization: e.target.value }))}
+                      placeholder="e.g. my-org"
+                      className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    />
+                  </div>
+                  {newRunnerForm.provider === 'azure_devops' && (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Project</label>
+                      <input
+                        type="text"
+                        value={newRunnerForm.project}
+                        onChange={(e) => setNewRunnerForm((f) => ({ ...f, project: e.target.value }))}
+                        placeholder="e.g. MyProject"
+                        className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                      />
+                    </div>
+                  )}
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Display Name</label>
+                    <input
+                      type="text"
+                      value={newRunnerForm.display_name}
+                      onChange={(e) => setNewRunnerForm((f) => ({ ...f, display_name: e.target.value }))}
+                      placeholder="Optional"
+                      className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    />
+                  </div>
+                  {newRunnerForm.provider === 'azure_devops' && (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Agent Pool</label>
+                      <input
+                        type="text"
+                        value={newRunnerForm.agent_pool}
+                        onChange={(e) => setNewRunnerForm((f) => ({ ...f, agent_pool: e.target.value }))}
+                        placeholder="e.g. PRAgent_Cloud"
+                        className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                      />
+                    </div>
+                  )}
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateRunner(false)}
+                    className="px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCreateRunner}
+                    disabled={creatingRunner || !newRunnerForm.organization.trim()}
+                    className="px-3 py-1.5 text-xs font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    {creatingRunner ? 'Creating…' : 'Create'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {actionRunnerConnections.length === 0 ? (
+              <div className="text-center py-8 text-sm text-gray-500 dark:text-gray-400">
+                No action runners configured yet. Add one via the repository wizard or create one manually.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {actionRunnerConnections.map((conn) => {
+                  const hasVm = !!(conn.gcp_instance_name && conn.gcp_zone);
+                  const progress = provisionProgressByConnection[conn.id] || {};
+                  const vmRunning = !!progress.vm_running;
+                  const agentOnline = !!progress.azure_agent?.online;
+                  const isDeleting = deletingRunner === conn.id;
+                  const linkedRepos = repositories.filter((r) => r.action_runner_connection_id === conn.id);
+
+                  let statusColor = 'bg-gray-400';
+                  let statusLabel = 'No VM';
+                  if (hasVm && agentOnline) { statusColor = 'bg-green-500'; statusLabel = 'Online'; }
+                  else if (hasVm && vmRunning) { statusColor = 'bg-yellow-500'; statusLabel = 'VM Running'; }
+                  else if (hasVm) { statusColor = 'bg-orange-500'; statusLabel = progress.vm_status || 'Provisioned'; }
+
+                  return (
+                    <div key={conn.id} className="flex items-center justify-between p-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-600 transition-colors">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${statusColor}`} title={statusLabel} />
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-gray-900 dark:text-white truncate">
+                            {conn.display_name || `${conn.organization}${conn.project ? ' / ' + conn.project : ''}`}
+                          </div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400 flex flex-wrap gap-x-3 gap-y-0.5">
+                            <span>{conn.provider === 'azure_devops' ? 'Azure DevOps' : 'GitHub'}</span>
+                            {conn.agent_pool && <span>Pool: {conn.agent_pool}</span>}
+                            {hasVm && <span>VM: {conn.gcp_instance_name}</span>}
+                            {linkedRepos.length > 0 && <span>{linkedRepos.length} repo{linkedRepos.length !== 1 ? 's' : ''} linked</span>}
+                            <span className={`font-medium ${statusColor === 'bg-green-500' ? 'text-green-600 dark:text-green-400' : statusColor === 'bg-yellow-500' ? 'text-yellow-600 dark:text-yellow-400' : 'text-gray-500 dark:text-gray-400'}`}>
+                              {statusLabel}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteRunner(conn)}
+                        disabled={isDeleting}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50 transition-colors shrink-0 ml-3"
+                        title="Delete runner, destroy VM, deregister agent"
+                      >
+                        {isDeleting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                        {isDeleting ? 'Deleting…' : 'Delete'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Repository List */}
       <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm overflow-visible">

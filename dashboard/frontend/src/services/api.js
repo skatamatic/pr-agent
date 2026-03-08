@@ -131,6 +131,7 @@ const apiService = {
   getRunnerProvisionStatus: (connectionId) => api.get(`/api/action-runner-connections/${connectionId}/provision-status`),
   provisionRunnerVm: (connectionId, body = null) => api.post(`/api/action-runner-connections/${connectionId}/provision`, body),
   deprovisionRunnerVm: (connectionId) => api.post(`/api/action-runner-connections/${connectionId}/deprovision`),
+  deleteActionRunnerConnection: (connectionId) => api.delete(`/api/action-runner-connections/${connectionId}`),
   
   // Repository health actions
   checkRepositoryHealth: (id) => api.post(`/api/repositories/${id}/check-health`),

@@ -93,6 +93,7 @@ if [ ! -f "$AGENT_DIR/.agent" ]; then
 
   log "Downloading agent from: $AGENT_URL"
   curl -fkSL -o agent.tar.gz "$AGENT_URL"
+  log "Agent package downloaded. Extracting..."
   tar xzf agent.tar.gz
   rm -f agent.tar.gz
 
@@ -112,6 +113,7 @@ if [ ! -f "$AGENT_DIR/.agent" ]; then
     --acceptTeeEula \\
     --replace
 
+  log "Agent configured. Installing and starting service..."
   ./svc.sh install azagent
   ./svc.sh start
 
@@ -256,13 +258,13 @@ class GCPRunnerService:
             }
         name = self.instance_name_for_connection(connection_id, provider, organization, project)
 
-        ado_org_url = ""
-        ado_pat = ""
-        ado_pool = ""
+        resolved_ado_org_url = ""
+        resolved_ado_pat = ""
+        resolved_ado_pool = ""
         if provider == "azure_devops" and self.ado_pat and agent_pool:
-            ado_org_url = (ado_org_url or "").strip() or f"https://dev.azure.com/{organization}"
-            ado_pat = self.ado_pat
-            ado_pool = agent_pool
+            resolved_ado_org_url = (ado_org_url or "").strip() or f"https://dev.azure.com/{organization}"
+            resolved_ado_pat = self.ado_pat
+            resolved_ado_pool = agent_pool
 
         try:
             startup_script = _get_startup_script(
@@ -272,9 +274,9 @@ class GCPRunnerService:
                 pr_agent_repo_url=self.pr_agent_repo_url,
                 pr_agent_image=self.pr_agent_runner_image,
                 dashboard_api_key=self.dashboard_api_key,
-                ado_org_url=ado_org_url,
-                ado_pat=ado_pat,
-                ado_pool=ado_pool,
+                ado_org_url=resolved_ado_org_url,
+                ado_pat=resolved_ado_pat,
+                ado_pool=resolved_ado_pool,
                 ado_agent_name=name,
             )
             machine_type_path = f"zones/{self.zone}/machineTypes/{self.machine_type}"
@@ -320,10 +322,10 @@ class GCPRunnerService:
             )
             op = self.client.insert(request=request)
             logger.info("GCP runner VM insert started: %s in %s", name, self.zone)
-            agent_auto = bool(ado_org_url and ado_pat and ado_pool)
-            install_instructions = self._install_instructions(provider, name, auto_registered=agent_auto, agent_pool=ado_pool)
+            agent_auto = bool(resolved_ado_org_url and resolved_ado_pat and resolved_ado_pool)
+            install_instructions = self._install_instructions(provider, name, auto_registered=agent_auto, agent_pool=resolved_ado_pool)
             msg = (
-                f"VM creation started. The Azure DevOps agent will auto-register in pool '{ado_pool}'. Allow 3-5 minutes for VM boot + agent setup."
+                f"VM creation started. The Azure DevOps agent will auto-register in pool '{resolved_ado_pool}'. Allow 3-5 minutes for VM boot + agent setup."
                 if agent_auto
                 else "VM creation started. It may take 1–2 minutes to be running. Use the instructions below to install the runner/agent on the VM."
             )
@@ -333,7 +335,7 @@ class GCPRunnerService:
                 "zone": self.zone,
                 "message": msg,
                 "agent_auto_registered": agent_auto,
-                "agent_pool": ado_pool if agent_auto else None,
+                "agent_pool": resolved_ado_pool if agent_auto else None,
                 "install_instructions": install_instructions,
                 "operation_name": op.name if hasattr(op, "name") else None,
             }
@@ -415,14 +417,34 @@ class GCPRunnerService:
             return None
 
     def get_startup_progress(self, instance_name: str, zone: str) -> Dict[str, Any]:
-        """Parse startup-script progress from serial console output for UX polling."""
-        progress = {
+        """Parse startup-script progress from serial console output for UX polling.
+
+        Returns granular milestones, a console log of all pr-agent-runner-startup
+        lines, and a numeric percent estimate so the frontend can render a real
+        progress bar and a live console pane.
+        """
+        milestones = [
+            {"key": "system_packages", "label": "Installing system packages", "done": False},
+            {"key": "docker_ready", "label": "Docker installed", "done": False},
+            {"key": "python_git_ready", "label": "Python & Git installed", "done": False},
+            {"key": "env_written", "label": "Environment file written", "done": False},
+            {"key": "pr_agent_cloned", "label": "PR-Agent cloned & deps installed", "done": False},
+            {"key": "docker_image_pull", "label": "Docker image pre-pulled", "done": False},
+            {"key": "ado_agent_download", "label": "Azure agent downloaded", "done": False},
+            {"key": "ado_agent_configured", "label": "Azure agent configured", "done": False},
+            {"key": "ado_agent_started", "label": "Azure agent service started", "done": False},
+            {"key": "startup_complete", "label": "Startup complete", "done": False},
+        ]
+        progress: Dict[str, Any] = {
             "log_available": False,
+            "milestones": milestones,
+            "percent": 0,
+            "console_lines": [],
+            "startup_complete": False,
             "docker_ready": False,
             "env_written": False,
             "pr_agent_ready": False,
             "ado_agent_registered": False,
-            "startup_complete": False,
             "last_log_excerpt": "",
         }
         if not GCP_COMPUTE_AVAILABLE or not self.is_configured():
@@ -438,16 +460,51 @@ class GCPRunnerService:
             contents = (out.contents if hasattr(out, "contents") else "") or ""
             if not contents:
                 return progress
+
             progress["log_available"] = True
             c = contents.lower()
-            progress["docker_ready"] = ("docker installed." in c) or ("docker already installed." in c)
-            progress["env_written"] = "env file written to /opt/pr-agent-runner/env." in c
-            progress["pr_agent_ready"] = ("pr-agent clone and pip install done." in c) or ("pr-agent already present at /opt/pr-agent." in c)
-            progress["ado_agent_registered"] = "registered in pool" in c
-            progress["startup_complete"] = "startup complete." in c
-            lines = [ln for ln in contents.splitlines() if "[pr-agent-runner-startup]" in ln]
-            progress["last_log_excerpt"] = "\n".join(lines[-8:]) if lines else ""
+
+            tagged_lines = [ln for ln in contents.splitlines() if "[pr-agent-runner-startup]" in ln]
+            progress["console_lines"] = tagged_lines[-60:]
+            progress["last_log_excerpt"] = "\n".join(tagged_lines[-8:]) if tagged_lines else ""
+
+            def mark(key: str) -> None:
+                for m in milestones:
+                    if m["key"] == key:
+                        m["done"] = True
+                        break
+
+            if "installing docker ce" in c:
+                mark("system_packages")
+            if "docker installed." in c or "docker already installed." in c:
+                mark("system_packages")
+                mark("docker_ready")
+                progress["docker_ready"] = True
+            if "python and git installed." in c or "python and git already present." in c:
+                mark("python_git_ready")
+            if "env file written to /opt/pr-agent-runner/env." in c:
+                mark("env_written")
+                progress["env_written"] = True
+            if "pr-agent clone and pip install done." in c or "pr-agent already present at /opt/pr-agent." in c:
+                mark("pr_agent_cloned")
+                progress["pr_agent_ready"] = True
+            if "pre-pulling docker image" in c or ("docker image" in c and "already present" in c):
+                mark("docker_image_pull")
+            if "downloading agent from" in c or "agent package downloaded" in c:
+                mark("ado_agent_download")
+            if "configuring agent" in c or "agent configured" in c:
+                mark("ado_agent_configured")
+            if "registered in pool" in c:
+                mark("ado_agent_started")
+                progress["ado_agent_registered"] = True
+            if "startup complete." in c:
+                mark("startup_complete")
+                progress["startup_complete"] = True
+
+            done_count = sum(1 for m in milestones if m["done"])
+            progress["percent"] = min(100, int(done_count / len(milestones) * 100))
+            progress["milestones"] = milestones
+
         except Exception:
-            # Non-fatal: serial logs may be unavailable briefly or restricted
             return progress
         return progress
