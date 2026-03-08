@@ -296,8 +296,95 @@ class DashboardApplication:
         pools.sort(key=lambda x: (x.get("name") or "").lower())
         return pools
 
+    def _get_azure_pat_identity(self, org_url: str, pat: str, timeout: int = 20) -> Dict[str, Any]:
+        """Resolve the Azure DevOps identity associated with a PAT."""
+        import requests
+
+        headers = self._azure_auth_headers(pat)
+        url = f"{org_url}/_apis/connectionData?connectOptions=1&lastChangeId=-1&lastChangeId64=-1"
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            if resp.status_code in (203, 401):
+                return {"success": False, "error": "Authentication failed. Check your Azure DevOps PAT."}
+            if resp.status_code != 200:
+                detail = f"Azure API failed ({resp.status_code}) while resolving PAT identity."
+                try:
+                    detail = (resp.json() or {}).get("message", detail)
+                except Exception:
+                    pass
+                return {"success": False, "error": detail}
+
+            payload = resp.json() if resp.content else {}
+            user = (payload or {}).get("authenticatedUser") or {}
+            identity = {
+                "id": user.get("id"),
+                "descriptor": user.get("descriptor"),
+                "display_name": user.get("providerDisplayName") or user.get("displayName"),
+                "unique_name": user.get("uniqueName"),
+                "subject_kind": user.get("subjectKind"),
+            }
+            return {"success": True, "identity": identity}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _extract_azure_org_from_repo_url(self, repo_url: str) -> str:
+        """Extract Azure DevOps organization from repo URL."""
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(repo_url or "")
+            host = (parsed.netloc or "").lower()
+            path_parts = [p for p in (parsed.path or "").split("/") if p]
+            if "dev.azure.com" in host:
+                return path_parts[0] if path_parts else ""
+            if "visualstudio.com" in host:
+                return host.split(".")[0]
+        except Exception:
+            pass
+        return ""
+
+    def _resolve_azure_pat_for_connection(self, db: Session, conn, linked_repos: Optional[List[Any]] = None) -> Optional[str]:
+        """Best-effort PAT resolution for agent cleanup."""
+        from models import RepositoryDB
+
+        repos = linked_repos or []
+        for repo in repos:
+            if getattr(repo, "provider", "") == "azure_devops" and (getattr(repo, "azure_pat", "") or "").strip():
+                return repo.azure_pat
+
+        # Fallback: search any Azure repo in DB that belongs to same org and has PAT.
+        all_azure_repos = (
+            db.query(RepositoryDB)
+            .filter(
+                RepositoryDB.provider == "azure_devops",
+                RepositoryDB.azure_pat.isnot(None),
+                RepositoryDB.azure_pat != "",
+            )
+            .all()
+        )
+        for repo in all_azure_repos:
+            org = self._extract_azure_org_from_repo_url(getattr(repo, "url", ""))
+            if org and org.strip().lower() == (getattr(conn, "organization", "") or "").strip().lower():
+                return repo.azure_pat
+        return None
+
+    def _expected_agent_name_for_connection(self, conn) -> Optional[str]:
+        """Compute expected Azure agent name even if VM metadata is missing."""
+        if getattr(conn, "gcp_instance_name", None):
+            return conn.gcp_instance_name
+        try:
+            from services.gcp_runner_service import GCPRunnerService
+            svc = GCPRunnerService(
+                project_id=getattr(settings, "gcp_runner_project_id", "") or "",
+                region=getattr(settings, "gcp_runner_region", "us-central1") or "us-central1",
+                zone=getattr(settings, "gcp_runner_zone", "") or None,
+                name_prefix=getattr(settings, "gcp_runner_prefix", "pr-agent-runner") or "pr-agent-runner",
+            )
+            return svc.instance_name_for_connection(conn.id, conn.provider, conn.organization, conn.project)
+        except Exception:
+            return None
+
     def _deregister_azure_agent(self, org_url: str, pat: str, pool_name: str, agent_name: str, timeout: int = 20) -> Dict[str, Any]:
-        """Remove an agent from an Azure DevOps pool by name. Returns status dict."""
+        """Remove an agent from Azure DevOps by name (pool-aware with cross-pool fallback)."""
         import requests
 
         headers = self._azure_auth_headers(pat)
@@ -310,38 +397,61 @@ class DashboardApplication:
                 return {"success": False, "error": f"Failed to list pools ({pools_resp.status_code})"}
 
             pools = (pools_resp.json() or {}).get("value", [])
-            pool = next(
-                (p for p in pools if (p.get("name") or "").strip().lower() == pool_name.strip().lower()),
+            named_pool = next(
+                (p for p in pools if (p.get("name") or "").strip().lower() == (pool_name or "").strip().lower()),
                 None,
             )
-            if not pool:
-                return {"success": False, "error": f"Pool '{pool_name}' not found"}
+            # Prefer configured pool, but fall back to scanning all pools for robustness.
+            candidate_pools = [named_pool] if named_pool else []
+            candidate_pools.extend([p for p in pools if p is not named_pool])
 
-            pool_id = pool["id"]
-            agents_resp = requests.get(
-                f"{org_url}/_apis/distributedtask/pools/{pool_id}/agents?api-version=7.1",
-                headers=headers, timeout=timeout,
-            )
-            if agents_resp.status_code != 200:
-                return {"success": False, "error": f"Failed to list agents ({agents_resp.status_code})"}
+            target = (agent_name or "").strip().lower()
+            if not target:
+                return {"success": False, "error": "Missing agent name for deregistration"}
 
-            agents = (agents_resp.json() or {}).get("value", [])
-            target = agent_name.strip().lower()
-            agent = next(
-                (a for a in agents if (a.get("name") or "").strip().lower() == target),
-                None,
-            )
-            if not agent:
-                return {"success": True, "message": f"Agent '{agent_name}' not found in pool (already removed)"}
+            removed = []
+            delete_errors = []
 
-            agent_id = agent["id"]
-            del_resp = requests.delete(
-                f"{org_url}/_apis/distributedtask/pools/{pool_id}/agents/{agent_id}?api-version=7.1",
-                headers=headers, timeout=timeout,
-            )
-            if del_resp.status_code in (200, 204):
-                return {"success": True, "message": f"Agent '{agent_name}' removed from pool '{pool_name}'"}
-            return {"success": False, "error": f"Delete agent returned {del_resp.status_code}"}
+            for pool in candidate_pools:
+                pool_id = pool.get("id")
+                if pool_id is None:
+                    continue
+                agents_resp = requests.get(
+                    f"{org_url}/_apis/distributedtask/pools/{pool_id}/agents?includeCapabilities=false&api-version=7.1",
+                    headers=headers, timeout=timeout,
+                )
+                if agents_resp.status_code != 200:
+                    delete_errors.append(f"list_agents_pool_{pool.get('name')}_{agents_resp.status_code}")
+                    continue
+
+                agents = (agents_resp.json() or {}).get("value", [])
+                matches = [a for a in agents if (a.get("name") or "").strip().lower() == target]
+                for agent in matches:
+                    agent_id = agent.get("id")
+                    if agent_id is None:
+                        continue
+                    del_resp = requests.delete(
+                        f"{org_url}/_apis/distributedtask/pools/{pool_id}/agents/{agent_id}?api-version=7.1",
+                        headers=headers, timeout=timeout,
+                    )
+                    if del_resp.status_code in (200, 204, 404):
+                        removed.append({"pool": pool.get("name"), "agent_id": agent_id})
+                    else:
+                        delete_errors.append(f"delete_pool_{pool.get('name')}_{del_resp.status_code}")
+
+            if removed:
+                return {
+                    "success": True,
+                    "message": f"Removed agent '{agent_name}' from {len(removed)} registration(s)",
+                    "removed": removed,
+                    "errors": delete_errors,
+                }
+            if delete_errors:
+                return {
+                    "success": False,
+                    "error": f"Agent '{agent_name}' not removed. Errors: {', '.join(delete_errors)}",
+                }
+            return {"success": True, "message": f"Agent '{agent_name}' not found in Azure pools (already removed)"}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
@@ -1785,6 +1895,148 @@ class DashboardApplication:
                 logger.error("Azure DevOps discovery failed: %s", self._sanitize_error(e, pat))
                 raise HTTPException(status_code=500, detail=str(e))
 
+        @self.app.post("/api/azure-devops/pat-identity")
+        async def azure_devops_pat_identity(body: dict, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """Return the Azure identity for a PAT + review-runtime token usage info."""
+            try:
+                pat = (body.get("pat") or "").strip()
+                org_url = self._normalize_azure_org_url(body.get("org_url", ""))
+                repo_id = body.get("repo_id")
+                if not pat:
+                    raise HTTPException(status_code=400, detail="pat is required")
+
+                identity_result = await asyncio.to_thread(self._get_azure_pat_identity, org_url, pat)
+                if not identity_result.get("success"):
+                    raise HTTPException(status_code=400, detail=identity_result.get("error", "Failed to resolve PAT identity"))
+
+                verification = {
+                    "review_auth_source": "AZURE_DEVOPS_PAT",
+                    "fallback_auth_source": "SYSTEM_ACCESSTOKEN",
+                    "review_uses_provided_pat": True,
+                    "reason": "Pipeline runner uses AZURE_DEVOPS_PAT first and SYSTEM_ACCESSTOKEN as fallback.",
+                }
+
+                # If a repo is provided and YAML is outdated, verification may not hold until updated.
+                if repo_id:
+                    from models import RepositoryDB
+                    repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                    if repo and repo.provider == "azure_devops" and repo.azure_pat:
+                        repo_data = {
+                            "id": repo.id,
+                            "provider": repo.provider,
+                            "url": repo.url,
+                            "azure_pat": repo.azure_pat,
+                            "action_runner_connection_id": repo.action_runner_connection_id,
+                        }
+                        sync_status = await self.azure_pipeline_config_service.get_sync_status(repo_data, db)
+                        if sync_status.get("yaml_exists") and sync_status.get("sync_status") != "up_to_date":
+                            verification = {
+                                **verification,
+                                "review_uses_provided_pat": False,
+                                "reason": "Repository pipeline YAML is outdated. Push latest pipeline YAML so VM PAT plumbing is applied.",
+                                "sync_status": sync_status.get("sync_status"),
+                            }
+
+                return APIResponse(
+                    data={
+                        "identity": identity_result.get("identity", {}),
+                        "verification": verification,
+                    },
+                    message="Azure DevOps PAT identity resolved",
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error("Azure PAT identity lookup failed: %s", self._sanitize_error(e, pat))
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/azure-devops/branches")
+        async def azure_devops_list_branches(body: dict, current_user: UserDB = Depends(require_auth)):
+            """List branches for an Azure DevOps repository without requiring a saved dashboard repository."""
+            try:
+                repo_url = (body.get("repo_url") or "").strip()
+                pat = (body.get("pat") or "").strip()
+                if not repo_url:
+                    raise HTTPException(status_code=400, detail="repo_url is required")
+                if not pat:
+                    raise HTTPException(status_code=400, detail="pat is required")
+
+                repo_data = {
+                    "provider": "azure_devops",
+                    "url": repo_url,
+                    "azure_pat": pat,
+                }
+                result = await self.azure_pipeline_config_service.list_branches(repo_data)
+                if "error" in result:
+                    raise HTTPException(status_code=400, detail=result["error"])
+                return APIResponse(data=result, message="Branches retrieved")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error("Azure DevOps branch listing failed: %s", self._sanitize_error(e, pat))
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/azure-devops/pipeline/setup")
+        async def azure_devops_setup_pipeline(body: dict, current_user: UserDB = Depends(require_auth)):
+            """Set up Azure pipeline YAML and optional build validation policy without requiring a saved repository."""
+            try:
+                repo_url = (body.get("repo_url") or "").strip()
+                pat = (body.get("pat") or "").strip()
+                branch = (body.get("branch") or "").strip()
+                is_blocking = bool(body.get("is_blocking", False))
+                content = body.get("content")
+                pipeline_definition_id = body.get("pipeline_definition_id")
+                connection_id = body.get("action_runner_connection_id")
+
+                if not repo_url:
+                    raise HTTPException(status_code=400, detail="repo_url is required")
+                if not pat:
+                    raise HTTPException(status_code=400, detail="pat is required")
+
+                repo_data = {
+                    "provider": "azure_devops",
+                    "url": repo_url,
+                    "azure_pat": pat,
+                    "action_runner_connection_id": connection_id,
+                }
+
+                push_result = await self.azure_pipeline_config_service.push_yaml_direct(repo_data, content, None)
+                if not push_result.get("success"):
+                    raise HTTPException(status_code=400, detail=push_result.get("error", "Failed to push pipeline YAML"))
+
+                policy_result = {}
+                effective_pipeline_id = pipeline_definition_id or push_result.get("pipeline_id")
+                if branch and effective_pipeline_id:
+                    try:
+                        policy_pipeline_id = int(effective_pipeline_id)
+                    except (TypeError, ValueError):
+                        raise HTTPException(status_code=400, detail="pipeline_definition_id must be a valid integer")
+                    policy_result = await self.azure_pipeline_config_service.ensure_build_policy(
+                        repo_data,
+                        branch,
+                        policy_pipeline_id,
+                        is_blocking,
+                    )
+                    if not policy_result.get("success"):
+                        raise HTTPException(status_code=400, detail=policy_result.get("error", "Failed to configure policy"))
+
+                return APIResponse(
+                    data={
+                        "success": True,
+                        "yaml_pushed": bool(push_result.get("yaml_pushed")),
+                        "pipeline_created": bool(push_result.get("pipeline_created")),
+                        "pipeline_id": push_result.get("pipeline_id"),
+                        "policy_created": bool(policy_result.get("created")),
+                        "policy_updated": bool(policy_result.get("updated")),
+                    },
+                    message="Azure pipeline setup completed",
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error("Azure DevOps pipeline setup failed: %s", self._sanitize_error(e, pat))
+                raise HTTPException(status_code=500, detail=str(e))
+
         @self.app.post("/api/action-runner-connections/{connection_id}/provision")
         async def provision_runner_vm(connection_id: int, body: Optional[ProvisionRunnerRequest] = None, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Provision a GCP Compute Engine VM for this runner connection.
@@ -1924,25 +2176,32 @@ class DashboardApplication:
 
                 results = {"vm": None, "azure_agent": None}
 
-                if conn.provider == "azure_devops" and conn.agent_pool and conn.gcp_instance_name:
-                    repo_with_pat = (
+                if conn.provider == "azure_devops" and conn.agent_pool:
+                    linked_repos = (
                         db.query(RepositoryDB)
-                        .filter(
-                            RepositoryDB.action_runner_connection_id == conn.id,
-                            RepositoryDB.provider == 'azure_devops',
-                            RepositoryDB.azure_pat.isnot(None),
-                            RepositoryDB.azure_pat != ''
-                        )
-                        .order_by(RepositoryDB.id.asc())
-                        .first()
+                        .filter(RepositoryDB.action_runner_connection_id == conn.id)
+                        .all()
                     )
-                    if repo_with_pat and repo_with_pat.azure_pat:
-                        org_url = self._resolve_azure_org_url(conn.organization, getattr(repo_with_pat, 'url', None))
+                    pat = self._resolve_azure_pat_for_connection(db, conn, linked_repos)
+                    expected_agent_name = self._expected_agent_name_for_connection(conn)
+                    if pat and expected_agent_name:
+                        org_url = self._resolve_azure_org_url(
+                            conn.organization,
+                            next((getattr(r, "url", None) for r in linked_repos if getattr(r, "url", None)), None),
+                        )
                         results["azure_agent"] = await asyncio.to_thread(
                             self._deregister_azure_agent,
-                            org_url, repo_with_pat.azure_pat, conn.agent_pool, conn.gcp_instance_name
+                            org_url,
+                            pat,
+                            conn.agent_pool,
+                            expected_agent_name,
                         )
                         logger.info("Azure agent deregistration for connection %s: %s", conn.id, results["azure_agent"])
+                    elif not pat:
+                        results["azure_agent"] = {
+                            "success": False,
+                            "error": "No Azure PAT available to remove agent registration from pool",
+                        }
 
                 if not conn.gcp_instance_name or not conn.gcp_zone:
                     results["vm"] = {"success": True, "message": "No VM was provisioned for this connection."}
@@ -1986,25 +2245,27 @@ class DashboardApplication:
                 # Gather linked repos before unlinking so we can clean up their Azure resources
                 linked_repos = db.query(RepositoryDB).filter(RepositoryDB.action_runner_connection_id == conn.id).all()
 
-                if conn.provider == "azure_devops" and conn.agent_pool and conn.gcp_instance_name:
-                    repo_with_pat = (
-                        db.query(RepositoryDB)
-                        .filter(
-                            RepositoryDB.action_runner_connection_id == conn.id,
-                            RepositoryDB.provider == 'azure_devops',
-                            RepositoryDB.azure_pat.isnot(None),
-                            RepositoryDB.azure_pat != ''
+                if conn.provider == "azure_devops" and conn.agent_pool:
+                    pat = self._resolve_azure_pat_for_connection(db, conn, linked_repos)
+                    expected_agent_name = self._expected_agent_name_for_connection(conn)
+                    if pat and expected_agent_name:
+                        org_url = self._resolve_azure_org_url(
+                            conn.organization,
+                            next((getattr(r, "url", None) for r in linked_repos if getattr(r, "url", None)), None),
                         )
-                        .order_by(RepositoryDB.id.asc())
-                        .first()
-                    )
-                    if repo_with_pat and repo_with_pat.azure_pat:
-                        org_url = self._resolve_azure_org_url(conn.organization, getattr(repo_with_pat, 'url', None))
                         cleanup_results["azure_agent"] = await asyncio.to_thread(
                             self._deregister_azure_agent,
-                            org_url, repo_with_pat.azure_pat, conn.agent_pool, conn.gcp_instance_name
+                            org_url,
+                            pat,
+                            conn.agent_pool,
+                            expected_agent_name,
                         )
                         logger.info("Azure agent cleanup for deletion of connection %s: %s", conn.id, cleanup_results["azure_agent"])
+                    elif not pat:
+                        cleanup_results["azure_agent"] = {
+                            "success": False,
+                            "error": "No Azure PAT available to remove agent registration from pool",
+                        }
 
                 if conn.gcp_instance_name and conn.gcp_zone:
                     project_id = getattr(settings, 'gcp_runner_project_id', '') or ''

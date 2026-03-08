@@ -172,6 +172,10 @@ class TestRunnerProvisionAPI:
         response = client_app.post("/api/azure-devops/discovery", json={"org_url": "https://dev.azure.com/test", "pat": "x"})
         assert response.status_code == 401
 
+    def test_azure_pat_identity_requires_auth(self, client_app):
+        response = client_app.post("/api/azure-devops/pat-identity", json={"org_url": "https://dev.azure.com/test", "pat": "x"})
+        assert response.status_code == 401
+
     def test_azure_discovery_lists_repos_and_pools(self, client_app, auth_headers, monkeypatch):
         class Resp:
             def __init__(self, status_code, payload):
@@ -206,6 +210,43 @@ class TestRunnerProvisionAPI:
         assert data["repositories"][0]["project"] == "Product"
         assert len(data.get("pools", [])) == 1
         assert data["pools"][0]["name"] == "PRAgent_Cloud"
+
+    def test_azure_pat_identity_resolves_user(self, client_app, auth_headers, monkeypatch):
+        class Resp:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+                self.content = b"x"
+
+            def json(self):
+                return self._payload
+
+        def fake_get(url, headers=None, timeout=0):
+            if "_apis/connectionData" in url:
+                return Resp(200, {
+                    "authenticatedUser": {
+                        "id": "user-1",
+                        "providerDisplayName": "AI Review Bot",
+                        "uniqueName": "ai-review-bot@contoso.com",
+                        "descriptor": "aad.abc",
+                        "subjectKind": "user",
+                    }
+                })
+            return Resp(404, {"message": "not found"})
+
+        import requests
+        monkeypatch.setattr(requests, "get", fake_get)
+
+        response = client_app.post(
+            "/api/azure-devops/pat-identity",
+            json={"org_url": "https://dev.azure.com/mdt-software", "pat": "pat"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        data = response.json().get("data", {})
+        assert data.get("identity", {}).get("display_name") == "AI Review Bot"
+        assert data.get("verification", {}).get("review_auth_source") == "AZURE_DEVOPS_PAT"
+        assert data.get("verification", {}).get("review_uses_provided_pat") is True
 
     def test_provision_azure_auto_selects_pool_when_missing(self, client_app, auth_headers, monkeypatch):
         # Configure minimal GCP settings so endpoint reaches provisioning logic.
@@ -282,3 +323,115 @@ class TestRunnerProvisionAPI:
         assert response.status_code == 200
         payload = response.json().get("data", {})
         assert payload.get("success") is True
+
+    def test_deprovision_attempts_azure_deregister_with_derived_agent_name(self, client_app, auth_headers, monkeypatch):
+        org_name = "cleanup-derived-org"
+        create_conn = client_app.post(
+            "/api/action-runner-connections",
+            json={
+                "provider": "azure_devops",
+                "organization": org_name,
+                "project": "Product",
+                "agent_pool": "PRAgent_SelfHosted",
+            },
+            headers=auth_headers,
+        )
+        assert create_conn.status_code == 200
+        conn_id = create_conn.json()["data"]["id"]
+
+        create_repo = client_app.post(
+            "/api/repositories",
+            json={
+                "name": f"Product/Archive.MDT.ConfigEditor.{conn_id}",
+                "provider": "azure_devops",
+                "url": f"https://{org_name}.visualstudio.com/Product/_git/Archive.MDT.ConfigEditor.{conn_id}",
+                "azure_pat": "pat-from-linked-repo",
+                "action_runner_connection_id": conn_id,
+                "is_active": True,
+            },
+            headers=auth_headers,
+        )
+        assert create_repo.status_code == 200
+
+        captured = {}
+
+        def fake_deregister(org_url, pat, pool_name, agent_name, timeout=20):
+            captured["org_url"] = org_url
+            captured["pat"] = pat
+            captured["pool_name"] = pool_name
+            captured["agent_name"] = agent_name
+            return {"success": True, "message": "removed"}
+
+        monkeypatch.setattr(backend_main.dashboard_app, "_deregister_azure_agent", fake_deregister)
+
+        response = client_app.post(
+            f"/api/action-runner-connections/{conn_id}/deprovision",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        data = response.json().get("data", {})
+        assert data.get("azure_agent", {}).get("success") is True
+        assert captured.get("pat") == "pat-from-linked-repo"
+        assert captured.get("pool_name") == "PRAgent_SelfHosted"
+        assert str(conn_id) in (captured.get("agent_name") or "")
+
+    def test_delete_connection_uses_org_pat_fallback_for_agent_deregister(self, client_app, auth_headers, monkeypatch):
+        org_name = "cleanup-fallback-org"
+        create_conn = client_app.post(
+            "/api/action-runner-connections",
+            json={
+                "provider": "azure_devops",
+                "organization": org_name,
+                "project": "Product",
+                "agent_pool": "PRAgent_SelfHosted",
+            },
+            headers=auth_headers,
+        )
+        assert create_conn.status_code == 200
+        conn_id = create_conn.json()["data"]["id"]
+
+        linked_repo = client_app.post(
+            "/api/repositories",
+            json={
+                "name": f"Product/NoPatRepo.{conn_id}",
+                "provider": "azure_devops",
+                "url": f"https://{org_name}.visualstudio.com/Product/_git/NoPatRepo.{conn_id}",
+                "action_runner_connection_id": conn_id,
+                "is_active": True,
+            },
+            headers=auth_headers,
+        )
+        assert linked_repo.status_code == 200
+
+        fallback_repo = client_app.post(
+            "/api/repositories",
+            json={
+                "name": f"Product/PatRepo.{conn_id}",
+                "provider": "azure_devops",
+                "url": f"https://{org_name}.visualstudio.com/Product/_git/PatRepo.{conn_id}",
+                "azure_pat": "pat-from-org-fallback",
+                "is_active": True,
+            },
+            headers=auth_headers,
+        )
+        assert fallback_repo.status_code == 200
+
+        captured = {}
+
+        def fake_deregister(org_url, pat, pool_name, agent_name, timeout=20):
+            captured["pat"] = pat
+            captured["pool_name"] = pool_name
+            captured["agent_name"] = agent_name
+            return {"success": True, "message": "removed"}
+
+        monkeypatch.setattr(backend_main.dashboard_app, "_deregister_azure_agent", fake_deregister)
+
+        response = client_app.delete(
+            f"/api/action-runner-connections/{conn_id}",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        data = response.json().get("data", {})
+        assert data.get("azure_agent", {}).get("success") is True
+        assert captured.get("pat") == "pat-from-org-fallback"
+        assert captured.get("pool_name") == "PRAgent_SelfHosted"

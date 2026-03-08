@@ -742,6 +742,9 @@ stages:
         echo "##vso[task.setvariable variable=RESOLVED_IMAGE]$IMAGE"
         echo "##vso[task.setvariable variable=VM_GCS_BUCKET]${{PR_AGENT_CONFIG_GCS_BUCKET:-}}"
         echo "##vso[task.setvariable variable=VM_GCS_PREFIX]${{PR_AGENT_CONFIG_GCS_PREFIX:-}}"
+        echo "##vso[task.setvariable variable=VM_DASHBOARD_URL]${{DASHBOARD_URL:-}}"
+        echo "##vso[task.setvariable variable=VM_DASHBOARD_API_KEY;issecret=true]${{DASHBOARD_API_KEY:-}}"
+        echo "##vso[task.setvariable variable=VM_AZURE_DEVOPS_PAT;issecret=true]${{AZURE_DEVOPS_PAT:-}}"
       displayName: 'Pull image & load VM config'
       env:
         PR_AGENT_IMAGE_OVERRIDE: $(PR_AGENT_IMAGE)
@@ -749,7 +752,7 @@ stages:
     - bash: |
         docker run --rm \\
           --network=host \\
-          --entrypoint python \\
+          --entrypoint python3 \\
           -v "${{SOURCE_DIR}}:${{SOURCE_DIR}}" \\
           -w "${{SOURCE_DIR}}" \\
           -e BUILD_REASON \\
@@ -757,12 +760,15 @@ stages:
           -e SYSTEM_TEAMPROJECT \\
           -e BUILD_REPOSITORY_NAME \\
           -e SYSTEM_COLLECTIONURI \\
+          -e AZURE_DEVOPS_PAT \\
           -e SYSTEM_ACCESSTOKEN \\
+          -e DASHBOARD_URL \\
+          -e DASHBOARD_API_KEY \\
           -e PR_AGENT_CONFIG_GCS_BUCKET \\
           -e PR_AGENT_CONFIG_GCS_PREFIX \\
           -e PYTHONUTF8=1 \\
           "${{RESOLVED_IMAGE}}" \\
-          /app/pr_agent/servers/azuredevops_pipeline_runner.py
+          -m pr_agent.servers.azuredevops_pipeline_runner
       displayName: 'Execute PR-Agent'
       env:
         SOURCE_DIR: $(Build.SourcesDirectory)
@@ -772,7 +778,10 @@ stages:
         SYSTEM_TEAMPROJECT: $(System.TeamProject)
         BUILD_REPOSITORY_NAME: $(Build.Repository.Name)
         SYSTEM_COLLECTIONURI: $(System.CollectionUri)
+        AZURE_DEVOPS_PAT: $(VM_AZURE_DEVOPS_PAT)
         SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+        DASHBOARD_URL: $(VM_DASHBOARD_URL)
+        DASHBOARD_API_KEY: $(VM_DASHBOARD_API_KEY)
         PR_AGENT_CONFIG_GCS_BUCKET: $(VM_GCS_BUCKET)
         PR_AGENT_CONFIG_GCS_PREFIX: $(VM_GCS_PREFIX)
 """

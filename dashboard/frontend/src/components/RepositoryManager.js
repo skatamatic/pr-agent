@@ -20,6 +20,7 @@ import {
   RefreshCw,
   Clock,
   CheckCircle,
+  Copy,
   FileText,
   Eye,
   Key,
@@ -171,6 +172,7 @@ const RepositoryManager = () => {
   const checkRunnerServiceRef = useRef(null);
   const consoleEndRef = useRef(null);
   const pendingTimeoutsRef = useRef(new Set());
+  const [consoleAutoScrollEnabled, setConsoleAutoScrollEnabled] = useState(true);
   const [showRunnersPanel, setShowRunnersPanel] = useState(false);
   const [deletingRunner, setDeletingRunner] = useState(null);
   const [showCreateRunner, setShowCreateRunner] = useState(false);
@@ -196,6 +198,7 @@ const RepositoryManager = () => {
     pipelineSetupDone: false,
     pipelineSetupResult: null,
   });
+  const [azurePatIdentity, setAzurePatIdentity] = useState({ loading: false, data: null, error: null });
 
   const fetchRepositories = useCallback(async () => {
     try {
@@ -247,10 +250,15 @@ const RepositoryManager = () => {
   }, [formData.action_runner_connection_id, wizardState.connectionId, actionRunnerConnections]);
 
   useEffect(() => {
-    if (consoleEndRef.current) {
+    if (consoleAutoScrollEnabled && consoleEndRef.current) {
       consoleEndRef.current.scrollTop = consoleEndRef.current.scrollHeight;
     }
-  }, [provisionProgressByConnection]);
+  }, [provisionProgressByConnection, consoleAutoScrollEnabled]);
+
+  useEffect(() => {
+    // Enable auto-scroll at the beginning of a provisioning session.
+    setConsoleAutoScrollEnabled(true);
+  }, [formData.action_runner_connection_id, wizardState.connectionId]);
 
   const safeTimeout = useCallback((fn, delay) => {
     const id = setTimeout(() => {
@@ -260,6 +268,16 @@ const RepositoryManager = () => {
     pendingTimeoutsRef.current.add(id);
     return id;
   }, []);
+
+  const copyProvisionConsole = useCallback(async (lines) => {
+    try {
+      const text = (lines || []).join('\n');
+      await navigator.clipboard.writeText(text);
+      showSuccess('Copied', 'Provisioning console output copied to clipboard.');
+    } catch (error) {
+      showError('Copy failed', 'Unable to copy console output to clipboard.');
+    }
+  }, [showSuccess, showError]);
 
   useEffect(() => {
     const timeouts = pendingTimeoutsRef.current;
@@ -315,6 +333,21 @@ const RepositoryManager = () => {
       } else {
         setFormData((prev) => ({ ...prev, provider: 'azure_devops', azure_pat: pat }));
       }
+      try {
+        setAzurePatIdentity({ loading: true, data: null, error: null });
+        const identityResp = await api.getAzureDevopsPatIdentity({ org_url: orgUrl, pat });
+        setAzurePatIdentity({
+          loading: false,
+          data: identityResp.data?.data || null,
+          error: null,
+        });
+      } catch (identityErr) {
+        setAzurePatIdentity({
+          loading: false,
+          data: null,
+          error: identityErr.response?.data?.detail || identityErr.message || 'Failed to resolve PAT identity',
+        });
+      }
       setWizardStep(1);
       showSuccess('Azure discovery', `Found ${repos.length} repositories and ${pools.length} agent pools.`);
     } catch (error) {
@@ -325,6 +358,11 @@ const RepositoryManager = () => {
 
   const handleAzureDiscoveredRepoSelect = (selectedValue) => {
     setWizardState((prev) => ({ ...prev, selectedRepoKey: selectedValue }));
+    setBranchesData((prev) => {
+      const next = { ...prev };
+      delete next.wizard;
+      return next;
+    });
     const selected = wizardState.repos.find((r) => getAzureRepoKey(r) === selectedValue);
     if (!selected) return;
     setFormData((prev) => ({
@@ -749,6 +787,7 @@ const RepositoryManager = () => {
       pipelineSetupDone: false,
       pipelineSetupResult: null,
     });
+    setAzurePatIdentity({ loading: false, data: null, error: null });
   };
 
   const toggleExpanded = (repoId) => {
@@ -1745,18 +1784,76 @@ const RepositoryManager = () => {
 
   // Load branches when wizard enters Pipeline step (step 3)
   useEffect(() => {
-    if (wizardStep === 3 && formData.id && !branchesData['wizard']) {
-      (async () => {
-        const data = await loadBranches(formData.id);
+    if (wizardStep !== 3 || branchesData.wizard) return;
+
+    const selected = wizardState.repos.find((r) => getAzureRepoKey(r) === wizardState.selectedRepoKey);
+    const repoUrl = (selected?.url || formData.url || '').trim();
+    const pat = (wizardState.pat || formData.azure_pat || '').trim();
+    if (!repoUrl || !pat) return;
+
+    (async () => {
+      try {
+        let data = null;
+        if (formData.id) {
+          data = await loadBranches(formData.id);
+        } else {
+          const resp = await api.listAzureDevopsBranches({ repo_url: repoUrl, pat });
+          data = resp.data?.data || resp.data || null;
+        }
         if (data) {
           setBranchesData(prev => ({ ...prev, wizard: data }));
           if (data.default_branch && !wizardState.pipelineBranch) {
             setWizardState(prev => ({ ...prev, pipelineBranch: data.default_branch }));
           }
         }
-      })();
-    }
-  }, [wizardStep, formData.id, branchesData, loadBranches, wizardState.pipelineBranch]);
+      } catch (err) {
+        showError('Branch loading failed', err.response?.data?.detail || err.message || 'Failed to load branches');
+      }
+    })();
+  }, [
+    wizardStep,
+    branchesData.wizard,
+    formData.id,
+    formData.url,
+    formData.azure_pat,
+    wizardState.repos,
+    wizardState.selectedRepoKey,
+    wizardState.pat,
+    wizardState.pipelineBranch,
+    loadBranches,
+    showError
+  ]);
+
+  useEffect(() => {
+    if (wizardStep !== 3 || !formData.id || !wizardState.pat.trim() || !wizardState.orgUrl.trim()) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        setAzurePatIdentity((prev) => ({ ...prev, loading: true }));
+        const identityResp = await api.getAzureDevopsPatIdentity({
+          org_url: wizardState.orgUrl.trim(),
+          pat: wizardState.pat.trim(),
+          repo_id: formData.id,
+        });
+        if (!cancelled) {
+          setAzurePatIdentity({
+            loading: false,
+            data: identityResp.data?.data || null,
+            error: null,
+          });
+        }
+      } catch (identityErr) {
+        if (!cancelled) {
+          setAzurePatIdentity({
+            loading: false,
+            data: null,
+            error: identityErr.response?.data?.detail || identityErr.message || 'Failed to resolve PAT identity',
+          });
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [wizardStep, formData.id, wizardState.orgUrl, wizardState.pat]);
 
   // Get overall repository status for the main badge
   const getRepositoryStatus = (repo) => {
@@ -2287,7 +2384,7 @@ const RepositoryManager = () => {
 
       {/* Add Repository Form */}
       {showAddForm && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 shadow-lg overflow-hidden">
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 shadow-lg overflow-visible">
           <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/30 dark:to-indigo-900/30 px-6 py-4 border-b border-gray-200 dark:border-gray-700">
             <div className="flex items-center justify-between">
               <div className="flex items-center">
@@ -2412,8 +2509,8 @@ const RepositoryManager = () => {
 
               {formData.provider === 'azure_devops' && (
                 <div className="space-y-5">
-                  <div className="grid grid-cols-4 gap-2">
-                    {['Connect', 'Select Repo', 'Runner Setup', 'Review'].map((label, idx) => (
+                  <div className="grid grid-cols-5 gap-2">
+                    {['Connect', 'Select Repo', 'Runner Setup', 'Pipeline Setup', 'Review'].map((label, idx) => (
                       <div key={label} className="flex items-center">
                         <div className={`h-8 w-8 rounded-full flex items-center justify-center text-xs font-semibold border ${wizardStep >= idx ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-300'}`}>
                           {idx + 1}
@@ -2574,6 +2671,9 @@ const RepositoryManager = () => {
                         const doneCount = allSteps.filter((s) => s.done).length;
                         const totalSteps = allSteps.length;
                         const overallPercent = totalSteps > 0 ? Math.round((doneCount / totalSteps) * 100) : 0;
+                        // Treat setup as complete for UI flow when all visible milestones are done,
+                        // even if backend aggregate completion lags briefly.
+                        const uiSetupComplete = isComplete || (totalSteps > 0 && doneCount >= totalSteps);
 
                         return (
                           <div className={`rounded-lg border p-4 space-y-3 ${hasFailed ? 'border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20' : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30'}`}>
@@ -2583,7 +2683,7 @@ const RepositoryManager = () => {
                                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400">
                                   {timedOut ? 'Timed Out' : 'Failed'}{selfDestructing ? ' — VM deleting' : ''}
                                 </span>
-                              ) : isComplete ? (
+                              ) : uiSetupComplete ? (
                                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">Complete</span>
                               ) : (
                                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">{overallPercent}%</span>
@@ -2625,9 +2725,30 @@ const RepositoryManager = () => {
                                 <summary className="cursor-pointer text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 select-none">
                                   Console output ({consoleLines.length} lines)
                                 </summary>
+                                <div className="mt-2 flex items-center justify-between">
+                                  {consoleAutoScrollEnabled ? (
+                                    <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                                      Auto-scroll is on. Scroll the console to stop auto-follow.
+                                    </span>
+                                  ) : (
+                                    <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                                      Auto-scroll paused.
+                                    </span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => copyProvisionConsole(consoleLines)}
+                                    className="inline-flex items-center px-2 py-1 rounded text-[11px] font-medium text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/30 hover:bg-blue-100 dark:hover:bg-blue-900/50 border border-blue-200 dark:border-blue-800"
+                                  >
+                                    <Copy className="h-3.5 w-3.5 mr-1" />
+                                    Copy
+                                  </button>
+                                </div>
                                 <div
-                                  className="mt-2 bg-gray-900 rounded-md p-2 max-h-48 overflow-y-auto font-mono text-xs text-green-400 leading-relaxed scroll-smooth"
+                                  className="mt-2 bg-gray-900 rounded-md p-2 max-h-72 overflow-y-auto font-mono text-xs text-green-400 leading-relaxed scroll-smooth"
                                   ref={consoleEndRef}
+                                  onWheel={() => setConsoleAutoScrollEnabled(false)}
+                                  onTouchMove={() => setConsoleAutoScrollEnabled(false)}
                                 >
                                   {consoleLines.map((line, i) => (
                                     <div key={i} className="whitespace-pre-wrap break-all">{line.replace(/\[pr-agent-runner-startup\]\s*/, '')}</div>
@@ -2638,6 +2759,11 @@ const RepositoryManager = () => {
 
                             {!startup.log_available && vmRunning && (
                               <div className="text-xs text-gray-500 dark:text-gray-400 italic">Waiting for serial console output&hellip; (VM just started)</div>
+                            )}
+                            {!hasFailed && !uiSetupComplete && (
+                              <div className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded p-2">
+                                Setup is still running. Do not close, navigate away, or refresh this page until provisioning completes.
+                              </div>
                             )}
 
                             {hasVm && (
@@ -2683,14 +2809,32 @@ const RepositoryManager = () => {
                           {wizardState.provisioned && (() => {
                             const connId = formData.action_runner_connection_id || wizardState.connectionId;
                             const progress = provisionProgressByConnection[connId] || {};
-                            const isComplete = !!progress.complete;
+                            const startup = progress.startup || {};
+                            const milestones = startup.milestones || [];
+                            const vmRunning = !!progress.vm_running;
+                            const agentFound = !!progress.azure_agent?.found;
+                            const agentOnline = !!progress.azure_agent?.online;
+                            const allSteps = [
+                              { done: vmRunning },
+                              ...milestones.map((m) => ({ done: !!m.done })),
+                              { done: agentFound },
+                              { done: agentOnline },
+                            ];
+                            const doneCount = allSteps.filter((s) => s.done).length;
+                            const totalSteps = allSteps.length;
+                            const isComplete = !!progress.complete || (totalSteps > 0 && doneCount >= totalSteps);
                             return (
                               <button
                                 type="button"
                                 onClick={() => setWizardStep(3)}
-                                className={`px-4 py-2 rounded text-white ${isComplete ? 'bg-green-600 hover:bg-green-700' : 'bg-gray-600 hover:bg-gray-700'}`}
+                                disabled={!isComplete}
+                                className={`px-4 py-2 rounded text-white transition-colors ${
+                                  isComplete
+                                    ? 'bg-green-600 hover:bg-green-700'
+                                    : 'bg-gray-400 dark:bg-gray-600 cursor-not-allowed'
+                                }`}
                               >
-                                {isComplete ? 'Continue to Pipeline Setup' : 'Continue (setup still running…)'}
+                                {isComplete ? 'Continue to Pipeline Setup' : 'Setup still running...'}
                               </button>
                             );
                           })()}
@@ -2710,8 +2854,41 @@ const RepositoryManager = () => {
                           <div className="flex items-start">
                             <Info className="h-4 w-4 text-blue-600 dark:text-blue-400 mr-2 mt-0.5 flex-shrink-0" />
                             <div className="text-xs text-blue-700 dark:text-blue-300 space-y-1">
-                              <p className="font-medium">PR comment identity</p>
-                              <p>By default, PR-Agent comments appear as "Project Collection Build Service" using the pipeline&apos;s built-in <code className="bg-blue-100 dark:bg-blue-900/40 px-1 rounded">SYSTEM_ACCESSTOKEN</code>. For a custom bot name, create a dedicated Azure DevOps user (e.g. "AI Review Bot") and use its PAT instead.</p>
+                              <p className="font-medium">PR review identity</p>
+                              {azurePatIdentity.loading ? (
+                                <p>Resolving PAT identity…</p>
+                              ) : azurePatIdentity.data?.identity?.display_name ? (
+                                <>
+                                  <p>
+                                    Reviews/comments will appear as{' '}
+                                    <span className="font-semibold">{azurePatIdentity.data.identity.display_name}</span>
+                                    {azurePatIdentity.data.identity.unique_name ? ` (${azurePatIdentity.data.identity.unique_name})` : ''}.
+                                  </p>
+                                  <p>
+                                    Runtime auth source:{' '}
+                                    <code className="bg-blue-100 dark:bg-blue-900/40 px-1 rounded">
+                                      {azurePatIdentity.data?.verification?.review_auth_source || 'AZURE_DEVOPS_PAT'}
+                                    </code>
+                                    {' '}with fallback to{' '}
+                                    <code className="bg-blue-100 dark:bg-blue-900/40 px-1 rounded">
+                                      {azurePatIdentity.data?.verification?.fallback_auth_source || 'SYSTEM_ACCESSTOKEN'}
+                                    </code>.
+                                  </p>
+                                  {azurePatIdentity.data?.verification?.review_uses_provided_pat ? (
+                                    <p className="font-medium text-green-700 dark:text-green-300">
+                                      Verified: this same PAT is the one used by PR-Agent reviews in this setup.
+                                    </p>
+                                  ) : (
+                                    <p className="font-medium text-amber-700 dark:text-amber-300">
+                                      Verification warning: {azurePatIdentity.data?.verification?.reason || 'Review runtime may not be using the provided PAT yet.'}
+                                    </p>
+                                  )}
+                                </>
+                              ) : azurePatIdentity.error ? (
+                                <p className="text-amber-700 dark:text-amber-300">Could not resolve PAT identity: {azurePatIdentity.error}</p>
+                              ) : (
+                                <p>Connect with a PAT in Step 1 to detect and display the review identity.</p>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -2779,20 +2956,53 @@ const RepositoryManager = () => {
                                 onClick={async () => {
                                   try {
                                     setWizardState(prev => ({ ...prev, loading: true }));
-                                    const pushResp = await api.pushPipelineYaml(formData.id || 0);
-                                    const pushResult = pushResp.data?.data || pushResp.data || {};
-                                    if (!pushResult.success) {
-                                      setWizardState(prev => ({ ...prev, loading: false, pipelineSetupResult: { success: false, error: pushResult.error || 'Failed to push YAML' } }));
-                                      return;
-                                    }
+                                    let pushResult = {};
                                     let policyResult = {};
-                                    if (wizardState.pipelineBranch && pushResult.pipeline_id) {
-                                      const polResp = await api.ensurePipelinePolicy(formData.id || 0, {
-                                        branch: wizardState.pipelineBranch,
-                                        pipeline_definition_id: pushResult.pipeline_id,
+                                    if (formData.id) {
+                                      const pushResp = await api.pushPipelineYaml(formData.id);
+                                      pushResult = pushResp.data?.data || pushResp.data || {};
+                                      if (!pushResult.success) {
+                                        setWizardState(prev => ({ ...prev, loading: false, pipelineSetupResult: { success: false, error: pushResult.error || 'Failed to push YAML' } }));
+                                        return;
+                                      }
+                                      if (wizardState.pipelineBranch && pushResult.pipeline_id) {
+                                        const polResp = await api.ensurePipelinePolicy(formData.id, {
+                                          branch: wizardState.pipelineBranch,
+                                          pipeline_definition_id: pushResult.pipeline_id,
+                                          is_blocking: wizardState.pipelineIsBlocking,
+                                        });
+                                        policyResult = polResp.data?.data || polResp.data || {};
+                                      }
+                                    } else {
+                                      const selected = wizardState.repos.find((r) => getAzureRepoKey(r) === wizardState.selectedRepoKey);
+                                      const repoUrl = (selected?.url || formData.url || '').trim();
+                                      const pat = (wizardState.pat || formData.azure_pat || '').trim();
+                                      if (!repoUrl || !pat) {
+                                        setWizardState(prev => ({
+                                          ...prev,
+                                          loading: false,
+                                          pipelineSetupResult: { success: false, error: 'Missing repository URL or PAT. Reconnect in Step 1.' }
+                                        }));
+                                        return;
+                                      }
+                                      const setupResp = await api.setupAzureDevopsPipeline({
+                                        repo_url: repoUrl,
+                                        pat,
+                                        branch: wizardState.pipelineBranch || '',
                                         is_blocking: wizardState.pipelineIsBlocking,
+                                        action_runner_connection_id: formData.action_runner_connection_id || wizardState.connectionId || null,
                                       });
-                                      policyResult = polResp.data?.data || polResp.data || {};
+                                      const setupResult = setupResp.data?.data || setupResp.data || {};
+                                      pushResult = {
+                                        success: !!setupResult.success,
+                                        yaml_pushed: !!setupResult.yaml_pushed,
+                                        pipeline_created: !!setupResult.pipeline_created,
+                                        pipeline_id: setupResult.pipeline_id,
+                                      };
+                                      policyResult = {
+                                        created: !!setupResult.policy_created,
+                                        updated: !!setupResult.policy_updated,
+                                      };
                                     }
                                     setWizardState(prev => ({
                                       ...prev,

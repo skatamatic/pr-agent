@@ -181,6 +181,7 @@ log "Docker image configured; skipping PR-Agent source clone."
     env_dashboard_api_key = _strip_shell_quotes(dashboard_api_key)
     env_config_bucket = _strip_shell_quotes(config_bucket)
     env_config_prefix = _strip_shell_quotes(config_prefix)
+    env_ado_pat = _strip_shell_quotes(ado_pat)
     env_pr_agent_image = pr_agent_image  # original value, not escaped
 
     return f"""#!/bin/bash
@@ -272,6 +273,7 @@ export DASHBOARD_URL="{env_dashboard_url}"
 export DASHBOARD_API_KEY="{env_dashboard_api_key}"
 export PR_AGENT_CONFIG_GCS_BUCKET="{env_config_bucket}"
 export PR_AGENT_CONFIG_GCS_PREFIX="{env_config_prefix}"
+export AZURE_DEVOPS_PAT="{env_ado_pat}"
 export GCP_RUNNER_PR_AGENT_IMAGE="{env_pr_agent_image}"
 ENVEOF
 chmod 600 /opt/pr-agent-runner/env

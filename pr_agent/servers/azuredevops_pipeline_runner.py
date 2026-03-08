@@ -128,6 +128,11 @@ async def run_action():
     except Exception as e:
         get_logger().info(f"azure devops pipeline: failed to apply repo settings: {e}")
 
+    # Re-assert per-run auth context after repo settings are applied.
+    # Repo settings may include [azure_devops] overrides; runtime pipeline auth must win.
+    get_settings().set("AZURE_DEVOPS.PAT", AZURE_DEVOPS_PAT)
+    get_settings().set("AZURE_DEVOPS.ORG", SYSTEM_COLLECTIONURI)
+
     # Handle pull request event (equivalent to GitHub's pull_request event)
     if BUILD_REASON == "PullRequest":
         # Get the trigger reason - Azure DevOps doesn't provide exact action like GitHub
