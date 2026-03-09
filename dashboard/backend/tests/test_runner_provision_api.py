@@ -248,6 +248,80 @@ class TestRunnerProvisionAPI:
         assert data.get("verification", {}).get("review_auth_source") == "AZURE_DEVOPS_PAT"
         assert data.get("verification", {}).get("review_uses_provided_pat") is True
 
+    def test_azure_pipeline_setup_returns_pr_merge_guidance(self, client_app, auth_headers, monkeypatch):
+        async def fake_push_yaml_direct(repo_data, content=None, db_session=None):
+            return {
+                "success": True,
+                "yaml_pushed": False,
+                "yaml_up_to_date": False,
+                "pipeline_created": False,
+                "pipeline_id": None,
+                "requires_pr_merge": True,
+                "pr_number": 42,
+                "pr_url": "https://dev.azure.com/test/project/_git/repo/pullrequest/42",
+                "branch_name": "pr-agent/update-pipeline-42",
+                "message": "Direct push blocked; PR created.",
+                "setup_steps": [{"id": "check_shared_pipeline_repo", "label": "Checking for shared pipeline repo", "status": "success"}],
+                "cleanup_plan": ["cleanup rule"],
+            }
+
+        async def fail_if_policy_called(*args, **kwargs):
+            raise AssertionError("ensure_build_policy should not be called when pipeline_id is missing")
+
+        monkeypatch.setattr(
+            backend_main.dashboard_app.azure_pipeline_config_service,
+            "push_yaml_direct",
+            fake_push_yaml_direct,
+        )
+        monkeypatch.setattr(
+            backend_main.dashboard_app.azure_pipeline_config_service,
+            "ensure_build_policy",
+            fail_if_policy_called,
+        )
+
+        response = client_app.post(
+            "/api/azure-devops/pipeline/setup",
+            json={
+                "repo_url": "https://mdt-software.visualstudio.com/Product/_git/Archive.MDT.ConfigEditor",
+                "pat": "pat",
+                "branch": "master",
+                "is_blocking": False,
+            },
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        data = response.json().get("data", {})
+        assert data.get("success") is True
+        assert data.get("requires_pr_merge") is True
+        assert data.get("pr_number") == 42
+        assert isinstance(data.get("setup_steps"), list)
+        assert isinstance(data.get("cleanup_plan"), list)
+        assert data.get("policy_created") is False
+        assert data.get("policy_updated") is False
+
+    def test_azure_pipeline_setup_returns_400_when_push_fails(self, client_app, auth_headers, monkeypatch):
+        async def fake_push_yaml_direct(repo_data, content=None, db_session=None):
+            return {"success": False, "error": "Push failed"}
+
+        monkeypatch.setattr(
+            backend_main.dashboard_app.azure_pipeline_config_service,
+            "push_yaml_direct",
+            fake_push_yaml_direct,
+        )
+
+        response = client_app.post(
+            "/api/azure-devops/pipeline/setup",
+            json={
+                "repo_url": "https://mdt-software.visualstudio.com/Product/_git/Archive.MDT.ConfigEditor",
+                "pat": "pat",
+                "branch": "master",
+                "is_blocking": True,
+            },
+            headers=auth_headers,
+        )
+        assert response.status_code == 400
+        assert "Push failed" in response.json().get("detail", "")
+
     def test_provision_azure_auto_selects_pool_when_missing(self, client_app, auth_headers, monkeypatch):
         # Configure minimal GCP settings so endpoint reaches provisioning logic.
         monkeypatch.setattr(backend_main.settings, "gcp_runner_project_id", "test-project", raising=False)

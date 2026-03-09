@@ -2002,11 +2002,26 @@ class DashboardApplication:
 
                 push_result = await self.azure_pipeline_config_service.push_yaml_direct(repo_data, content, None)
                 if not push_result.get("success"):
-                    raise HTTPException(status_code=400, detail=push_result.get("error", "Failed to push pipeline YAML"))
+                    detail: Any = push_result.get("error", "Failed to push pipeline YAML")
+                    if push_result.get("setup_steps") or push_result.get("cleanup") or push_result.get("cleanup_plan"):
+                        detail = {
+                            "message": push_result.get("error", "Failed to push pipeline YAML"),
+                            "setup_steps": push_result.get("setup_steps", []),
+                            "cleanup": push_result.get("cleanup", {"attempted": False, "actions": []}),
+                            "cleanup_plan": push_result.get("cleanup_plan", []),
+                        }
+                    raise HTTPException(status_code=400, detail=detail)
 
                 policy_result = {}
+                setup_steps = list(push_result.get("setup_steps") or [])
                 effective_pipeline_id = pipeline_definition_id or push_result.get("pipeline_id")
                 if branch and effective_pipeline_id:
+                    policy_step = {
+                        "id": "setup_target_repo_check",
+                        "label": "Setting up check for the target repository",
+                        "status": "in_progress",
+                        "detail": "",
+                    }
                     try:
                         policy_pipeline_id = int(effective_pipeline_id)
                     except (TypeError, ValueError):
@@ -2018,14 +2033,46 @@ class DashboardApplication:
                         is_blocking,
                     )
                     if not policy_result.get("success"):
-                        raise HTTPException(status_code=400, detail=policy_result.get("error", "Failed to configure policy"))
+                        policy_step["status"] = "error"
+                        policy_step["detail"] = policy_result.get("error", "Failed to configure policy")
+                        setup_steps.append(policy_step)
+                        raise HTTPException(
+                            status_code=400,
+                            detail={
+                                "message": policy_result.get("error", "Failed to configure policy"),
+                                "setup_steps": setup_steps,
+                                "cleanup": push_result.get("cleanup", {"attempted": False, "actions": []}),
+                                "cleanup_plan": push_result.get("cleanup_plan", []),
+                            },
+                        )
+                    policy_step["status"] = "success"
+                    policy_step["detail"] = "Build validation policy configured."
+                    setup_steps.append(policy_step)
+                else:
+                    setup_steps.append({
+                        "id": "setup_target_repo_check",
+                        "label": "Setting up check for the target repository",
+                        "status": "skipped",
+                        "detail": "Skipped until pipeline is available for policy attachment.",
+                    })
 
                 return APIResponse(
                     data={
                         "success": True,
                         "yaml_pushed": bool(push_result.get("yaml_pushed")),
+                        "yaml_up_to_date": bool(push_result.get("yaml_up_to_date")),
                         "pipeline_created": bool(push_result.get("pipeline_created")),
                         "pipeline_id": push_result.get("pipeline_id"),
+                        "requires_pr_merge": bool(push_result.get("requires_pr_merge")),
+                        "pr_number": push_result.get("pr_number"),
+                        "pr_url": push_result.get("pr_url"),
+                        "branch_name": push_result.get("branch_name"),
+                        "setup_message": push_result.get("message"),
+                        "shared_pipeline_repo": push_result.get("shared_pipeline_repo"),
+                        "shared_pipeline_repo_url": push_result.get("shared_pipeline_repo_url"),
+                        "setup_steps": setup_steps,
+                        "cleanup_plan": push_result.get("cleanup_plan", []),
+                        "cleanup": push_result.get("cleanup", {"attempted": False, "actions": []}),
                         "policy_created": bool(policy_result.get("created")),
                         "policy_updated": bool(policy_result.get("updated")),
                     },

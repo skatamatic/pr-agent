@@ -1,6 +1,7 @@
 import os
 import base64
 import difflib
+import asyncio
 import aiohttp
 from typing import Dict, Any, Optional, List
 from datetime import datetime
@@ -14,6 +15,7 @@ class AzurePipelineConfigService:
     """Service for managing Azure DevOps Pipeline configuration files"""
 
     AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=30)
+    SHARED_PIPELINE_REPO_NAME = os.getenv("PR_AGENT_AZDO_SHARED_PIPELINE_REPO", "pr-agent-pipelines")
 
     def __init__(self):
         pass
@@ -45,6 +47,36 @@ class AzurePipelineConfigService:
         repository = quote(org_info['repository'], safe='')
 
         return organization, project, repository, token
+
+    @staticmethod
+    def _new_shared_setup_steps() -> List[Dict[str, str]]:
+        """Create canonical setup step list for shared pipeline provisioning."""
+        return [
+            {"id": "check_shared_pipeline_repo", "label": "Checking for shared pipeline repo", "status": "pending", "detail": ""},
+            {"id": "check_yaml_update", "label": "Checking for YAML update", "status": "pending", "detail": ""},
+            {"id": "create_shared_pipeline_repo", "label": "Creating shared pipeline repo if needed", "status": "pending", "detail": ""},
+            {"id": "update_shared_yaml", "label": "Updating shared pipeline YAML if needed", "status": "pending", "detail": ""},
+            {"id": "wait_pipeline_available", "label": "Waiting until the pipeline is available", "status": "pending", "detail": ""},
+        ]
+
+    @staticmethod
+    def _set_step(steps: List[Dict[str, str]], step_id: str, status: str, detail: str = "") -> None:
+        """Update status/detail for a specific setup step id."""
+        for step in steps:
+            if step.get("id") == step_id:
+                step["status"] = status
+                if detail:
+                    step["detail"] = detail
+                return
+
+    @staticmethod
+    def _shared_cleanup_plan() -> List[str]:
+        """Declarative rollback policy for shared setup failures."""
+        return [
+            "If this run created a new shared pipeline repo and setup later fails, delete that repo.",
+            "If this run created a new shared pipeline definition and setup later fails, delete that pipeline.",
+            "Never delete pre-existing shared repos or pipelines that existed before this run.",
+        ]
 
     async def check_azure_pipeline_config(self, repo_data: Dict[str, Any]) -> Dict[str, Any]:
         """Check if repository has Azure DevOps Pipeline configuration"""
@@ -914,11 +946,34 @@ stages:
             if not content:
                 content = self.get_canonical_template(repo_data, db_session)
 
+            # Preferred scalable path: shared repo + shared pipeline definition.
+            # This avoids per-repo branch policy issues and keeps one canonical pipeline YAML.
+            try_shared_first = os.getenv("PR_AGENT_AZDO_USE_SHARED_PIPELINE_REPO", "true").strip().lower() in ("1", "true", "yes", "on")
+            if try_shared_first:
+                shared_result = await self._ensure_shared_pipeline_definition(organization, project, token, content)
+                if shared_result.get("success"):
+                    return {
+                        "success": True,
+                        "yaml_pushed": bool(shared_result.get("yaml_pushed")),
+                        "yaml_up_to_date": bool(shared_result.get("yaml_up_to_date")),
+                        "pipeline_created": bool(shared_result.get("pipeline_created")),
+                        "pipeline_id": shared_result.get("pipeline_id"),
+                        "shared_pipeline_repo": shared_result.get("shared_repo_name"),
+                        "shared_pipeline_repo_url": shared_result.get("shared_repo_web_url"),
+                        "setup_steps": shared_result.get("setup_steps", []),
+                        "cleanup_plan": shared_result.get("cleanup_plan", []),
+                        "cleanup": shared_result.get("cleanup", {"attempted": False, "actions": []}),
+                        "pipeline_create_error": None,
+                    }
+                logger.warning("Shared pipeline setup failed; falling back to direct repo push path: %s", shared_result.get("error"))
+
             headers = self._build_headers(token)
 
             yaml_pushed = False
             pipeline_created = False
             pipeline_id = None
+            push_blocked_by_policy = False
+            push_block_error = None
 
             async with aiohttp.ClientSession(timeout=self.AIOHTTP_TIMEOUT) as session:
                 # Get repo info for default branch
@@ -977,7 +1032,16 @@ stages:
                             msg = err.get('message', str(resp.status))
                         except Exception:
                             msg = await resp.text() or str(resp.status)
-                        return {'success': False, 'error': f"Push failed: {msg}"}
+                        msg_l = (msg or "").lower()
+                        if "tf402455" in msg_l or "must use a pull request" in msg_l:
+                            # Branch is protected from direct pushes.
+                            # Continue and try to reuse an existing shared PR-Agent pipeline definition.
+                            push_blocked_by_policy = True
+                            push_block_error = msg
+                            logger.info("Push blocked by branch policy for %s/%s/%s; attempting shared pipeline reuse.",
+                                        organization, project, repository)
+                        else:
+                            return {'success': False, 'error': f"Push failed: {msg}"}
 
                 # Ensure a pipeline definition exists for this repo
                 defs_url = f"https://dev.azure.com/{organization}/{project}/_apis/build/definitions?api-version=7.1-preview.7"
@@ -1018,17 +1082,398 @@ stages:
                                 pipe_err = await resp.text() or str(resp.status)
                             logger.warning(f"Pipeline definition creation returned {resp.status}: {pipe_err}")
 
+                # If direct push is blocked and repo-specific pipeline is missing, try to reuse
+                # an existing PR-Agent pipeline definition from the project.
+                if push_blocked_by_policy and not pipeline_id:
+                    try:
+                        defs_url = f"https://dev.azure.com/{organization}/{project}/_apis/build/definitions?api-version=7.1-preview.7"
+                        async with session.get(defs_url, headers=headers) as resp:
+                            if resp.status == 200:
+                                defs = (await resp.json()).get('value', [])
+                                shared = next(
+                                    (
+                                        d for d in defs
+                                        if "pr-agent" in (d.get("name") or "").lower()
+                                    ),
+                                    None,
+                                )
+                                if shared:
+                                    pipeline_id = shared.get("id")
+                                    logger.info("Reusing shared PR-Agent pipeline definition %s for %s/%s/%s",
+                                                pipeline_id, organization, project, repository)
+                    except Exception as e:
+                        logger.warning("Shared pipeline discovery failed: %s", e)
+
+            if push_blocked_by_policy and not pipeline_id:
+                # Fall back to PR flow so protected branches can still be updated safely.
+                pr_result = await self._create_config_pr(organization, project, repository, token, content)
+                if pr_result.get('success'):
+                    return {
+                        'success': True,
+                        'requires_pr_merge': True,
+                        'message': (
+                            f"Direct push is blocked by branch policy. Created PR #{pr_result.get('pr_number')} "
+                            "to add/update azure-pipelines.yml. Merge that PR, then click setup again to attach policy."
+                        ),
+                        'yaml_pushed': False,
+                        'pipeline_created': False,
+                        'pipeline_id': None,
+                        'pr_number': pr_result.get('pr_number'),
+                        'pr_url': pr_result.get('pr_url'),
+                        'branch_name': pr_result.get('branch_name'),
+                        'push_blocked_by_policy': True,
+                        'push_error': push_block_error,
+                    }
+                return {
+                    'success': False,
+                    'error': (
+                        "Push blocked by branch policy and no reusable PR-Agent pipeline definition was found. "
+                        "Automatic PR creation also failed. Create one shared PR-Agent pipeline in this project "
+                        "(in any repo), or create/merge azure-pipelines.yml via PR, then retry."
+                    ),
+                    'push_blocked_by_policy': True,
+                    'push_error': push_block_error,
+                    'pr_creation_error': pr_result.get('error'),
+                }
+
             return {
                 'success': True,
                 'yaml_pushed': yaml_pushed,
                 'pipeline_created': pipeline_created,
                 'pipeline_id': pipeline_id,
+                'push_blocked_by_policy': push_blocked_by_policy,
+                'push_error': push_block_error,
                 'pipeline_create_error': None if pipeline_created or pipeline_id else 'Pipeline definition could not be created. You may need to create it manually.',
             }
 
         except Exception as e:
             logger.error(f"Error in push_yaml_direct: {e}")
             return {'success': False, 'error': str(e)}
+
+    async def _ensure_shared_pipeline_definition(
+        self,
+        organization: str,
+        project: str,
+        token: str,
+        yaml_content: str,
+    ) -> Dict[str, Any]:
+        """Create/reuse a shared pipeline repo and pipeline definition for this project."""
+        headers = self._build_headers(token)
+        shared_repo_name = self.SHARED_PIPELINE_REPO_NAME
+        steps = self._new_shared_setup_steps()
+        cleanup_plan = self._shared_cleanup_plan()
+
+        created_repo_id = None
+        created_pipeline_id = None
+
+        async def _rollback(reason: str) -> Dict[str, Any]:
+            actions = []
+            if created_pipeline_id:
+                pipeline_cleanup = await self._delete_pipeline_definition_internal(
+                    organization, project, token, created_pipeline_id
+                )
+                actions.append({
+                    "resource": "pipeline_definition",
+                    "id": created_pipeline_id,
+                    "success": bool(pipeline_cleanup.get("success")),
+                    "detail": pipeline_cleanup.get("error") or pipeline_cleanup.get("message") or "cleanup attempted",
+                })
+            if created_repo_id:
+                repo_cleanup = await self._delete_repository_internal(
+                    organization, project, token, created_repo_id
+                )
+                actions.append({
+                    "resource": "shared_pipeline_repo",
+                    "id": created_repo_id,
+                    "success": bool(repo_cleanup.get("success")),
+                    "detail": repo_cleanup.get("error") or repo_cleanup.get("message") or "cleanup attempted",
+                })
+            return {"reason": reason, "attempted": bool(actions), "actions": actions}
+
+        async def _fail(error_message: str, step_id: Optional[str] = None) -> Dict[str, Any]:
+            if step_id:
+                self._set_step(steps, step_id, "error", error_message)
+            cleanup = await _rollback(error_message)
+            return {
+                "success": False,
+                "error": error_message,
+                "setup_steps": steps,
+                "cleanup_plan": cleanup_plan,
+                "cleanup": cleanup,
+            }
+
+        try:
+            async with aiohttp.ClientSession(timeout=self.AIOHTTP_TIMEOUT) as session:
+                # Resolve project id for repository creation.
+                project_url = f"https://dev.azure.com/{organization}/_apis/projects/{project}?api-version=7.1"
+                async with session.get(project_url, headers=headers) as resp:
+                    if resp.status != 200:
+                        msg = await resp.text()
+                        return await _fail(
+                            f"Failed to resolve project for shared pipeline repo: {msg}",
+                            "check_shared_pipeline_repo",
+                        )
+                    project_info = await resp.json()
+                    project_id = project_info.get("id")
+                    if not project_id:
+                        return await _fail(
+                            "Failed to resolve project ID for shared pipeline repo",
+                            "check_shared_pipeline_repo",
+                        )
+
+                # Get/create shared repo.
+                repo_info = None
+                repo_url = f"https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{shared_repo_name}?api-version=7.0"
+                async with session.get(repo_url, headers=headers) as resp:
+                    if resp.status == 200:
+                        repo_info = await resp.json()
+                        self._set_step(
+                            steps,
+                            "check_shared_pipeline_repo",
+                            "success",
+                            f"Found shared repo '{shared_repo_name}'.",
+                        )
+                        self._set_step(
+                            steps,
+                            "create_shared_pipeline_repo",
+                            "skipped",
+                            "Shared repo already exists.",
+                        )
+                    elif resp.status == 404:
+                        self._set_step(
+                            steps,
+                            "check_shared_pipeline_repo",
+                            "success",
+                            f"Shared repo '{shared_repo_name}' not found; creating it.",
+                        )
+                        create_repo_url = f"https://dev.azure.com/{organization}/{project}/_apis/git/repositories?api-version=7.0"
+                        create_body = {"name": shared_repo_name, "project": {"id": project_id}}
+                        async with session.post(create_repo_url, headers=headers, json=create_body) as c_resp:
+                            if c_resp.status not in (200, 201):
+                                msg = await c_resp.text()
+                                return await _fail(
+                                    "Failed to create shared pipeline repo. "
+                                    f"Ensure PAT has repository create/push permissions. Azure said: {msg}",
+                                    "create_shared_pipeline_repo",
+                                )
+                            repo_info = await c_resp.json()
+                            created_repo_id = repo_info.get("id")
+                            self._set_step(
+                                steps,
+                                "create_shared_pipeline_repo",
+                                "success",
+                                f"Created shared repo '{shared_repo_name}'.",
+                            )
+                    else:
+                        msg = await resp.text()
+                        return await _fail(
+                            f"Failed to query shared pipeline repo: {msg}",
+                            "check_shared_pipeline_repo",
+                        )
+
+                repo_id = repo_info.get("id")
+                repo_web_url = repo_info.get("webUrl")
+                if not repo_id:
+                    return await _fail("Could not resolve shared repo ID", "check_shared_pipeline_repo")
+
+                default_branch = (repo_info.get("defaultBranch") or "refs/heads/main").replace("refs/heads/", "")
+                yaml_pushed = False
+
+                # Determine branch head and whether file exists.
+                refs_url = f"https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{shared_repo_name}/refs?filter=heads/{default_branch}&api-version=7.0"
+                latest_commit = None
+                async with session.get(refs_url, headers=headers) as r_resp:
+                    if r_resp.status == 200:
+                        refs_data = await r_resp.json()
+                        if refs_data.get("value"):
+                            latest_commit = refs_data["value"][0].get("objectId")
+
+                change_type = "add"
+                file_unchanged = False
+                if latest_commit:
+                    file_check_url = f"https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{shared_repo_name}/items?path=azure-pipelines.yml&api-version=7.1-preview.1"
+                    async with session.get(file_check_url, headers=headers) as f_resp:
+                        if f_resp.status == 200:
+                            change_type = "edit"
+                            try:
+                                existing_yaml = await f_resp.text()
+                                if self._normalize_yaml(existing_yaml or "") == self._normalize_yaml(yaml_content or ""):
+                                    file_unchanged = True
+                            except Exception:
+                                file_unchanged = False
+
+                self._set_step(
+                    steps,
+                    "check_yaml_update",
+                    "success",
+                    "Shared YAML is up-to-date." if file_unchanged else "Shared YAML needs update.",
+                )
+
+                if file_unchanged:
+                    self._set_step(
+                        steps,
+                        "update_shared_yaml",
+                        "skipped",
+                        "No YAML update needed.",
+                    )
+                else:
+                    push_url = f"https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{shared_repo_name}/pushes?api-version=7.0"
+                    push_data = {
+                        "refUpdates": [{
+                            "name": f"refs/heads/{default_branch}",
+                            "oldObjectId": latest_commit or "0000000000000000000000000000000000000000",
+                        }],
+                        "commits": [{
+                            "comment": "Update shared PR-Agent Azure Pipeline configuration\n\nAuto-managed by PR-Agent Dashboard",
+                            "changes": [{
+                                "changeType": change_type,
+                                "item": {"path": "/azure-pipelines.yml"},
+                                "newContent": {"content": yaml_content, "contentType": "rawtext"},
+                            }],
+                        }],
+                    }
+                    async with session.post(push_url, headers=headers, json=push_data) as p_resp:
+                        if p_resp.status in (200, 201):
+                            yaml_pushed = True
+                            self._set_step(
+                                steps,
+                                "update_shared_yaml",
+                                "success",
+                                "Updated shared pipeline YAML.",
+                            )
+                        else:
+                            msg = await p_resp.text()
+                            return await _fail(
+                                f"Failed to push shared pipeline YAML to {shared_repo_name}: {msg}",
+                                "update_shared_yaml",
+                            )
+
+                # Find/create pipeline definition that uses shared repo yaml.
+                defs_url = f"https://dev.azure.com/{organization}/{project}/_apis/build/definitions?api-version=7.1-preview.7"
+                pipeline_id = None
+                async with session.get(defs_url, headers=headers) as d_resp:
+                    if d_resp.status == 200:
+                        defs = (await d_resp.json()).get("value", [])
+                        for d in defs:
+                            r = d.get("repository", {})
+                            if (r.get("name") == shared_repo_name or r.get("id") == repo_id) and \
+                               d.get("process", {}).get("yamlFilename", "") == "azure-pipelines.yml":
+                                pipeline_id = d.get("id")
+                                break
+
+                pipeline_created = False
+                if not pipeline_id:
+                    create_url = f"https://dev.azure.com/{organization}/{project}/_apis/pipelines?api-version=7.0"
+                    create_body = {
+                        "name": "PR-Agent Shared",
+                        "folder": "\\",
+                        "configuration": {
+                            "type": "yaml",
+                            "path": "/azure-pipelines.yml",
+                            "repository": {
+                                "id": repo_id,
+                                "type": "azureReposGit",
+                            },
+                        },
+                    }
+                    async with session.post(create_url, headers=headers, json=create_body) as c_resp:
+                        if c_resp.status in (200, 201):
+                            data = await c_resp.json()
+                            pipeline_id = data.get("id")
+                            created_pipeline_id = pipeline_id
+                            pipeline_created = True
+                        else:
+                            msg = await c_resp.text()
+                            return await _fail(
+                                f"Failed to create shared PR-Agent pipeline definition: {msg}",
+                                "wait_pipeline_available",
+                            )
+
+                # Wait for eventual consistency before policy setup.
+                self._set_step(
+                    steps,
+                    "wait_pipeline_available",
+                    "in_progress",
+                    "Waiting for pipeline definition to be queryable...",
+                )
+                available = await self._wait_for_pipeline_availability(
+                    session, headers, organization, project, int(pipeline_id) if pipeline_id else 0
+                )
+                if not available:
+                    return await _fail(
+                        f"Pipeline definition {pipeline_id} was not available in time.",
+                        "wait_pipeline_available",
+                    )
+                self._set_step(
+                    steps,
+                    "wait_pipeline_available",
+                    "success",
+                    "Pipeline definition is available.",
+                )
+
+                return {
+                    "success": True,
+                    "pipeline_id": pipeline_id,
+                    "pipeline_created": pipeline_created,
+                    "yaml_pushed": yaml_pushed,
+                    "yaml_up_to_date": file_unchanged,
+                    "shared_repo_name": shared_repo_name,
+                    "shared_repo_web_url": repo_web_url,
+                    "setup_steps": steps,
+                    "cleanup_plan": cleanup_plan,
+                    "cleanup": {"attempted": False, "actions": []},
+                }
+        except Exception as e:
+            return await _fail(str(e))
+
+    async def _wait_for_pipeline_availability(
+        self,
+        session: aiohttp.ClientSession,
+        headers: Dict[str, str],
+        organization: str,
+        project: str,
+        pipeline_id: int,
+        attempts: int = 10,
+        delay_seconds: float = 1.0,
+    ) -> bool:
+        """Poll build definitions until the target pipeline appears."""
+        if not pipeline_id:
+            return False
+        defs_url = f"https://dev.azure.com/{organization}/{project}/_apis/build/definitions?api-version=7.1-preview.7"
+        for _ in range(attempts):
+            async with session.get(defs_url, headers=headers) as resp:
+                if resp.status == 200:
+                    defs = (await resp.json()).get("value", [])
+                    if any(int(d.get("id", 0) or 0) == int(pipeline_id) for d in defs):
+                        return True
+            await asyncio.sleep(delay_seconds)
+        return False
+
+    async def _delete_pipeline_definition_internal(
+        self, organization: str, project: str, token: str, definition_id: int
+    ) -> Dict[str, Any]:
+        """Internal cleanup helper used during rollback for newly created pipelines."""
+        headers = self._build_headers(token)
+        url = f"https://dev.azure.com/{organization}/{project}/_apis/build/definitions/{definition_id}?api-version=7.1-preview.7"
+        async with aiohttp.ClientSession(timeout=self.AIOHTTP_TIMEOUT) as session:
+            async with session.delete(url, headers=headers) as resp:
+                if resp.status in (200, 204, 404):
+                    return {"success": True, "message": "Pipeline deleted or already absent"}
+                err_text = await resp.text()
+                return {"success": False, "error": f"Delete pipeline failed ({resp.status}): {err_text}"}
+
+    async def _delete_repository_internal(
+        self, organization: str, project: str, token: str, repository_id: str
+    ) -> Dict[str, Any]:
+        """Internal cleanup helper used during rollback for newly created repos."""
+        headers = self._build_headers(token)
+        url = f"https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{repository_id}?api-version=7.0"
+        async with aiohttp.ClientSession(timeout=self.AIOHTTP_TIMEOUT) as session:
+            async with session.delete(url, headers=headers) as resp:
+                if resp.status in (200, 204, 202, 404):
+                    return {"success": True, "message": "Repository deleted or already absent"}
+                err_text = await resp.text()
+                return {"success": False, "error": f"Delete repository failed ({resp.status}): {err_text}"}
 
     # ──────────────────────────────────────────────────────────────
     #  Branch listing

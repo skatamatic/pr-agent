@@ -2954,15 +2954,111 @@ const RepositoryManager = () => {
                                   : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800'
                               }`}>
                                 {wizardState.pipelineSetupResult.success ? (
-                                  <div className="space-y-1">
+                                  <div className="space-y-2">
                                     {wizardState.pipelineSetupResult.yaml_pushed && <p><CheckCircle className="h-4 w-4 inline mr-1" /> Pipeline YAML deployed</p>}
+                                    {wizardState.pipelineSetupResult.yaml_up_to_date && <p><CheckCircle className="h-4 w-4 inline mr-1" /> Shared pipeline YAML already up-to-date</p>}
                                     {wizardState.pipelineSetupResult.pipeline_created && <p><CheckCircle className="h-4 w-4 inline mr-1" /> Pipeline definition created</p>}
+                                    {wizardState.pipelineSetupResult.shared_pipeline_repo && (
+                                      <p>
+                                        <CheckCircle className="h-4 w-4 inline mr-1" />
+                                        Using shared pipeline repo: {wizardState.pipelineSetupResult.shared_pipeline_repo}
+                                      </p>
+                                    )}
+                                    {wizardState.pipelineSetupResult.requires_pr_merge && (
+                                      <p>
+                                        <AlertCircle className="h-4 w-4 inline mr-1" />
+                                        Direct push blocked; merge PR #{wizardState.pipelineSetupResult.pr_number} to finish YAML setup.
+                                      </p>
+                                    )}
                                     {wizardState.pipelineSetupResult.policy_created && <p><CheckCircle className="h-4 w-4 inline mr-1" /> Build validation policy added</p>}
                                     {wizardState.pipelineSetupResult.policy_updated && <p><CheckCircle className="h-4 w-4 inline mr-1" /> Build validation policy updated</p>}
+                                    {wizardState.pipelineSetupResult.setup_message && <p>{wizardState.pipelineSetupResult.setup_message}</p>}
+                                    {Array.isArray(wizardState.pipelineSetupResult.setup_steps) && wizardState.pipelineSetupResult.setup_steps.length > 0 && (
+                                      <div className="mt-2 space-y-1.5">
+                                        {wizardState.pipelineSetupResult.setup_steps.map((step) => (
+                                          <div key={step.id || step.label} className="flex items-start">
+                                            {step.status === 'success' ? (
+                                              <CheckCircle className="h-4 w-4 mt-0.5 mr-2 flex-shrink-0" />
+                                            ) : step.status === 'error' ? (
+                                              <AlertCircle className="h-4 w-4 mt-0.5 mr-2 flex-shrink-0" />
+                                            ) : step.status === 'in_progress' ? (
+                                              <RefreshCw className="h-4 w-4 mt-0.5 mr-2 flex-shrink-0 animate-spin" />
+                                            ) : (
+                                              <Clock className="h-4 w-4 mt-0.5 mr-2 flex-shrink-0" />
+                                            )}
+                                            <div>
+                                              <p>{step.label}</p>
+                                              {step.detail && <p className="text-xs opacity-80">{step.detail}</p>}
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                    {Array.isArray(wizardState.pipelineSetupResult.cleanup_plan) && wizardState.pipelineSetupResult.cleanup_plan.length > 0 && (
+                                      <div className="mt-2 text-xs opacity-90">
+                                        <p className="font-semibold">Failure cleanup plan:</p>
+                                        {wizardState.pipelineSetupResult.cleanup_plan.map((item, idx) => (
+                                          <p key={`cleanup-plan-${idx}`}>- {item}</p>
+                                        ))}
+                                      </div>
+                                    )}
                                   </div>
                                 ) : (
-                                  <p>{wizardState.pipelineSetupResult.error}</p>
+                                  <div className="space-y-2">
+                                    <p>{wizardState.pipelineSetupResult.error}</p>
+                                    {Array.isArray(wizardState.pipelineSetupResult.setup_steps) && wizardState.pipelineSetupResult.setup_steps.length > 0 && (
+                                      <div className="space-y-1.5">
+                                        {wizardState.pipelineSetupResult.setup_steps.map((step) => (
+                                          <div key={step.id || step.label} className="flex items-start">
+                                            {step.status === 'success' ? (
+                                              <CheckCircle className="h-4 w-4 mt-0.5 mr-2 flex-shrink-0" />
+                                            ) : step.status === 'error' ? (
+                                              <AlertCircle className="h-4 w-4 mt-0.5 mr-2 flex-shrink-0" />
+                                            ) : (
+                                              <Clock className="h-4 w-4 mt-0.5 mr-2 flex-shrink-0" />
+                                            )}
+                                            <div>
+                                              <p>{step.label}</p>
+                                              {step.detail && <p className="text-xs opacity-80">{step.detail}</p>}
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                    {wizardState.pipelineSetupResult.cleanup?.attempted && Array.isArray(wizardState.pipelineSetupResult.cleanup.actions) && wizardState.pipelineSetupResult.cleanup.actions.length > 0 && (
+                                      <div className="text-xs">
+                                        <p className="font-semibold">Automatic cleanup attempted:</p>
+                                        {wizardState.pipelineSetupResult.cleanup.actions.map((action, idx) => (
+                                          <p key={`cleanup-action-${idx}`}>
+                                            - {action.resource}: {action.success ? 'done' : 'failed'}{action.detail ? ` (${action.detail})` : ''}
+                                          </p>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
                                 )}
+                              </div>
+                            )}
+
+                            {wizardState.loading && !wizardState.pipelineSetupResult && (
+                              <div className="rounded-lg p-3 text-sm bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 space-y-1.5">
+                                {[
+                                  'Checking for shared pipeline repo',
+                                  'Checking for YAML update',
+                                  'Creating shared pipeline repo if needed',
+                                  'Updating shared pipeline YAML if needed',
+                                  'Waiting until the pipeline is available',
+                                  'Setting up check for the target repository',
+                                ].map((label, idx) => (
+                                  <div key={`loading-step-${idx}`} className="flex items-center">
+                                    {idx === 0 ? (
+                                      <RefreshCw className="h-4 w-4 mr-2 flex-shrink-0 animate-spin" />
+                                    ) : (
+                                      <Clock className="h-4 w-4 mr-2 flex-shrink-0" />
+                                    )}
+                                    <span>{label}</span>
+                                  </div>
+                                ))}
                               </div>
                             )}
 
@@ -2973,11 +3069,27 @@ const RepositoryManager = () => {
                                     setWizardState(prev => ({ ...prev, loading: true }));
                                     let pushResult = {};
                                     let policyResult = {};
+                                    let setupSteps = [];
+                                    let cleanupPlan = [];
+                                    let cleanupResult = { attempted: false, actions: [] };
                                     if (formData.id) {
                                       const pushResp = await api.pushPipelineYaml(formData.id);
                                       pushResult = pushResp.data?.data || pushResp.data || {};
+                                      setupSteps = Array.isArray(pushResult.setup_steps) ? [...pushResult.setup_steps] : [];
+                                      cleanupPlan = Array.isArray(pushResult.cleanup_plan) ? pushResult.cleanup_plan : [];
+                                      cleanupResult = pushResult.cleanup || cleanupResult;
                                       if (!pushResult.success) {
-                                        setWizardState(prev => ({ ...prev, loading: false, pipelineSetupResult: { success: false, error: pushResult.error || 'Failed to push YAML' } }));
+                                        setWizardState(prev => ({
+                                          ...prev,
+                                          loading: false,
+                                          pipelineSetupResult: {
+                                            success: false,
+                                            error: pushResult.error || 'Failed to push YAML',
+                                            setup_steps: setupSteps,
+                                            cleanup_plan: cleanupPlan,
+                                            cleanup: cleanupResult,
+                                          }
+                                        }));
                                         return;
                                       }
                                       if (wizardState.pipelineBranch && pushResult.pipeline_id) {
@@ -2987,6 +3099,19 @@ const RepositoryManager = () => {
                                           is_blocking: wizardState.pipelineIsBlocking,
                                         });
                                         policyResult = polResp.data?.data || polResp.data || {};
+                                        setupSteps.push({
+                                          id: 'setup_target_repo_check',
+                                          label: 'Setting up check for the target repository',
+                                          status: 'success',
+                                          detail: 'Build validation policy configured.',
+                                        });
+                                      } else {
+                                        setupSteps.push({
+                                          id: 'setup_target_repo_check',
+                                          label: 'Setting up check for the target repository',
+                                          status: 'skipped',
+                                          detail: 'Skipped until pipeline is available for policy attachment.',
+                                        });
                                       }
                                     } else {
                                       const selected = wizardState.repos.find((r) => getAzureRepoKey(r) === wizardState.selectedRepoKey);
@@ -3011,9 +3136,19 @@ const RepositoryManager = () => {
                                       pushResult = {
                                         success: !!setupResult.success,
                                         yaml_pushed: !!setupResult.yaml_pushed,
+                                        yaml_up_to_date: !!setupResult.yaml_up_to_date,
                                         pipeline_created: !!setupResult.pipeline_created,
                                         pipeline_id: setupResult.pipeline_id,
+                                        shared_pipeline_repo: setupResult.shared_pipeline_repo || null,
+                                        requires_pr_merge: !!setupResult.requires_pr_merge,
+                                        pr_number: setupResult.pr_number || null,
+                                        pr_url: setupResult.pr_url || null,
+                                        branch_name: setupResult.branch_name || null,
+                                        setup_message: setupResult.setup_message || null,
                                       };
+                                      setupSteps = Array.isArray(setupResult.setup_steps) ? setupResult.setup_steps : [];
+                                      cleanupPlan = Array.isArray(setupResult.cleanup_plan) ? setupResult.cleanup_plan : [];
+                                      cleanupResult = setupResult.cleanup || cleanupResult;
                                       policyResult = {
                                         created: !!setupResult.policy_created,
                                         updated: !!setupResult.policy_updated,
@@ -3026,16 +3161,36 @@ const RepositoryManager = () => {
                                       pipelineSetupResult: {
                                         success: true,
                                         yaml_pushed: pushResult.yaml_pushed,
+                                        yaml_up_to_date: pushResult.yaml_up_to_date,
                                         pipeline_created: pushResult.pipeline_created,
+                                        shared_pipeline_repo: pushResult.shared_pipeline_repo || null,
+                                        requires_pr_merge: pushResult.requires_pr_merge || false,
+                                        pr_number: pushResult.pr_number || null,
+                                        pr_url: pushResult.pr_url || null,
+                                        branch_name: pushResult.branch_name || null,
+                                        setup_message: pushResult.setup_message || null,
+                                        setup_steps: setupSteps,
+                                        cleanup_plan: cleanupPlan,
+                                        cleanup: cleanupResult,
                                         policy_created: policyResult.created || false,
                                         policy_updated: policyResult.updated || false,
                                       }
                                     }));
                                   } catch (err) {
+                                    const errorDetail = err.response?.data?.detail;
+                                    const parsedError = typeof errorDetail === 'string'
+                                      ? { message: errorDetail }
+                                      : (errorDetail || {});
                                     setWizardState(prev => ({
                                       ...prev,
                                       loading: false,
-                                      pipelineSetupResult: { success: false, error: err.response?.data?.detail || err.message }
+                                      pipelineSetupResult: {
+                                        success: false,
+                                        error: parsedError.message || err.message,
+                                        setup_steps: Array.isArray(parsedError.setup_steps) ? parsedError.setup_steps : [],
+                                        cleanup_plan: Array.isArray(parsedError.cleanup_plan) ? parsedError.cleanup_plan : [],
+                                        cleanup: parsedError.cleanup || { attempted: false, actions: [] },
+                                      }
                                     }));
                                   }
                                 }}
