@@ -509,3 +509,53 @@ class TestRunnerProvisionAPI:
         assert data.get("azure_agent", {}).get("success") is True
         assert captured.get("pat") == "pat-from-org-fallback"
         assert captured.get("pool_name") == "PRAgent_SelfHosted"
+
+    def test_delete_connection_attempts_agent_deregister_even_without_pool(self, client_app, auth_headers, monkeypatch):
+        org_name = "cleanup-no-pool-org"
+        create_conn = client_app.post(
+            "/api/action-runner-connections",
+            json={
+                "provider": "azure_devops",
+                "organization": org_name,
+                "project": "Product",
+                # intentionally no agent_pool configured
+            },
+            headers=auth_headers,
+        )
+        assert create_conn.status_code == 200
+        conn_id = create_conn.json()["data"]["id"]
+
+        linked_repo = client_app.post(
+            "/api/repositories",
+            json={
+                "name": f"Product/CleanupNoPool.{conn_id}",
+                "provider": "azure_devops",
+                "url": f"https://{org_name}.visualstudio.com/Product/_git/CleanupNoPool.{conn_id}",
+                "azure_pat": "pat-linked",
+                "action_runner_connection_id": conn_id,
+                "is_active": True,
+            },
+            headers=auth_headers,
+        )
+        assert linked_repo.status_code == 200
+
+        captured = {}
+
+        def fake_deregister(org_url, pat, pool_name, agent_name, timeout=20):
+            captured["pat"] = pat
+            captured["pool_name"] = pool_name
+            captured["agent_name"] = agent_name
+            return {"success": True, "message": "removed"}
+
+        monkeypatch.setattr(backend_main.dashboard_app, "_deregister_azure_agent", fake_deregister)
+
+        response = client_app.delete(
+            f"/api/action-runner-connections/{conn_id}",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        data = response.json().get("data", {})
+        assert data.get("azure_agent", {}).get("success") is True
+        assert captured.get("pat") == "pat-linked"
+        assert captured.get("pool_name") == ""
+        assert str(conn_id) in (captured.get("agent_name") or "")

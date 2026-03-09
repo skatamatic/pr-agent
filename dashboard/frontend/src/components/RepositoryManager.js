@@ -724,8 +724,18 @@ const RepositoryManager = () => {
     if (!window.confirm(msg)) return;
     setDeletingRunner(conn.id);
     try {
-      await api.deleteActionRunnerConnection(conn.id);
-      showSuccess('Runner deleted', `Action runner "${label}" and its resources have been cleaned up.`);
+      const resp = await api.deleteActionRunnerConnection(conn.id);
+      const cleanup = resp?.data?.data || {};
+      const agentCleanup = cleanup.azure_agent;
+      const agentCleanupFailed = agentCleanup && agentCleanup.success === false;
+      if (agentCleanupFailed) {
+        showWarning(
+          'Runner deleted with cleanup warning',
+          `Connection "${label}" was deleted, but Azure agent cleanup reported an issue: ${agentCleanup.error || 'unknown error'}.`
+        );
+      } else {
+        showSuccess('Runner deleted', `Action runner "${label}" and its resources have been cleaned up.`);
+      }
       await fetchActionRunnerConnections();
       await fetchRepositories();
     } catch (error) {
@@ -2645,6 +2655,33 @@ const RepositoryManager = () => {
                     <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-4">
                       <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Step 3 - Runner Setup (Optional)</h4>
                       <p className="text-xs text-gray-600 dark:text-gray-400">Choose an agent pool and provision now, or skip and configure later.</p>
+                      {(() => {
+                        const connId = formData.action_runner_connection_id || wizardState.connectionId;
+                        const progress = connId ? (provisionProgressByConnection[connId] || {}) : {};
+                        const startup = progress.startup || {};
+                        const milestones = startup.milestones || [];
+                        const vmRunning = !!progress.vm_running;
+                        const agentFound = !!progress.azure_agent?.found;
+                        const agentOnline = !!progress.azure_agent?.online;
+                        const totalSteps = 3 + milestones.length;
+                        const doneCount =
+                          (vmRunning ? 1 : 0) +
+                          milestones.filter((m) => !!m.done).length +
+                          (agentFound ? 1 : 0) +
+                          (agentOnline ? 1 : 0);
+                        const uiSetupComplete = !!progress.complete || (totalSteps > 0 && doneCount >= totalSteps);
+                        const hasFailed = !!startup.failed;
+                        const setupInProgress =
+                          !!wizardState.provisioning ||
+                          (!!connId && !uiSetupComplete && !hasFailed && (
+                            !!vmRunning ||
+                            milestones.length > 0 ||
+                            !!startup.startup_complete ||
+                            !!startup.log_available
+                          ));
+
+                        return (
+                          <>
                       <div>
                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Azure Agent Pool</label>
                         <SearchableSelect
@@ -2794,7 +2831,8 @@ const RepositoryManager = () => {
                         <button
                           type="button"
                           onClick={() => setWizardStep(1)}
-                          className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300"
+                          disabled={setupInProgress}
+                          className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           Back
                         </button>
@@ -2806,7 +2844,8 @@ const RepositoryManager = () => {
                                 setWizardState((prev) => ({ ...prev, skipRunner: true }));
                                 setWizardStep(3);
                               }}
-                              className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300"
+                              disabled={setupInProgress}
+                              className="px-4 py-2 rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               Skip for now
                             </button>
@@ -2815,10 +2854,12 @@ const RepositoryManager = () => {
                             <button
                               type="button"
                               onClick={handleAzureProvisionRunner}
-                              disabled={wizardState.provisioning || !wizardState.selectedPool}
+                              disabled={setupInProgress || !wizardState.selectedPool}
                               className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
                             >
-                              {wizardState.provisioning ? 'Provisioning…' : 'Provision Runner VM'}
+                              {setupInProgress
+                                ? (wizardState.provisioning ? 'Provisioning…' : 'Setup still running…')
+                                : 'Provision Runner VM'}
                             </button>
                           )}
                           {wizardState.provisioned && (() => {
@@ -2855,6 +2896,9 @@ const RepositoryManager = () => {
                           })()}
                         </div>
                       </div>
+                          </>
+                        );
+                      })()}
                     </div>
                   )}
 
@@ -5085,7 +5129,7 @@ const RepositoryManager = () => {
                               <div className="p-5 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
                                 <h4 className="text-base font-semibold text-gray-900 dark:text-white flex items-center">
                                   <FileText className="h-5 w-5 mr-2 text-blue-600 dark:text-blue-400" />
-                                  Pipeline YAML
+                                  Shared Pipeline YAML
                                 </h4>
                                 <div className="flex items-center space-x-2">
                                   <button
@@ -5101,6 +5145,13 @@ const RepositoryManager = () => {
                                       className="flex items-center px-3 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
                                       onClick={(e) => e.stopPropagation()}>
                                       <ExternalLink className="h-3.5 w-3.5 mr-1" /> View in Azure DevOps
+                                    </a>
+                                  )}
+                                  {syncStatusData[repo.id]?.pipeline_definitions?.[0]?.url && (
+                                    <a href={syncStatusData[repo.id].pipeline_definitions[0].url} target="_blank" rel="noopener noreferrer"
+                                      className="flex items-center px-3 py-1.5 text-xs font-medium text-purple-600 dark:text-purple-400 hover:underline"
+                                      onClick={(e) => e.stopPropagation()}>
+                                      <ExternalLink className="h-3.5 w-3.5 mr-1" /> Open Shared Pipeline
                                     </a>
                                   )}
                                 </div>
@@ -5120,8 +5171,15 @@ const RepositoryManager = () => {
                                   </div>
                                 ) : syncStatusData[repo.id] ? (() => {
                                   const ss = syncStatusData[repo.id];
+                                  const azureInfo = parseAzureDevOpsUrl(repo.url);
+                                  const checksUrl = `${azureInfo.baseUrl}/${azureInfo.project}/_settings/repositories?repo=${encodeURIComponent(azureInfo.repository)}&_a=policies`;
                                   return (
                                     <div className="space-y-4">
+                                      <div className="text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-900/30 border border-gray-200 dark:border-gray-700 rounded-md px-3 py-2">
+                                        {ss.using_shared_pipeline_repo
+                                          ? `Using shared pipeline repository: ${ss.shared_pipeline_repo || 'pr-agent-pipelines'}`
+                                          : 'Using repository-local pipeline YAML.'}
+                                      </div>
                                       <div className="flex items-center justify-between">
                                         <div className="flex items-center space-x-3">
                                           {ss.sync_status === 'up_to_date' && (
@@ -5169,15 +5227,33 @@ const RepositoryManager = () => {
                                           >
                                             <Edit className="h-4 w-4 mr-1.5" /> Edit
                                           </button>
+                                          <a
+                                            href={checksUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="flex items-center px-3 py-2 text-sm font-medium text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg hover:bg-purple-100 dark:hover:bg-purple-900/30 transition-colors"
+                                          >
+                                            <ExternalLink className="h-4 w-4 mr-1.5" /> Checks Page
+                                          </a>
                                         </div>
                                       </div>
-                                      {ss.sync_status === 'outdated' && ss.remote_content && (
+                                      {ss.remote_content && (
                                         <details className="bg-gray-50 dark:bg-gray-900/30 rounded-lg border border-gray-200 dark:border-gray-700">
                                           <summary className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 rounded-t-lg">
-                                            View diff (remote vs canonical)
+                                            View current shared YAML
                                           </summary>
                                           <div className="px-4 py-3 overflow-x-auto">
                                             <pre className="text-xs font-mono text-gray-600 dark:text-gray-400 whitespace-pre-wrap max-h-96 overflow-y-auto">{ss.remote_content}</pre>
+                                          </div>
+                                        </details>
+                                      )}
+                                      {ss.sync_status === 'outdated' && ss.remote_content && (
+                                        <details className="bg-gray-50 dark:bg-gray-900/30 rounded-lg border border-gray-200 dark:border-gray-700">
+                                          <summary className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 rounded-t-lg">
+                                            View canonical template
+                                          </summary>
+                                          <div className="px-4 py-3 overflow-x-auto">
+                                            <pre className="text-xs font-mono text-gray-600 dark:text-gray-400 whitespace-pre-wrap max-h-96 overflow-y-auto">{ss.canonical_content}</pre>
                                           </div>
                                         </details>
                                       )}
@@ -5209,14 +5285,25 @@ const RepositoryManager = () => {
                                   <Shield className="h-5 w-5 mr-2 text-purple-600 dark:text-purple-400" />
                                   Build Validation Policies (Checks)
                                 </h4>
-                                <button
-                                  onClick={() => loadPolicies(repo.id)}
-                                  disabled={loadingPolicies.has(repo.id)}
-                                  className="flex items-center px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
-                                >
-                                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${loadingPolicies.has(repo.id) ? 'animate-spin' : ''}`} />
-                                  Refresh
-                                </button>
+                                <div className="flex items-center space-x-2">
+                                  <button
+                                    onClick={() => loadPolicies(repo.id)}
+                                    disabled={loadingPolicies.has(repo.id)}
+                                    className="flex items-center px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
+                                  >
+                                    <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${loadingPolicies.has(repo.id) ? 'animate-spin' : ''}`} />
+                                    Refresh
+                                  </button>
+                                  <a
+                                    href={`${parseAzureDevOpsUrl(repo.url).baseUrl}/${parseAzureDevOpsUrl(repo.url).project}/_settings/repositories?repo=${encodeURIComponent(parseAzureDevOpsUrl(repo.url).repository)}&_a=policies`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex items-center px-3 py-1.5 text-xs font-medium text-purple-600 dark:text-purple-400 hover:underline"
+                                  >
+                                    <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+                                    Open Checks Page
+                                  </a>
+                                </div>
                               </div>
                               <div className="p-5">
                                 {loadingPolicies.has(repo.id) && !policiesData[repo.id] ? (
@@ -5365,6 +5452,84 @@ const RepositoryManager = () => {
                         {getRepoActiveTab(repo.id) === 'azure-agent-install' && (
                           <div className="space-y-6 tab-enter">
                             {(() => {
+                              const azureInfo = parseAzureDevOpsUrl(repo.url);
+                              const conn = actionRunnerConnections.find((c) => c.id === repo.action_runner_connection_id);
+                              const hasCloudRunner = !!(conn && conn.gcp_instance_name && conn.gcp_zone);
+                              if (!hasCloudRunner) return null;
+
+                              const progress = provisionProgressByConnection[conn.id] || {};
+                              const agent = progress.azure_agent || {};
+                              const vmRunning = !!progress.vm_running;
+                              let statusLabel = 'Cloud VM provisioned';
+                              let statusClass = 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300';
+                              if (agent.online) {
+                                statusLabel = 'Cloud self-hosted runner is online';
+                                statusClass = 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300';
+                              } else if (agent.found) {
+                                statusLabel = 'Runner registered, waiting to come online';
+                                statusClass = 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300';
+                              } else if (vmRunning) {
+                                statusLabel = 'VM running, agent setup in progress';
+                                statusClass = 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300';
+                              }
+
+                              const agentPoolsUrl = `${azureInfo.baseUrl}/_settings/agentpools`;
+                              const checksUrl = `${azureInfo.baseUrl}/${azureInfo.project}/_settings/repositories?repo=${encodeURIComponent(azureInfo.repository)}&_a=policies`;
+
+                              return (
+                                <div className="space-y-4">
+                                  <div className="flex items-center justify-between">
+                                    <h4 className="text-lg font-medium text-gray-900 dark:text-white flex items-center">
+                                      <Cloud className="h-5 w-5 mr-2 text-green-600 dark:text-green-400" />
+                                      Cloud Runner Status
+                                    </h4>
+                                    <div className="flex items-center space-x-2">
+                                      <a
+                                        href={agentPoolsUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="flex items-center px-3 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                      >
+                                        <ExternalLink className="h-4 w-4 mr-2" />
+                                        Agent Pools
+                                      </a>
+                                      <a
+                                        href={checksUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="flex items-center px-3 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                      >
+                                        <ExternalLink className="h-4 w-4 mr-2" />
+                                        Checks Page
+                                      </a>
+                                    </div>
+                                  </div>
+
+                                  <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-3">
+                                    <span className={`inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium ${statusClass}`}>
+                                      {statusLabel}
+                                    </span>
+                                    <div className="text-sm text-gray-700 dark:text-gray-300 grid grid-cols-1 md:grid-cols-2 gap-2">
+                                      <p><span className="font-medium">Organization:</span> {azureInfo.organization}</p>
+                                      <p><span className="font-medium">Project:</span> {azureInfo.project}</p>
+                                      <p><span className="font-medium">Repository:</span> {azureInfo.repository}</p>
+                                      <p><span className="font-medium">Agent pool:</span> {conn.agent_pool || 'Not set'}</p>
+                                      <p><span className="font-medium">Connection:</span> {conn.display_name || `${conn.organization}${conn.project ? ` / ${conn.project}` : ''}`}</p>
+                                      <p><span className="font-medium">VM:</span> {conn.gcp_instance_name} ({conn.gcp_zone})</p>
+                                    </div>
+                                    {agent.error && (
+                                      <div className="text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-2">
+                                        Runner status error: {agent.error}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                            {(() => {
+                              const conn = actionRunnerConnections.find((c) => c.id === repo.action_runner_connection_id);
+                              const hasCloudRunner = !!(conn && conn.gcp_instance_name && conn.gcp_zone);
+                              if (hasCloudRunner) return null;
                               const azureInfo = parseAzureDevOpsUrl(repo.url);
                               const agentPoolsUrl = `${azureInfo.baseUrl}/_settings/agentpools`;
                               const projectSettingsUrl = `${azureInfo.baseUrl}/${azureInfo.project}/_settings/agentqueues`;

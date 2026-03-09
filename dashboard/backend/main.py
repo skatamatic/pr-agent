@@ -8,6 +8,7 @@ from typing import List, Optional, Dict, Any
 from pathlib import Path
 import asyncio
 import os
+import sys
 import logging
 import threading
 from datetime import datetime, timedelta
@@ -38,6 +39,17 @@ logging.basicConfig(
     format=settings.log_format
 )
 logger = logging.getLogger(__name__)
+
+# Ensure repository root is importable when backend is launched from dashboard/backend
+# and when packaged in a container at /app.
+_this_file = Path(__file__).resolve()
+_repo_root = None
+for candidate in [_this_file.parent, *_this_file.parents]:
+    if (candidate / "pr_agent").exists():
+        _repo_root = candidate
+        break
+if _repo_root and str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
 
 
 class DashboardApplication:
@@ -250,6 +262,113 @@ class DashboardApplication:
             "User-Agent": "PR-Agent-Dashboard",
         }
 
+    def _parse_github_repository(self, repo) -> Optional[Dict[str, str]]:
+        """Parse owner/repo from persisted repository name or URL."""
+        from urllib.parse import urlparse
+
+        repo_name = (getattr(repo, "name", "") or "").strip()
+        if "/" in repo_name:
+            parts = [p.strip() for p in repo_name.split("/", 1)]
+            if len(parts) == 2 and parts[0] and parts[1]:
+                return {"owner": parts[0], "repository": parts[1]}
+
+        repo_url = (getattr(repo, "url", "") or "").strip()
+        if not repo_url:
+            return None
+
+        try:
+            parsed = urlparse(repo_url)
+            host = (parsed.netloc or "").lower()
+            if "github.com" not in host:
+                return None
+            path_parts = [p for p in parsed.path.split("/") if p]
+            if len(path_parts) < 2:
+                return None
+            owner = path_parts[0]
+            repository = path_parts[1]
+            if repository.endswith(".git"):
+                repository = repository[:-4]
+            if owner and repository:
+                return {"owner": owner, "repository": repository}
+        except Exception as e:
+            logger.debug("GitHub repository parse failed for %s: %s", repo_name or repo_url, e)
+        return None
+
+    def _github_auth_headers(self, token: str) -> Dict[str, str]:
+        value = (token or "").strip()
+        if not value:
+            raise ValueError("GitHub token is required")
+        return {
+            "Authorization": f"Bearer {value}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "PR-Agent-Dashboard",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    def _fetch_github_repo_file_content(self, repo, file_path: str, branches: Optional[List[str]] = None) -> str:
+        """Fetch file content from GitHub directly via REST API (no pr_agent dependency)."""
+        import base64
+        import requests
+        from urllib.parse import quote
+
+        token = getattr(repo, "github_token", None)
+        if not token:
+            return ""
+
+        repo_info = self._parse_github_repository(repo)
+        if not repo_info:
+            logger.debug("GitHub repository parse failed for direct fetch: %s", getattr(repo, "name", ""))
+            return ""
+
+        owner = quote((repo_info.get("owner") or "").strip(), safe="")
+        repository = quote((repo_info.get("repository") or "").strip(), safe="")
+        if not owner or not repository:
+            return ""
+
+        try:
+            headers = self._github_auth_headers(token)
+            metadata_url = f"https://api.github.com/repos/{owner}/{repository}"
+            default_branch = ""
+            metadata_resp = requests.get(metadata_url, headers=headers, timeout=20)
+            if metadata_resp.status_code == 200:
+                default_branch = ((metadata_resp.json() or {}).get("default_branch") or "").strip()
+
+            branch_candidates: List[str] = []
+            if default_branch:
+                branch_candidates.append(default_branch)
+            if branches:
+                branch_candidates.extend(branches)
+            branch_candidates.extend(["main", "master", "develop"])
+
+            # Preserve order and remove duplicates/empty values.
+            unique_branches: List[str] = []
+            for branch in branch_candidates:
+                name = (branch or "").strip()
+                if name and name not in unique_branches:
+                    unique_branches.append(name)
+
+            normalized_path = file_path.lstrip("/")
+            file_url = f"https://api.github.com/repos/{owner}/{repository}/contents/{normalized_path}"
+
+            for branch_name in unique_branches:
+                params = {"ref": branch_name}
+                resp = requests.get(file_url, headers=headers, params=params, timeout=20)
+                if resp.status_code != 200:
+                    continue
+
+                payload = resp.json() or {}
+                encoded = payload.get("content")
+                if isinstance(encoded, str) and encoded.strip():
+                    try:
+                        decoded = base64.b64decode(encoded).decode("utf-8")
+                    except Exception:
+                        decoded = encoded
+                    if decoded.strip():
+                        return decoded.strip()
+        except Exception as e:
+            logger.debug("Direct GitHub file fetch failed for %s (%s): %s", getattr(repo, "name", ""), file_path, e)
+        return ""
+
     def _resolve_azure_org_url(self, connection_org: str, repo_url: Optional[str] = None) -> str:
         """Resolve org URL from repo URL (preferred) with connection fallback."""
         default_url = f"https://dev.azure.com/{connection_org}"
@@ -425,7 +544,14 @@ class DashboardApplication:
                     continue
 
                 agents = (agents_resp.json() or {}).get("value", [])
-                matches = [a for a in agents if (a.get("name") or "").strip().lower() == target]
+                # Match exact agent name and prefixed variants (for names with unique suffixes).
+                matches = []
+                for a in agents:
+                    agent_n = (a.get("name") or "").strip().lower()
+                    if not agent_n:
+                        continue
+                    if agent_n == target or agent_n.startswith(f"{target}-"):
+                        matches.append(a)
                 for agent in matches:
                     agent_id = agent.get("id")
                     if agent_id is None:
@@ -2223,7 +2349,7 @@ class DashboardApplication:
 
                 results = {"vm": None, "azure_agent": None}
 
-                if conn.provider == "azure_devops" and conn.agent_pool:
+                if conn.provider == "azure_devops":
                     linked_repos = (
                         db.query(RepositoryDB)
                         .filter(RepositoryDB.action_runner_connection_id == conn.id)
@@ -2240,7 +2366,7 @@ class DashboardApplication:
                             self._deregister_azure_agent,
                             org_url,
                             pat,
-                            conn.agent_pool,
+                            conn.agent_pool or "",
                             expected_agent_name,
                         )
                         logger.info("Azure agent deregistration for connection %s: %s", conn.id, results["azure_agent"])
@@ -2292,7 +2418,7 @@ class DashboardApplication:
                 # Gather linked repos before unlinking so we can clean up their Azure resources
                 linked_repos = db.query(RepositoryDB).filter(RepositoryDB.action_runner_connection_id == conn.id).all()
 
-                if conn.provider == "azure_devops" and conn.agent_pool:
+                if conn.provider == "azure_devops":
                     pat = self._resolve_azure_pat_for_connection(db, conn, linked_repos)
                     expected_agent_name = self._expected_agent_name_for_connection(conn)
                     if pat and expected_agent_name:
@@ -2304,7 +2430,7 @@ class DashboardApplication:
                             self._deregister_azure_agent,
                             org_url,
                             pat,
-                            conn.agent_pool,
+                            conn.agent_pool or "",
                             expected_agent_name,
                         )
                         logger.info("Azure agent cleanup for deletion of connection %s: %s", conn.id, cleanup_results["azure_agent"])
@@ -2807,29 +2933,39 @@ class DashboardApplication:
                     # Auto-fetch best practices content
                     try:
                         from services.git_utils import get_best_practices_content
-                        from pr_agent.git_providers.github_provider import GithubProvider
-                        
-                        
+
                         git_provider = None
                         if repo.provider == 'github' and repo.github_token:
-                            git_provider = GithubProvider()
-                            git_provider.github_token = repo.github_token
-                            # Set repository information
-                            git_provider.repo = repo.name
                             try:
-                                git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
-                            except Exception as repo_error:
-                                logger.warning(f"Could not get repository object for {repo.name}: {repo_error}")
-                                # Continue without repo_obj, get_best_practices_content will try different approaches
+                                from pr_agent.git_providers.github_provider import GithubProvider
+                                git_provider = GithubProvider()
+                                git_provider.github_token = repo.github_token
+                                # Set repository information
+                                git_provider.repo = repo.name
+                                try:
+                                    git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
+                                except Exception as repo_error:
+                                    logger.warning(f"Could not get repository object for {repo.name}: {repo_error}")
+                            except ImportError as import_error:
+                                logger.info("GitHub provider unavailable for %s; using REST fallback: %s", repo.name, import_error)
+                            except Exception as provider_error:
+                                logger.info("GitHub provider init failed for %s; using REST fallback: %s", repo.name, provider_error)
                         elif repo.provider == 'azure_devops' and repo.azure_pat:
                             git_provider = self._create_azure_devops_provider(repo)
                         
                         if git_provider:
                             best_practices_content = get_best_practices_content(git_provider)
-                            repo.has_best_practices = bool(best_practices_content)
-                            repo.best_practices_content = best_practices_content
-                            repo.best_practices_last_fetched = datetime.utcnow()
-                            logger.info(f"Auto-fetched best practices for repository {repo.name}: {'found' if best_practices_content else 'not found'}")
+                        elif repo.provider == 'github' and repo.github_token:
+                            best_practices_content = self._fetch_github_repo_file_content(repo, "best_practices.md")
+                        elif repo.provider == 'azure_devops' and repo.azure_pat:
+                            best_practices_content = self._fetch_azure_repo_file_content(repo, "best_practices.md")
+                        else:
+                            best_practices_content = ""
+
+                        repo.has_best_practices = bool(best_practices_content)
+                        repo.best_practices_content = best_practices_content
+                        repo.best_practices_last_fetched = datetime.utcnow()
+                        logger.info(f"Auto-fetched best practices for repository {repo.name}: {'found' if best_practices_content else 'not found'}")
                     except Exception as e:
                         logger.warning(f"Failed to auto-fetch best practices for repository {repo.name}: {e}")
                     
@@ -2992,27 +3128,38 @@ class DashboardApplication:
                 if not best_practices_content or force_refresh:
                     try:
                         from services.git_utils import get_best_practices_content
-                        from pr_agent.git_providers.github_provider import GithubProvider
-                        
-                        
+
                         git_provider = None
                         if repo.provider == 'github' and repo.github_token:
-                            git_provider = GithubProvider()
-                            git_provider.github_token = repo.github_token
-                            # Set repository information
-                            git_provider.repo = repo.name
                             try:
-                                git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
-                            except Exception as repo_error:
-                                logger.warning(f"Could not get repository object for {repo.name}: {repo_error}")
-                                # Continue without repo_obj, get_best_practices_content will try different approaches
+                                from pr_agent.git_providers.github_provider import GithubProvider
+                                git_provider = GithubProvider()
+                                git_provider.github_token = repo.github_token
+                                # Set repository information
+                                git_provider.repo = repo.name
+                                try:
+                                    git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
+                                except Exception as repo_error:
+                                    logger.warning(f"Could not get repository object for {repo.name}: {repo_error}")
+                            except ImportError as import_error:
+                                logger.info("GitHub provider unavailable for %s; using REST fallback: %s", repo.name, import_error)
+                            except Exception as provider_error:
+                                logger.info("GitHub provider init failed for %s; using REST fallback: %s", repo.name, provider_error)
                         elif repo.provider == 'azure_devops' and repo.azure_pat:
                             git_provider = self._create_azure_devops_provider(repo)
                         else:
                             raise HTTPException(status_code=400, detail=f"Repository provider {repo.provider} not supported or tokens not configured")
                         
-                        # Get best practices content
-                        best_practices_content = get_best_practices_content(git_provider)
+                        if git_provider:
+                            # Get best practices content via provider if available.
+                            best_practices_content = get_best_practices_content(git_provider)
+                        elif repo.provider == 'github' and repo.github_token:
+                            best_practices_content = self._fetch_github_repo_file_content(repo, "best_practices.md")
+                        elif repo.provider == 'azure_devops' and repo.azure_pat:
+                            # Fallback path for environments where pr_agent provider imports are unavailable.
+                            best_practices_content = self._fetch_azure_repo_file_content(repo, "best_practices.md")
+                        else:
+                            raise HTTPException(status_code=500, detail="Git provider initialization failed")
                         
                         # Update cache
                         repo.has_best_practices = bool(best_practices_content)
@@ -3096,13 +3243,24 @@ class DashboardApplication:
                     raise HTTPException(status_code=400, detail="Content cannot be empty")
                 
                 # Set up git provider
-                from pr_agent.git_providers.github_provider import GithubProvider
-                
                 from datetime import datetime
                 
                 git_provider = None
                 if repo.provider == 'github' and repo.github_token:
-                    git_provider = GithubProvider()
+                    try:
+                        from pr_agent.git_providers.github_provider import GithubProvider
+                    except ImportError as import_error:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"GitHub provider dependency unavailable in dashboard runtime: {import_error}",
+                        )
+                    try:
+                        git_provider = GithubProvider()
+                    except Exception as provider_error:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"GitHub provider initialization failed in dashboard runtime: {provider_error}",
+                        )
                     git_provider.github_token = repo.github_token
                     # Parse repository owner and name from URL
                     repo_parts = repo.name.split('/')
@@ -3257,10 +3415,21 @@ This PR {'creates' if not repo.has_best_practices else 'updates'} the `best_prac
                     return APIResponse(data={"status": repo.best_practices_pr_status}, message="No pending PR to check")
                 
                 # Set up git provider to check PR status
-                from pr_agent.git_providers.github_provider import GithubProvider
-                
                 if repo.provider == 'github' and repo.github_token:
-                    git_provider = GithubProvider()
+                    try:
+                        from pr_agent.git_providers.github_provider import GithubProvider
+                    except ImportError as import_error:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"GitHub provider dependency unavailable in dashboard runtime: {import_error}",
+                        )
+                    try:
+                        git_provider = GithubProvider()
+                    except Exception as provider_error:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"GitHub provider initialization failed in dashboard runtime: {provider_error}",
+                        )
                     git_provider.github_token = repo.github_token
                     git_provider.repo = repo.name
                     git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
@@ -3335,23 +3504,35 @@ This PR {'creates' if not repo.has_best_practices else 'updates'} the `best_prac
                 if not pr_agent_config_content or force_refresh:
                     try:
                         from services.git_utils import get_pr_agent_config_content
-                        from pr_agent.git_providers.github_provider import GithubProvider
-                        
-                        
+
                         git_provider = None
                         if repo.provider == 'github' and repo.github_token:
-                            git_provider = GithubProvider()
-                            git_provider.github_token = repo.github_token
-                            git_provider.repo = repo.name
-                            git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
+                            try:
+                                from pr_agent.git_providers.github_provider import GithubProvider
+                                git_provider = GithubProvider()
+                                git_provider.github_token = repo.github_token
+                                git_provider.repo = repo.name
+                                git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
+                            except ImportError as import_error:
+                                logger.info("GitHub provider unavailable for %s; using REST fallback: %s", repo.name, import_error)
+                            except Exception as provider_error:
+                                logger.info("GitHub provider init failed for %s; using REST fallback: %s", repo.name, provider_error)
                         elif repo.provider == 'azure_devops' and repo.azure_pat:
                             git_provider = self._create_azure_devops_provider(repo)
                         else:
                             # Continue without repo_obj, get_pr_agent_config_content will try different approaches
                             logger.warning(f"No provider configured for repository {repo.name}, attempting direct fetch")
                         
-                        # Get PR-Agent config content
-                        pr_agent_config_content = get_pr_agent_config_content(git_provider)
+                        if git_provider:
+                            # Get PR-Agent config content via provider if available.
+                            pr_agent_config_content = get_pr_agent_config_content(git_provider)
+                        elif repo.provider == 'github' and repo.github_token:
+                            pr_agent_config_content = self._fetch_github_repo_file_content(repo, ".pr_agent.toml")
+                        elif repo.provider == 'azure_devops' and repo.azure_pat:
+                            # Fallback path for environments where pr_agent provider imports are unavailable.
+                            pr_agent_config_content = self._fetch_azure_repo_file_content(repo, ".pr_agent.toml")
+                        else:
+                            raise HTTPException(status_code=500, detail="Git provider initialization failed")
                         
                         # Update cache
                         repo.has_pr_agent_config = bool(pr_agent_config_content)
@@ -3444,13 +3625,24 @@ This PR {'creates' if not repo.has_best_practices else 'updates'} the `best_prac
                     raise HTTPException(status_code=400, detail=f"Invalid TOML format: {str(toml_error)}")
                 
                 # Set up git provider
-                from pr_agent.git_providers.github_provider import GithubProvider
-                
                 from datetime import datetime
                 
                 git_provider = None
                 if repo.provider == 'github' and repo.github_token:
-                    git_provider = GithubProvider()
+                    try:
+                        from pr_agent.git_providers.github_provider import GithubProvider
+                    except ImportError as import_error:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"GitHub provider dependency unavailable in dashboard runtime: {import_error}",
+                        )
+                    try:
+                        git_provider = GithubProvider()
+                    except Exception as provider_error:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"GitHub provider initialization failed in dashboard runtime: {provider_error}",
+                        )
                     git_provider.github_token = repo.github_token
                     # Parse repository owner and name from URL
                     repo_parts = repo.name.split('/')
@@ -3613,10 +3805,21 @@ This file can override any setting from the global PR-Agent configuration, inclu
                     return APIResponse(data={"status": repo.pr_agent_config_pr_status}, message="No pending PR to check")
                 
                 # Set up git provider to check PR status
-                from pr_agent.git_providers.github_provider import GithubProvider
-                
                 if repo.provider == 'github' and repo.github_token:
-                    git_provider = GithubProvider()
+                    try:
+                        from pr_agent.git_providers.github_provider import GithubProvider
+                    except ImportError as import_error:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"GitHub provider dependency unavailable in dashboard runtime: {import_error}",
+                        )
+                    try:
+                        git_provider = GithubProvider()
+                    except Exception as provider_error:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"GitHub provider initialization failed in dashboard runtime: {provider_error}",
+                        )
                     git_provider.github_token = repo.github_token
                     git_provider.repo = repo.name
                     git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
@@ -3809,11 +4012,21 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 if not pr_number:
                     raise HTTPException(status_code=400, detail="PR number is required")
                 
-                # Set up git provider to check PR status
-                from pr_agent.git_providers.github_provider import GithubProvider
-                
                 if repo.provider == 'github' and repo.github_token:
-                    git_provider = GithubProvider()
+                    try:
+                        from pr_agent.git_providers.github_provider import GithubProvider
+                    except ImportError as import_error:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"GitHub provider dependency unavailable in dashboard runtime: {import_error}",
+                        )
+                    try:
+                        git_provider = GithubProvider()
+                    except Exception as provider_error:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"GitHub provider initialization failed in dashboard runtime: {provider_error}",
+                        )
                     git_provider.github_token = repo.github_token
                     git_provider.repo = repo.name
                     git_provider.repo_obj = git_provider.github_client.get_repo(repo.name)
@@ -6127,6 +6340,55 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 except Exception as fallback_e:
                     logger.error(f"Failed to create fallback Azure DevOps provider for {repo.name}: {fallback_e}")
                     return None
+
+    def _fetch_azure_repo_file_content(self, repo, file_path: str, branches: Optional[List[str]] = None) -> str:
+        """Fetch file content from Azure DevOps repo directly via REST API (no pr_agent dependency)."""
+        import requests
+        from urllib.parse import quote
+
+        if not getattr(repo, "azure_pat", None):
+            return ""
+
+        branches_to_try = branches or ["main", "master", "develop"]
+        try:
+            parsed = self.azure_pipeline_config_service._parse_azure_repo_url(repo.url or "")
+            if not parsed.get("success"):
+                logger.debug("Azure URL parse failed for %s: %s", repo.name, parsed.get("error"))
+                return ""
+
+            organization = quote((parsed.get("organization") or "").strip(), safe="")
+            project = quote((parsed.get("project") or "").strip(), safe="")
+            repository = quote((parsed.get("repository") or "").strip(), safe="")
+            if not organization or not project or not repository:
+                return ""
+
+            headers = self._azure_auth_headers(repo.azure_pat or "")
+            base_url = f"https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{repository}/items"
+            normalized_path = file_path if file_path.startswith("/") else f"/{file_path}"
+
+            for branch in branches_to_try:
+                params = {
+                    "path": normalized_path,
+                    "includeContent": "true",
+                    "versionDescriptor.versionType": "branch",
+                    "versionDescriptor.version": branch,
+                    "api-version": "7.1-preview.1",
+                }
+                resp = requests.get(base_url, headers=headers, params=params, timeout=20)
+                if resp.status_code != 200:
+                    continue
+                try:
+                    payload = resp.json()
+                    content = (payload or {}).get("content")
+                    if isinstance(content, str) and content.strip():
+                        return content.strip()
+                except Exception:
+                    text = (resp.text or "").strip()
+                    if text:
+                        return text
+        except Exception as e:
+            logger.debug("Direct Azure file fetch failed for %s (%s): %s", repo.name, file_path, e)
+        return ""
 
     async def _test_github_token(self, repo):
         """Test GitHub token permissions"""

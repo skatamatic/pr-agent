@@ -2,8 +2,11 @@
 Additional main.py route tests to improve coverage: admin, config, metrics, repos, cron.
 Assertions verify response shape and meaningful behavior (round-trip where applicable).
 """
+import builtins
+import types
 import pytest
 from datetime import datetime, timezone
+import main as backend_main
 
 
 class TestAdminCleanupRoutes:
@@ -242,6 +245,208 @@ class TestRepositoriesById:
     def test_get_repository_github_action_config_404_or_200(self, client_app, auth_headers):
         r = client_app.get("/api/repositories/999998/github-action-config", headers=auth_headers)
         assert r.status_code in (200, 404)
+
+    def test_best_practices_azure_fallback_without_pr_agent_provider(self, client_app, auth_headers, monkeypatch):
+        create = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "Product/FallbackBestPractices",
+                "provider": "azure_devops",
+                "url": "https://mdt-software.visualstudio.com/Product/_git/FallbackBestPractices",
+                "azure_pat": "pat",
+            },
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        repo_id = create.json()["data"]["id"]
+
+        monkeypatch.setattr(backend_main.dashboard_app, "_create_azure_devops_provider", lambda repo: None)
+        monkeypatch.setattr(
+            backend_main.dashboard_app,
+            "_fetch_azure_repo_file_content",
+            lambda repo, file_path, branches=None: "Best practices from fallback" if file_path == "best_practices.md" else "",
+        )
+
+        r = client_app.get(f"/api/repositories/{repo_id}/best-practices?force_refresh=true", headers=auth_headers)
+        assert r.status_code == 200
+        data = r.json().get("data", {})
+        assert data.get("exists") is True
+        assert "fallback" in (data.get("content") or "").lower()
+
+    def test_pr_agent_config_azure_fallback_without_pr_agent_provider(self, client_app, auth_headers, monkeypatch):
+        create = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "Product/FallbackPrAgentConfig",
+                "provider": "azure_devops",
+                "url": "https://mdt-software.visualstudio.com/Product/_git/FallbackPrAgentConfig",
+                "azure_pat": "pat",
+            },
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        repo_id = create.json()["data"]["id"]
+
+        monkeypatch.setattr(backend_main.dashboard_app, "_create_azure_devops_provider", lambda repo: None)
+        monkeypatch.setattr(
+            backend_main.dashboard_app,
+            "_fetch_azure_repo_file_content",
+            lambda repo, file_path, branches=None: "[config]\nmodel = 'gpt-5.3-codex'" if file_path == ".pr_agent.toml" else "",
+        )
+
+        r = client_app.get(f"/api/repositories/{repo_id}/pr-agent-config?force_refresh=true", headers=auth_headers)
+        assert r.status_code == 200
+        data = r.json().get("data", {})
+        assert data.get("has_config") is True
+        assert "gpt-5.3-codex" in (data.get("content") or "")
+
+    def test_best_practices_github_fallback_without_pr_agent_provider(self, client_app, auth_headers, monkeypatch):
+        create = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "fallback-org/fallback-repo-best-practices",
+                "provider": "github",
+                "url": "https://github.com/fallback-org/fallback-repo-best-practices",
+                "github_token": "ghp_test",
+            },
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        repo_id = create.json()["data"]["id"]
+
+        real_import = builtins.__import__
+
+        def _import_with_missing_github_provider(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "pr_agent.git_providers.github_provider":
+                raise ImportError("No module named 'pr_agent'")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", _import_with_missing_github_provider)
+        monkeypatch.setattr(
+            backend_main.dashboard_app,
+            "_fetch_github_repo_file_content",
+            lambda repo, file_path, branches=None: "Best practices from GitHub fallback" if file_path == "best_practices.md" else "",
+        )
+
+        r = client_app.get(f"/api/repositories/{repo_id}/best-practices?force_refresh=true", headers=auth_headers)
+        assert r.status_code == 200
+        data = r.json().get("data", {})
+        assert data.get("exists") is True
+        assert "github fallback" in (data.get("content") or "").lower()
+
+    def test_pr_agent_config_github_fallback_without_pr_agent_provider(self, client_app, auth_headers, monkeypatch):
+        create = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "fallback-org/fallback-repo-pr-agent-config",
+                "provider": "github",
+                "url": "https://github.com/fallback-org/fallback-repo-pr-agent-config",
+                "github_token": "ghp_test",
+            },
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        repo_id = create.json()["data"]["id"]
+
+        real_import = builtins.__import__
+
+        def _import_with_missing_github_provider(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "pr_agent.git_providers.github_provider":
+                raise ImportError("No module named 'pr_agent'")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", _import_with_missing_github_provider)
+        monkeypatch.setattr(
+            backend_main.dashboard_app,
+            "_fetch_github_repo_file_content",
+            lambda repo, file_path, branches=None: "[config]\nmodel = 'gpt-5.3-codex'" if file_path == ".pr_agent.toml" else "",
+        )
+
+        r = client_app.get(f"/api/repositories/{repo_id}/pr-agent-config?force_refresh=true", headers=auth_headers)
+        assert r.status_code == 200
+        data = r.json().get("data", {})
+        assert data.get("has_config") is True
+        assert "gpt-5.3-codex" in (data.get("content") or "")
+
+    def test_best_practices_github_fallback_when_provider_init_fails(self, client_app, auth_headers, monkeypatch):
+        create = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "fallback-org/fallback-repo-best-practices-init-fail",
+                "provider": "github",
+                "url": "https://github.com/fallback-org/fallback-repo-best-practices-init-fail",
+                "github_token": "ghp_test",
+            },
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        repo_id = create.json()["data"]["id"]
+
+        real_import = builtins.__import__
+
+        class BrokenGithubProvider:
+            def __init__(self, *args, **kwargs):
+                raise ValueError("provider init failed")
+
+        def _import_with_broken_github_provider(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "pr_agent.git_providers.github_provider":
+                module = types.ModuleType(name)
+                module.GithubProvider = BrokenGithubProvider
+                return module
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", _import_with_broken_github_provider)
+        monkeypatch.setattr(
+            backend_main.dashboard_app,
+            "_fetch_github_repo_file_content",
+            lambda repo, file_path, branches=None: "Best practices from init-fail fallback" if file_path == "best_practices.md" else "",
+        )
+
+        r = client_app.get(f"/api/repositories/{repo_id}/best-practices?force_refresh=true", headers=auth_headers)
+        assert r.status_code == 200
+        data = r.json().get("data", {})
+        assert data.get("exists") is True
+        assert "init-fail fallback" in (data.get("content") or "").lower()
+
+    def test_pr_agent_config_github_fallback_when_provider_init_fails(self, client_app, auth_headers, monkeypatch):
+        create = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "fallback-org/fallback-repo-pr-agent-config-init-fail",
+                "provider": "github",
+                "url": "https://github.com/fallback-org/fallback-repo-pr-agent-config-init-fail",
+                "github_token": "ghp_test",
+            },
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        repo_id = create.json()["data"]["id"]
+
+        real_import = builtins.__import__
+
+        class BrokenGithubProvider:
+            def __init__(self, *args, **kwargs):
+                raise ValueError("provider init failed")
+
+        def _import_with_broken_github_provider(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "pr_agent.git_providers.github_provider":
+                module = types.ModuleType(name)
+                module.GithubProvider = BrokenGithubProvider
+                return module
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", _import_with_broken_github_provider)
+        monkeypatch.setattr(
+            backend_main.dashboard_app,
+            "_fetch_github_repo_file_content",
+            lambda repo, file_path, branches=None: "[config]\nmodel = 'gpt-5.3-codex'" if file_path == ".pr_agent.toml" else "",
+        )
+
+        r = client_app.get(f"/api/repositories/{repo_id}/pr-agent-config?force_refresh=true", headers=auth_headers)
+        assert r.status_code == 200
+        data = r.json().get("data", {})
+        assert data.get("has_config") is True
+        assert "gpt-5.3-codex" in (data.get("content") or "")
 
 
 class TestMetricsConfigRoute:

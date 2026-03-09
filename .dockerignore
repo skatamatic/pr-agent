@@ -8,7 +8,7 @@
 .gitignore
 .github/
 
-# Python (backend image copies only dashboard/backend/; no need for repo venv or pr_agent)
+# Python
 .venv/
 venv/
 env/
@@ -22,9 +22,10 @@ env/
 .tox/
 *.egg-info/
 *.egg
-pr_agent/
 *.md
 !dashboard/**/*.md
+!pr_agent/
+!pr_agent/**
 
 # Node (frontend runs npm ci in container; no need for host node_modules)
 **/node_modules/

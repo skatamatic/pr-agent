@@ -867,12 +867,123 @@ stages:
         return '\n'.join(lines)
 
     async def get_sync_status(self, repo_data: Dict[str, Any], db_session=None) -> Dict[str, Any]:
-        """Compare repo's azure-pipelines.yml against the canonical template."""
+        """Compare deployed pipeline YAML against canonical template."""
         try:
             try:
                 organization, project, repository, token = self._validate_and_parse(repo_data)
             except ValueError as e:
                 return {'error': str(e)}
+
+            use_shared = os.getenv("PR_AGENT_AZDO_USE_SHARED_PIPELINE_REPO", "true").strip().lower() in ("1", "true", "yes", "on")
+            canonical = self.get_canonical_template(repo_data, db_session)
+            headers = self._build_headers(token)
+
+            if use_shared:
+                shared_repo = self.SHARED_PIPELINE_REPO_NAME
+                async with aiohttp.ClientSession(timeout=self.AIOHTTP_TIMEOUT) as session:
+                    # Resolve shared repository details.
+                    repo_url = f"https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{shared_repo}?api-version=7.0"
+                    async with session.get(repo_url, headers=headers) as repo_resp:
+                        if repo_resp.status == 404:
+                            return {
+                                'yaml_exists': False,
+                                'pipeline_exists': False,
+                                'sync_status': 'missing',
+                                'remote_content': None,
+                                'canonical_content': canonical,
+                                'diff_lines_changed': 0,
+                                'pipeline_definitions': [],
+                                'organization': organization,
+                                'project': project,
+                                'repository': repository,
+                                'shared_pipeline_repo': shared_repo,
+                                'using_shared_pipeline_repo': True,
+                                'pipelines_url': f"https://dev.azure.com/{organization}/{project}/_build",
+                            }
+                        if repo_resp.status != 200:
+                            msg = await repo_resp.text()
+                            return {'error': f"Failed to resolve shared pipeline repository: {msg}"}
+                        shared_repo_info = await repo_resp.json()
+
+                    shared_repo_id = shared_repo_info.get("id")
+                    shared_repo_web_url = shared_repo_info.get("webUrl")
+                    if not shared_repo_id:
+                        return {'error': 'Shared pipeline repository id was not found'}
+
+                    yaml_url = f"https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{shared_repo}/items?path=azure-pipelines.yml&api-version=7.1-preview.1"
+                    remote = None
+                    async with session.get(yaml_url, headers=headers) as yaml_resp:
+                        if yaml_resp.status == 200:
+                            remote = await yaml_resp.text()
+                        elif yaml_resp.status != 404:
+                            msg = await yaml_resp.text()
+                            return {'error': f"Failed to read shared pipeline YAML: {msg}"}
+
+                    defs_url = f"https://dev.azure.com/{organization}/{project}/_apis/build/definitions?api-version=7.1-preview.7"
+                    shared_defs = []
+                    async with session.get(defs_url, headers=headers) as defs_resp:
+                        if defs_resp.status == 200:
+                            defs = (await defs_resp.json()).get("value", [])
+                            for d in defs:
+                                r = d.get("repository", {})
+                                if (r.get("name") == shared_repo or r.get("id") == shared_repo_id) and \
+                                   d.get("process", {}).get("yamlFilename", "") == "azure-pipelines.yml":
+                                    shared_defs.append({
+                                        'id': d.get('id'),
+                                        'name': d.get('name'),
+                                        'path': d.get('path', '\\'),
+                                        'type': d.get('type', 'build'),
+                                        'url': d.get('_links', {}).get('web', {}).get('href', ''),
+                                        'queue_status': d.get('queueStatus', 'enabled'),
+                                        'trigger_info': self._extract_trigger_info(d),
+                                    })
+
+                if remote is None:
+                    return {
+                        'yaml_exists': False,
+                        'pipeline_exists': len(shared_defs) > 0,
+                        'sync_status': 'missing',
+                        'remote_content': None,
+                        'canonical_content': canonical,
+                        'diff_lines_changed': 0,
+                        'pipeline_definitions': shared_defs,
+                        'organization': organization,
+                        'project': project,
+                        'repository': repository,
+                        'shared_pipeline_repo': shared_repo,
+                        'shared_pipeline_repo_url': shared_repo_web_url,
+                        'using_shared_pipeline_repo': True,
+                        'pipelines_url': f"https://dev.azure.com/{organization}/{project}/_build",
+                    }
+
+                norm_remote = self._normalize_yaml(remote)
+                norm_canonical = self._normalize_yaml(canonical)
+                if norm_remote == norm_canonical:
+                    sync_status = 'up_to_date'
+                    diff_count = 0
+                else:
+                    sync_status = 'outdated'
+                    diff = list(difflib.unified_diff(
+                        norm_remote.splitlines(), norm_canonical.splitlines(), lineterm=''
+                    ))
+                    diff_count = sum(1 for l in diff if (l.startswith('+') or l.startswith('-')) and not l.startswith('---') and not l.startswith('+++'))
+
+                return {
+                    'yaml_exists': True,
+                    'pipeline_exists': len(shared_defs) > 0,
+                    'sync_status': sync_status,
+                    'remote_content': remote,
+                    'canonical_content': canonical,
+                    'diff_lines_changed': diff_count,
+                    'pipeline_definitions': shared_defs,
+                    'organization': organization,
+                    'project': project,
+                    'repository': repository,
+                    'shared_pipeline_repo': shared_repo,
+                    'shared_pipeline_repo_url': shared_repo_web_url,
+                    'using_shared_pipeline_repo': True,
+                    'pipelines_url': f"https://dev.azure.com/{organization}/{project}/_build",
+                }
 
             yaml_file = await self._get_file_content(
                 organization, project, repository, 'azure-pipelines.yml', token
@@ -880,7 +991,6 @@ stages:
             pipeline_info = await self._check_pipeline_definitions(
                 organization, project, repository, token
             )
-            canonical = self.get_canonical_template(repo_data, db_session)
 
             if not yaml_file['exists']:
                 if yaml_file.get('error') and yaml_file['error'] != 'File not found':
@@ -896,6 +1006,7 @@ stages:
                     'organization': organization,
                     'project': project,
                     'repository': repository,
+                    'using_shared_pipeline_repo': False,
                     'pipelines_url': f"https://dev.azure.com/{organization}/{project}/_build",
                 }
 
@@ -924,6 +1035,7 @@ stages:
                 'organization': organization,
                 'project': project,
                 'repository': repository,
+                'using_shared_pipeline_repo': False,
                 'pipelines_url': f"https://dev.azure.com/{organization}/{project}/_build",
             }
 
