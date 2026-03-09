@@ -2950,15 +2950,12 @@ class DashboardApplication:
                                 logger.info("GitHub provider unavailable for %s; using REST fallback: %s", repo.name, import_error)
                             except Exception as provider_error:
                                 logger.info("GitHub provider init failed for %s; using REST fallback: %s", repo.name, provider_error)
-                        elif repo.provider == 'azure_devops' and repo.azure_pat:
-                            git_provider = self._create_azure_devops_provider(repo)
-                        
-                        if git_provider:
+                        if repo.provider == 'azure_devops' and repo.azure_pat:
+                            best_practices_content = self._fetch_azure_repo_file_content(repo, "best_practices.md")
+                        elif git_provider:
                             best_practices_content = get_best_practices_content(git_provider)
                         elif repo.provider == 'github' and repo.github_token:
                             best_practices_content = self._fetch_github_repo_file_content(repo, "best_practices.md")
-                        elif repo.provider == 'azure_devops' and repo.azure_pat:
-                            best_practices_content = self._fetch_azure_repo_file_content(repo, "best_practices.md")
                         else:
                             best_practices_content = ""
 
@@ -3146,18 +3143,19 @@ class DashboardApplication:
                             except Exception as provider_error:
                                 logger.info("GitHub provider init failed for %s; using REST fallback: %s", repo.name, provider_error)
                         elif repo.provider == 'azure_devops' and repo.azure_pat:
-                            git_provider = self._create_azure_devops_provider(repo)
+                            # Azure uses direct REST fetch path below.
+                            pass
                         else:
                             raise HTTPException(status_code=400, detail=f"Repository provider {repo.provider} not supported or tokens not configured")
                         
-                        if git_provider:
+                        if repo.provider == 'azure_devops' and repo.azure_pat:
+                            # Azure path: use direct REST fetch to avoid provider context requirements.
+                            best_practices_content = self._fetch_azure_repo_file_content(repo, "best_practices.md")
+                        elif git_provider:
                             # Get best practices content via provider if available.
                             best_practices_content = get_best_practices_content(git_provider)
                         elif repo.provider == 'github' and repo.github_token:
                             best_practices_content = self._fetch_github_repo_file_content(repo, "best_practices.md")
-                        elif repo.provider == 'azure_devops' and repo.azure_pat:
-                            # Fallback path for environments where pr_agent provider imports are unavailable.
-                            best_practices_content = self._fetch_azure_repo_file_content(repo, "best_practices.md")
                         else:
                             raise HTTPException(status_code=500, detail="Git provider initialization failed")
                         
@@ -3517,20 +3515,18 @@ This PR {'creates' if not repo.has_best_practices else 'updates'} the `best_prac
                                 logger.info("GitHub provider unavailable for %s; using REST fallback: %s", repo.name, import_error)
                             except Exception as provider_error:
                                 logger.info("GitHub provider init failed for %s; using REST fallback: %s", repo.name, provider_error)
-                        elif repo.provider == 'azure_devops' and repo.azure_pat:
-                            git_provider = self._create_azure_devops_provider(repo)
                         else:
                             # Continue without repo_obj, get_pr_agent_config_content will try different approaches
                             logger.warning(f"No provider configured for repository {repo.name}, attempting direct fetch")
                         
-                        if git_provider:
+                        if repo.provider == 'azure_devops' and repo.azure_pat:
+                            # Azure path: use direct REST fetch to avoid provider context requirements.
+                            pr_agent_config_content = self._fetch_azure_repo_file_content(repo, ".pr_agent.toml")
+                        elif git_provider:
                             # Get PR-Agent config content via provider if available.
                             pr_agent_config_content = get_pr_agent_config_content(git_provider)
                         elif repo.provider == 'github' and repo.github_token:
                             pr_agent_config_content = self._fetch_github_repo_file_content(repo, ".pr_agent.toml")
-                        elif repo.provider == 'azure_devops' and repo.azure_pat:
-                            # Fallback path for environments where pr_agent provider imports are unavailable.
-                            pr_agent_config_content = self._fetch_azure_repo_file_content(repo, ".pr_agent.toml")
                         else:
                             raise HTTPException(status_code=500, detail="Git provider initialization failed")
                         

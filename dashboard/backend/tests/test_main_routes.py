@@ -448,6 +448,66 @@ class TestRepositoriesById:
         assert data.get("has_config") is True
         assert "gpt-5.3-codex" in (data.get("content") or "")
 
+    def test_best_practices_azure_direct_fetch_does_not_call_provider(self, client_app, auth_headers, monkeypatch):
+        create = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "Product/DirectFetchBestPractices",
+                "provider": "azure_devops",
+                "url": "https://mdt-software.visualstudio.com/Product/_git/DirectFetchBestPractices",
+                "azure_pat": "pat",
+            },
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        repo_id = create.json()["data"]["id"]
+
+        def _fail_provider(_repo):
+            raise RuntimeError("provider should not be called for Azure direct fetch")
+
+        monkeypatch.setattr(backend_main.dashboard_app, "_create_azure_devops_provider", _fail_provider)
+        monkeypatch.setattr(
+            backend_main.dashboard_app,
+            "_fetch_azure_repo_file_content",
+            lambda repo, file_path, branches=None: "Best practices via direct Azure REST" if file_path == "best_practices.md" else "",
+        )
+
+        r = client_app.get(f"/api/repositories/{repo_id}/best-practices?force_refresh=true", headers=auth_headers)
+        assert r.status_code == 200
+        data = r.json().get("data", {})
+        assert data.get("exists") is True
+        assert "direct azure rest" in (data.get("content") or "").lower()
+
+    def test_pr_agent_config_azure_direct_fetch_does_not_call_provider(self, client_app, auth_headers, monkeypatch):
+        create = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "Product/DirectFetchPrAgentConfig",
+                "provider": "azure_devops",
+                "url": "https://mdt-software.visualstudio.com/Product/_git/DirectFetchPrAgentConfig",
+                "azure_pat": "pat",
+            },
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        repo_id = create.json()["data"]["id"]
+
+        def _fail_provider(_repo):
+            raise RuntimeError("provider should not be called for Azure direct fetch")
+
+        monkeypatch.setattr(backend_main.dashboard_app, "_create_azure_devops_provider", _fail_provider)
+        monkeypatch.setattr(
+            backend_main.dashboard_app,
+            "_fetch_azure_repo_file_content",
+            lambda repo, file_path, branches=None: "[config]\nmodel = 'gpt-5.3-codex'" if file_path == ".pr_agent.toml" else "",
+        )
+
+        r = client_app.get(f"/api/repositories/{repo_id}/pr-agent-config?force_refresh=true", headers=auth_headers)
+        assert r.status_code == 200
+        data = r.json().get("data", {})
+        assert data.get("has_config") is True
+        assert "gpt-5.3-codex" in (data.get("content") or "")
+
 
 class TestMetricsConfigRoute:
     """GET/POST metrics config and metrics endpoints."""
