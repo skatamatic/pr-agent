@@ -48,6 +48,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
   const [editing, setEditing] = useState(false);
   const [initialLoadComplete, setInitialLoadComplete] = useState(false);
   const [activeTab, setActiveTab] = useState('models');
+  const [dashboardAutoSetupLoading, setDashboardAutoSetupLoading] = useState(false);
 
   const [errors, setErrors] = useState({});
   const [animatingCheckbox, setAnimatingCheckbox] = useState(null);
@@ -509,6 +510,51 @@ const ConfigEditor = ({ navigationTarget = null }) => {
       setErrors({});
     }
     setEditing(false);
+  };
+
+  const autoSetupDashboardIntegration = async () => {
+    if (!config) return;
+    if (!editing) {
+      if (!prAgentPath.validation?.valid) {
+        showError('Cannot auto-setup', 'Please fix the PR-agent install path before editing configuration settings.');
+        return;
+      }
+      setEditing(true);
+    }
+
+    try {
+      setDashboardAutoSetupLoading(true);
+      const response = await api.getDashboardAutoSetup();
+      const data = response.data?.data || {};
+      const backendUrl = (data.backend_url || '').trim();
+      const apiKey = (data.api_key || '').trim();
+
+      if (!backendUrl) {
+        showError('Auto-setup failed', 'Dashboard backend URL is not configured on the server.');
+        return;
+      }
+
+      setConfig((prev) => ({
+        ...prev,
+        dashboard: {
+          ...(prev?.dashboard || {}),
+          ENABLED: true,
+          URL: backendUrl,
+          API_KEY: apiKey,
+        },
+      }));
+      setErrors((prev) => {
+        const next = { ...prev };
+        delete next['dashboard.URL'];
+        return next;
+      });
+      showSuccess('Dashboard settings injected', 'Dashboard URL and API key were populated from the current dashboard. Save changes to apply.');
+    } catch (error) {
+      const detail = error.response?.data?.detail || error.message || 'Unable to auto-setup dashboard settings.';
+      showError('Auto-setup failed', detail);
+    } finally {
+      setDashboardAutoSetupLoading(false);
+    }
   };
 
   // PR-Agent path management functions
@@ -2084,6 +2130,25 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                       Configure the PR-Agent dashboard for monitoring AI operations, costs, and performance metrics.
                     </span>
                   </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                    Auto-setup uses this dashboard server's runtime values and injects them into the fields below.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={autoSetupDashboardIntegration}
+                    disabled={dashboardAutoSetupLoading}
+                    className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {dashboardAutoSetupLoading ? (
+                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <Shield className="h-4 w-4 mr-2" />
+                    )}
+                    {dashboardAutoSetupLoading ? 'Auto-Setting...' : 'Auto-Setup from Current Dashboard'}
+                  </button>
                 </div>
 
                 <div className="flex items-center space-x-3">

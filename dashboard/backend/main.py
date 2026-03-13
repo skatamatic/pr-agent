@@ -2013,6 +2013,23 @@ class DashboardApplication:
         async def get_config(current_user: UserDB = Depends(require_auth)):
             config = await self.config_service.get_config()
             return APIResponse(data=config)
+
+        @self.app.get("/api/config/dashboard-auto-setup")
+        async def get_dashboard_auto_setup(current_user: UserDB = Depends(require_auth)):
+            """Return runtime dashboard backend URL and API key for one-click PR-Agent dashboard setup."""
+            try:
+                backend_url = (getattr(settings, "backend_base_url", "") or "").strip() or "http://localhost:8000"
+                dashboard_api_key = (getattr(settings, "dashboard_api_key", "") or "").strip()
+                return APIResponse(
+                    data={
+                        "backend_url": backend_url,
+                        "api_key": dashboard_api_key,
+                    },
+                    message="Dashboard auto-setup values retrieved",
+                )
+            except Exception as e:
+                logger.error("Error loading dashboard auto-setup values: %s", e)
+                raise HTTPException(status_code=500, detail="Failed to load dashboard auto-setup values")
         
         @self.app.post("/api/config")
         async def update_config(config_update: ConfigUpdate, current_user: UserDB = Depends(require_auth)):

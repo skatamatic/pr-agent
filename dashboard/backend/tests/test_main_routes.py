@@ -129,6 +129,15 @@ class TestConfigAndDeveloperRoutes:
         assert "data" in data
         assert isinstance(data["data"], dict)
 
+    def test_get_dashboard_auto_setup_200(self, client_app, auth_headers, monkeypatch):
+        monkeypatch.setattr(backend_main.settings, "backend_base_url", "https://dash.example.com", raising=False)
+        monkeypatch.setattr(backend_main.settings, "dashboard_api_key", "test-dashboard-key", raising=False)
+        r = client_app.get("/api/config/dashboard-auto-setup", headers=auth_headers)
+        assert r.status_code == 200
+        data = r.json().get("data", {})
+        assert data.get("backend_url") == "https://dash.example.com"
+        assert data.get("api_key") == "test-dashboard-key"
+
     def test_post_config_200(self, client_app, auth_headers):
         r = client_app.post(
             "/api/config",

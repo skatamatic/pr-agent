@@ -108,6 +108,7 @@ const apiService = {
   
   // Dashboard configuration
   getConfig: () => api.get('/api/config'),
+  getDashboardAutoSetup: () => api.get('/api/config/dashboard-auto-setup'),
   updateConfig: (config) => api.post('/api/config', { config }),
   bulkUploadConfig: (file) => {
     const formData = new FormData();
