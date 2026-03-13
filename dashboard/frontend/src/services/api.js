@@ -121,6 +121,13 @@ const apiService = {
   createRepository: (data) => api.post('/api/repositories', data),
   updateRepository: (id, data) => api.put(`/api/repositories/${id}`, data),
   deleteRepository: (id) => api.delete(`/api/repositories/${id}`),
+  getRepositoryCleanupPreview: (id) => api.get(`/api/repositories/${id}/cleanup/preview`),
+  startRepositoryCleanup: (id) => api.post(`/api/repositories/${id}/cleanup/start`, {}),
+  getRepositoryCleanupStatus: (id, operationId) => api.get(`/api/repositories/${id}/cleanup/status/${operationId}`),
+  startRepositoryActivationSync: (id, targetActive) =>
+    api.post(`/api/repositories/${id}/activation-sync/start`, { target_active: !!targetActive }),
+  getRepositoryActivationSyncStatus: (id, operationId) =>
+    api.get(`/api/repositories/${id}/activation-sync/status/${operationId}`),
   getRepositoryNames: (params = {}) => api.get('/api/repositories/names', { params }),
   getRepositoryHealth: () => api.get('/api/repositories/health'),
   getActionRunnerConnections: () => api.get('/api/action-runner-connections'),

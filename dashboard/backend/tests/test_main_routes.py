@@ -246,6 +246,132 @@ class TestRepositoriesById:
         r = client_app.get("/api/repositories/999998/github-action-config", headers=auth_headers)
         assert r.status_code in (200, 404)
 
+    def test_repository_cleanup_preview_azure_includes_scope(self, client_app, auth_headers, monkeypatch):
+        create = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "Product/CleanupPreviewRepo",
+                "provider": "azure_devops",
+                "url": "https://mdt-software.visualstudio.com/Product/_git/CleanupPreviewRepo",
+                "azure_pat": "pat",
+            },
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        repo_id = create.json()["data"]["id"]
+
+        async def _fake_list_build_policies(_repo_data):
+            return {"policies": [{"policy_id": 10, "pipeline_name": "PR-Agent Review (main)"}]}
+
+        monkeypatch.setattr(
+            backend_main.dashboard_app.azure_pipeline_config_service,
+            "list_build_policies",
+            _fake_list_build_policies,
+        )
+
+        preview = client_app.get(f"/api/repositories/{repo_id}/cleanup/preview", headers=auth_headers)
+        assert preview.status_code == 200
+        data = preview.json().get("data", {})
+        assert data.get("repository", {}).get("id") == repo_id
+        assert "cleanup_scope" in data
+        assert data["cleanup_scope"].get("azure_checks") == 1
+        assert data.get("impacts", {}).get("target_repository_deleted") is False
+
+    def test_repository_cleanup_start_and_status(self, client_app, auth_headers, monkeypatch):
+        create = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "cleanup-start/repo",
+                "provider": "github",
+                "url": "https://github.com/cleanup-start/repo",
+            },
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        repo_id = create.json()["data"]["id"]
+
+        def _skip_background_task(coro):
+            coro.close()
+            return None
+
+        monkeypatch.setattr(backend_main.asyncio, "create_task", _skip_background_task)
+
+        start = client_app.post(f"/api/repositories/{repo_id}/cleanup/start", headers=auth_headers)
+        assert start.status_code == 200
+        start_data = start.json().get("data", {})
+        operation_id = start_data.get("operation_id")
+        assert operation_id
+        assert isinstance(start_data.get("steps"), list)
+
+        status = client_app.get(f"/api/repositories/{repo_id}/cleanup/status/{operation_id}", headers=auth_headers)
+        assert status.status_code == 200
+        op = status.json().get("data", {})
+        assert op.get("operation_id") == operation_id
+        assert op.get("operation_type") == "repository_cleanup"
+        assert op.get("status") in ("running", "completed", "failed")
+
+    def test_repository_activation_sync_start_and_status(self, client_app, auth_headers, monkeypatch):
+        create = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "Product/ActivationSyncRepo",
+                "provider": "azure_devops",
+                "url": "https://mdt-software.visualstudio.com/Product/_git/ActivationSyncRepo",
+                "azure_pat": "pat",
+                "is_active": True,
+            },
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        repo_id = create.json()["data"]["id"]
+
+        def _skip_background_task(coro):
+            coro.close()
+            return None
+
+        monkeypatch.setattr(backend_main.asyncio, "create_task", _skip_background_task)
+
+        start = client_app.post(
+            f"/api/repositories/{repo_id}/activation-sync/start",
+            json={"target_active": False},
+            headers=auth_headers,
+        )
+        assert start.status_code == 200
+        start_data = start.json().get("data", {})
+        operation_id = start_data.get("operation_id")
+        assert operation_id
+
+        status = client_app.get(
+            f"/api/repositories/{repo_id}/activation-sync/status/{operation_id}",
+            headers=auth_headers,
+        )
+        assert status.status_code == 200
+        op = status.json().get("data", {})
+        assert op.get("operation_id") == operation_id
+        assert op.get("operation_type") == "repository_activation_sync"
+
+    def test_repository_activation_sync_requires_target_active(self, client_app, auth_headers):
+        create = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "Product/ActivationSyncValidationRepo",
+                "provider": "azure_devops",
+                "url": "https://mdt-software.visualstudio.com/Product/_git/ActivationSyncValidationRepo",
+                "azure_pat": "pat",
+            },
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        repo_id = create.json()["data"]["id"]
+
+        start = client_app.post(
+            f"/api/repositories/{repo_id}/activation-sync/start",
+            json={},
+            headers=auth_headers,
+        )
+        assert start.status_code == 400
+        assert "target_active" in (start.json().get("detail") or "")
+
     def test_best_practices_azure_fallback_without_pr_agent_provider(self, client_app, auth_headers, monkeypatch):
         create = client_app.post(
             "/api/repositories",

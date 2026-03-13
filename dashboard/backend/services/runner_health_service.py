@@ -31,6 +31,53 @@ class RunnerHealthService:
     def __init__(self):
         self.session = None
         self._session_timeout = aiohttp.ClientTimeout(total=10)
+        self.azure_pipeline_config_service = None
+        try:
+            from services.azure_pipeline_config_service import AzurePipelineConfigService
+            self.azure_pipeline_config_service = AzurePipelineConfigService()
+        except Exception as e:
+            logger.debug("AzurePipelineConfigService unavailable in RunnerHealthService: %s", e)
+
+    def _extract_azure_repo_context(self, repo: RepositoryDB) -> Dict[str, Optional[str]]:
+        """Extract Azure DevOps organization/project/repository from config or URL."""
+        organization = None
+        project = None
+        repository = None
+
+        if repo.config and isinstance(repo.config, dict):
+            organization = repo.config.get("azure_organization")
+            project = repo.config.get("azure_project")
+            repository = repo.config.get("azure_repository")
+
+        if not organization or not project or not repository:
+            url = (repo.url or "").strip().rstrip("/")
+            if "dev.azure.com" in url:
+                parts = [p for p in url.split("/") if p]
+                # https://dev.azure.com/{org}/{project}/_git/{repo}
+                if len(parts) >= 6:
+                    organization = organization or parts[2]
+                    project = project or parts[3]
+                    if "_git" in parts:
+                        git_idx = parts.index("_git")
+                        if git_idx + 1 < len(parts):
+                            repository = repository or parts[git_idx + 1]
+            elif ".visualstudio.com" in url:
+                # https://{org}.visualstudio.com/{project}/_git/{repo}
+                parts = [p for p in url.split("/") if p]
+                if len(parts) >= 5:
+                    host = parts[1] if len(parts) > 1 else ""
+                    organization = organization or host.split(".")[0]
+                    project = project or parts[2]
+                    if "_git" in parts:
+                        git_idx = parts.index("_git")
+                        if git_idx + 1 < len(parts):
+                            repository = repository or parts[git_idx + 1]
+
+        return {
+            "organization": (organization or "").strip() or None,
+            "project": (project or "").strip() or None,
+            "repository": (repository or "").strip() or None,
+        }
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session"""
@@ -472,34 +519,15 @@ class RunnerHealthService:
             }
         
         try:
-            # Extract organization and project from repo URL or config
-            organization = None
-            project = None
-            
-            # Try to get from repo config first
-            if repo.config and isinstance(repo.config, dict):
-                organization = repo.config.get("azure_organization")
-                project = repo.config.get("azure_project")
-            
-            # If not in config, try to parse from URL
-            if not organization or not project:
-                # Azure DevOps URLs: https://dev.azure.com/org/project/_git/repo
-                if "dev.azure.com" in repo.url:
-                    url_parts = repo.url.split("/")
-                    if len(url_parts) >= 5:
-                        organization = url_parts[3]
-                        project = url_parts[4]
-                elif ".visualstudio.com" in repo.url:
-                    # Legacy format: https://org.visualstudio.com/project/_git/repo
-                    url_parts = repo.url.split("/")
-                    if len(url_parts) >= 4:
-                        organization = url_parts[2].split(".")[0]
-                        project = url_parts[3]
-            
-            if not organization or not project:
+            context = self._extract_azure_repo_context(repo)
+            organization = context.get("organization")
+            project = context.get("project")
+            repository_name = context.get("repository")
+
+            if not organization or not project or not repository_name:
                 return {
                     "status": "misconfigured",
-                    "error": "Cannot determine Azure organization/project from URL or config",
+                    "error": "Cannot determine Azure organization/project/repository from URL or config",
                     "last_seen": None
                 }
             
@@ -515,21 +543,78 @@ class RunnerHealthService:
             }
             
             logger.info(f"Checking Azure agent pools for {organization} with URL: {url}")
+            auth_issue = None
+            azure_repo_health = {
+                "repository_exists": False,
+                "pr_agent_check_exists": False,
+                "active_check_enabled": None,
+                "issues": [],
+            }
+
+            # 1) Verify repository still exists.
+            repo_check_url = (
+                f"https://dev.azure.com/{organization}/{project}/_apis/git/repositories/"
+                f"{repository_name}?api-version=7.1-preview.1"
+            )
+            async with session.get(repo_check_url, headers=headers) as repo_response:
+                if repo_response.status in (200, 203):
+                    azure_repo_health["repository_exists"] = True
+                elif repo_response.status == 404:
+                    azure_repo_health["issues"].append("Azure repository no longer exists or is inaccessible.")
+                elif repo_response.status == 401:
+                    auth_issue = "Azure DevOps PAT is invalid or expired"
+                elif repo_response.status == 403:
+                    auth_issue = "Azure DevOps PAT lacks required permissions"
+                else:
+                    azure_repo_health["issues"].append(f"Azure repository query failed ({repo_response.status}).")
+
+            # 2) Verify PR-Agent check exists and is enabled when repo is active.
+            if self.azure_pipeline_config_service and azure_repo_health["repository_exists"]:
+                policy_result = await self.azure_pipeline_config_service.list_build_policies({
+                    "url": repo.url,
+                    "azure_pat": repo.azure_pat,
+                    "provider": repo.provider,
+                })
+                if "error" in policy_result:
+                    azure_repo_health["issues"].append(
+                        f"Azure check query failed: {policy_result.get('error', 'unknown error')}"
+                    )
+                else:
+                    pr_agent_checks = [
+                        p for p in policy_result.get("policies", [])
+                        if (p.get("pipeline_name") or "").lower().startswith("pr-agent")
+                    ]
+                    azure_repo_health["pr_agent_check_exists"] = len(pr_agent_checks) > 0
+                    if not pr_agent_checks:
+                        azure_repo_health["issues"].append("PR-Agent Azure check is missing.")
+                    else:
+                        enabled_any = any(bool(p.get("is_enabled", True)) for p in pr_agent_checks)
+                        azure_repo_health["active_check_enabled"] = enabled_any
+                        if repo.is_active and not enabled_any:
+                            azure_repo_health["issues"].append(
+                                "Repository is active but PR-Agent Azure check is disabled."
+                            )
             
             async with session.get(url, headers=headers) as response:
                 logger.info(f"Azure agent pools response: {response.status} {response.reason}")
                 
                 if response.status == 401:
+                    if auth_issue:
+                        logger.warning("Azure repo check auth issue for %s: %s", repo.name, auth_issue)
                     return {
                         "status": "misconfigured", 
-                        "error": "Azure DevOps PAT is invalid or expired",
-                        "last_seen": None
+                        "error": auth_issue or "Azure DevOps PAT is invalid or expired",
+                        "last_seen": None,
+                        "azure_repo_health": azure_repo_health,
                     }
                 elif response.status == 403:
+                    if auth_issue:
+                        logger.warning("Azure repo check permission issue for %s: %s", repo.name, auth_issue)
                     return {
                         "status": "misconfigured",
-                        "error": "Azure DevOps PAT lacks required permissions",
-                        "last_seen": None
+                        "error": auth_issue or "Azure DevOps PAT lacks required permissions",
+                        "last_seen": None,
+                        "azure_repo_health": azure_repo_health,
                     }
                 elif response.status == 203:
                     # Non-Authoritative Information - treat as success with warning
@@ -539,10 +624,14 @@ class RunnerHealthService:
                 elif response.status != 200:
                     response_text = await response.text()
                     logger.error(f"Azure agent pools API error {response.status}: {response_text}")
+                    combined_error = f"Azure DevOps API error: {response.status}"
+                    if azure_repo_health["issues"]:
+                        combined_error = f"{combined_error}; {'; '.join(azure_repo_health['issues'])}"
                     return {
                         "status": "error",
-                        "error": f"Azure DevOps API error: {response.status}",
-                        "last_seen": None
+                        "error": combined_error,
+                        "last_seen": None,
+                        "azure_repo_health": azure_repo_health,
                     }
                 
                 pools_data = await response.json()
@@ -584,24 +673,45 @@ class RunnerHealthService:
                                             pass
                 
                 if total_agents == 0:
+                    combined_error = "No agents found in any pool"
+                    if azure_repo_health["issues"]:
+                        combined_error = f"{combined_error}; {'; '.join(azure_repo_health['issues'])}"
+                    status = "warning" if azure_repo_health["issues"] else "stopped"
                     return {
-                        "status": "stopped",
-                        "error": "No agents found in any pool",
-                        "last_seen": None
+                        "status": status,
+                        "error": combined_error,
+                        "last_seen": None,
+                        "azure_repo_health": azure_repo_health,
                     }
                 
                 if online_agents == 0:
+                    combined_error = f"All {total_agents} agents are offline"
+                    if azure_repo_health["issues"]:
+                        combined_error = f"{combined_error}; {'; '.join(azure_repo_health['issues'])}"
+                    status = "warning" if azure_repo_health["issues"] else "stopped"
                     return {
-                        "status": "stopped",
-                        "error": f"All {total_agents} agents are offline",
-                        "last_seen": most_recent
+                        "status": status,
+                        "error": combined_error,
+                        "last_seen": most_recent,
+                        "azure_repo_health": azure_repo_health,
                     }
-                
+
+                # Agent health is running, but policy/repository issues should still surface.
+                if azure_repo_health["issues"]:
+                    return {
+                        "status": "warning",
+                        "error": "; ".join(azure_repo_health["issues"]),
+                        "last_seen": most_recent or datetime.utcnow(),
+                        "details": f"{online_agents}/{total_agents} agents online",
+                        "azure_repo_health": azure_repo_health,
+                    }
+
                 return {
                     "status": "running",
                     "error": None,
                     "last_seen": most_recent or datetime.utcnow(),
-                    "details": f"{online_agents}/{total_agents} agents online"
+                    "details": f"{online_agents}/{total_agents} agents online",
+                    "azure_repo_health": azure_repo_health,
                 }
         
         except aiohttp.ClientError as e:

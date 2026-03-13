@@ -7,11 +7,13 @@ from typing import List, Optional, Dict, Any
 
 from pathlib import Path
 import asyncio
+import copy
 import os
 import sys
 import logging
 import threading
 from datetime import datetime, timedelta
+from uuid import uuid4
 
 # Import configuration and database
 from config import settings
@@ -92,6 +94,8 @@ class DashboardApplication:
             self.retention_service = RetentionService(self.database_manager)
             self.auth_service = AuthService()
             self.github_action_config_service = GitHubActionConfigService()
+            self._repo_action_ops: Dict[str, Dict[str, Any]] = {}
+            self._repo_action_ops_lock = threading.Lock()
             
             # Initialize Azure Pipeline config service
             from services.azure_pipeline_config_service import AzurePipelineConfigService
@@ -216,6 +220,76 @@ class DashboardApplication:
         return check_maintenance_mode
 
     _azure_settings_lock = threading.Lock()
+
+    def _new_repo_action_operation(
+        self,
+        repo_id: int,
+        operation_type: str,
+        steps: List[Dict[str, Any]],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        now = datetime.utcnow().isoformat()
+        op = {
+            "operation_id": str(uuid4()),
+            "repo_id": repo_id,
+            "operation_type": operation_type,
+            "status": "running",
+            "started_at": now,
+            "last_updated": now,
+            "current_step": "",
+            "steps": steps,
+            "message": "",
+            "error": None,
+            "result": {},
+            "metadata": metadata or {},
+        }
+        with self._repo_action_ops_lock:
+            self._repo_action_ops[op["operation_id"]] = op
+        return copy.deepcopy(op)
+
+    def _update_repo_action_operation(
+        self,
+        operation_id: str,
+        *,
+        status: Optional[str] = None,
+        current_step: Optional[str] = None,
+        message: Optional[str] = None,
+        error: Optional[str] = None,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        with self._repo_action_ops_lock:
+            op = self._repo_action_ops.get(operation_id)
+            if not op:
+                return
+            if status is not None:
+                op["status"] = status
+            if current_step is not None:
+                op["current_step"] = current_step
+            if message is not None:
+                op["message"] = message
+            if error is not None:
+                op["error"] = error
+            if result is not None:
+                op["result"] = result
+            op["last_updated"] = datetime.utcnow().isoformat()
+
+    def _set_repo_action_step(self, operation_id: str, step_id: str, status: str, detail: Optional[str] = None) -> None:
+        with self._repo_action_ops_lock:
+            op = self._repo_action_ops.get(operation_id)
+            if not op:
+                return
+            for step in op.get("steps", []):
+                if step.get("id") == step_id:
+                    step["status"] = status
+                    if detail is not None:
+                        step["detail"] = detail
+                    break
+            op["last_updated"] = datetime.utcnow().isoformat()
+
+    def _get_repo_action_operation(self, operation_id: str) -> Optional[Dict[str, Any]]:
+        with self._repo_action_ops_lock:
+            op = self._repo_action_ops.get(operation_id)
+            return copy.deepcopy(op) if op else None
 
     @staticmethod
     def _sanitize_error(error: Exception, pat: str = None) -> str:
@@ -580,6 +654,304 @@ class DashboardApplication:
             return {"success": True, "message": f"Agent '{agent_name}' not found in Azure pools (already removed)"}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    async def _build_repository_cleanup_preview(self, db: Session, repo: RepositoryDB) -> Dict[str, Any]:
+        from sqlalchemy import or_
+        from models import JobDB, LogEntryDB, NotificationEventDB
+
+        operations_count = db.query(OperationDB).filter(OperationDB.repo == repo.name).count()
+        jobs_count = db.query(JobDB).filter(JobDB.repository == repo.name).count()
+        logs_count = db.query(LogEntryDB).filter(LogEntryDB.repo == repo.name).count()
+        try:
+            notification_events_count = db.query(NotificationEventDB).filter(
+                or_(
+                    NotificationEventDB.repositories.contains([repo.name]),
+                    NotificationEventDB.repositories.contains(f'"{repo.name}"'),
+                )
+            ).count()
+        except Exception:
+            # Some test databases/migrations may not have notification_events yet.
+            notification_events_count = 0
+
+        azure_policy_count = 0
+        azure_policy_error = None
+        if repo.provider == "azure_devops" and repo.azure_pat:
+            repo_data = {"url": repo.url, "azure_pat": repo.azure_pat, "provider": repo.provider}
+            policies_result = await self.azure_pipeline_config_service.list_build_policies(repo_data)
+            if "error" in policies_result:
+                azure_policy_error = policies_result.get("error")
+            else:
+                azure_policy_count = len([
+                    p for p in policies_result.get("policies", [])
+                    if (p.get("pipeline_name") or "").lower().startswith("pr-agent")
+                ])
+
+        return {
+            "repository": {"id": repo.id, "name": repo.name, "provider": repo.provider},
+            "impacts": {
+                "dashboard_repository_entry_deleted": True,
+                "azure_check_removed": repo.provider == "azure_devops",
+                "metrics_and_history_cleanup": True,
+                "target_repository_deleted": False,
+            },
+            "cleanup_scope": {
+                "operations": operations_count,
+                "jobs": jobs_count,
+                "logs": logs_count,
+                "notification_events": notification_events_count,
+                "azure_checks": azure_policy_count,
+            },
+            "azure_policy_warning": azure_policy_error,
+        }
+
+    async def _run_repository_cleanup_operation(self, operation_id: str, repo_id: int) -> None:
+        from sqlalchemy import or_
+        from models import JobDB, LogEntryDB, NotificationEventDB
+
+        db = SessionLocal()
+        try:
+            repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+            if not repo:
+                self._update_repo_action_operation(
+                    operation_id,
+                    status="failed",
+                    message="Cleanup failed",
+                    error="Repository not found",
+                )
+                return
+
+            repo_name = repo.name
+            self._update_repo_action_operation(
+                operation_id,
+                current_step="remove_azure_check",
+                message=f"Starting cleanup for {repo_name}",
+            )
+            self._set_repo_action_step(operation_id, "remove_azure_check", "running", "Checking Azure checks.")
+
+            if repo.provider == "azure_devops" and repo.azure_pat:
+                repo_data = {"url": repo.url, "azure_pat": repo.azure_pat, "provider": repo.provider}
+                policies_result = await self.azure_pipeline_config_service.list_build_policies(repo_data)
+                if "error" in policies_result:
+                    err = policies_result.get("error")
+                    self._set_repo_action_step(operation_id, "remove_azure_check", "error", err)
+                    self._update_repo_action_operation(
+                        operation_id,
+                        status="failed",
+                        message="Cleanup failed while removing Azure check",
+                        error=err,
+                    )
+                    return
+
+                pr_agent_policies = [
+                    p for p in policies_result.get("policies", [])
+                    if (p.get("pipeline_name") or "").lower().startswith("pr-agent")
+                ]
+                removed = 0
+                for pol in pr_agent_policies:
+                    pol_id = pol.get("policy_id")
+                    if not pol_id:
+                        continue
+                    del_result = await self.azure_pipeline_config_service.delete_build_policy(repo_data, int(pol_id))
+                    if not del_result.get("success"):
+                        err = del_result.get("error", "Failed to delete Azure policy")
+                        self._set_repo_action_step(operation_id, "remove_azure_check", "error", err)
+                        self._update_repo_action_operation(
+                            operation_id,
+                            status="failed",
+                            message="Cleanup failed while removing Azure check",
+                            error=err,
+                        )
+                        return
+                    removed += 1
+                detail = "No PR-Agent checks found to remove." if removed == 0 else f"Removed {removed} PR-Agent check(s)."
+                self._set_repo_action_step(operation_id, "remove_azure_check", "completed", detail)
+            else:
+                self._set_repo_action_step(operation_id, "remove_azure_check", "skipped", "Not an Azure DevOps repository.")
+
+            self._update_repo_action_operation(
+                operation_id,
+                current_step="delete_repo_metrics",
+                message=f"Cleaning metrics and history for {repo_name}",
+            )
+            self._set_repo_action_step(operation_id, "delete_repo_metrics", "running", "Deleting metrics and history records.")
+
+            operations_deleted = db.query(OperationDB).filter(OperationDB.repo == repo_name).delete(synchronize_session=False)
+            jobs_deleted = db.query(JobDB).filter(JobDB.repository == repo_name).delete(synchronize_session=False)
+            logs_deleted = db.query(LogEntryDB).filter(LogEntryDB.repo == repo_name).delete(synchronize_session=False)
+            try:
+                notification_deleted = db.query(NotificationEventDB).filter(
+                    or_(
+                        NotificationEventDB.repositories.contains([repo_name]),
+                        NotificationEventDB.repositories.contains(f'"{repo_name}"'),
+                    )
+                ).delete(synchronize_session=False)
+            except Exception:
+                notification_deleted = 0
+            db.commit()
+            await self.metrics_service.recalculate_metrics_from_operations(db)
+            self._set_repo_action_step(
+                operation_id,
+                "delete_repo_metrics",
+                "completed",
+                (
+                    f"Deleted {operations_deleted} operations, {jobs_deleted} jobs, "
+                    f"{logs_deleted} logs, {notification_deleted} notification events."
+                ),
+            )
+
+            self._update_repo_action_operation(
+                operation_id,
+                current_step="delete_dashboard_repo_entry",
+                message=f"Deleting dashboard repository entry for {repo_name}",
+            )
+            self._set_repo_action_step(operation_id, "delete_dashboard_repo_entry", "running", "Removing repository from dashboard database.")
+            refreshed_repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+            if refreshed_repo:
+                db.delete(refreshed_repo)
+                db.commit()
+
+            self._set_repo_action_step(operation_id, "delete_dashboard_repo_entry", "completed", "Dashboard entry removed.")
+            self._set_repo_action_step(operation_id, "complete", "completed", "Cleanup complete.")
+            self._update_repo_action_operation(
+                operation_id,
+                status="completed",
+                current_step="complete",
+                message="Repository cleanup completed",
+                result={"deleted": True, "repository_id": repo_id, "repository_name": repo_name},
+            )
+        except Exception as e:
+            db.rollback()
+            logger.error("Repository cleanup operation failed for repo %s: %s", repo_id, e)
+            self._update_repo_action_operation(
+                operation_id,
+                status="failed",
+                message="Repository cleanup failed",
+                error=str(e),
+            )
+        finally:
+            db.close()
+
+    async def _run_repository_activation_sync_operation(self, operation_id: str, repo_id: int, target_active: bool) -> None:
+        db = SessionLocal()
+        try:
+            repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+            if not repo:
+                self._update_repo_action_operation(
+                    operation_id, status="failed", message="Activation sync failed", error="Repository not found"
+                )
+                return
+
+            action_label = "activate" if target_active else "deactivate"
+            repo_data = {"url": repo.url, "azure_pat": repo.azure_pat, "provider": repo.provider, "id": repo.id}
+
+            self._update_repo_action_operation(
+                operation_id,
+                current_step="sync_azure_check",
+                message=f"Applying check synchronization for {repo.name}",
+            )
+            self._set_repo_action_step(operation_id, "sync_azure_check", "running", "Syncing Azure check state.")
+
+            if repo.provider == "azure_devops" and repo.azure_pat:
+                if target_active:
+                    sync_status = await self.azure_pipeline_config_service.get_sync_status(repo_data, db)
+                    if "error" in sync_status:
+                        err = sync_status.get("error", "Failed to resolve Azure pipeline status")
+                        self._set_repo_action_step(operation_id, "sync_azure_check", "error", err)
+                        self._update_repo_action_operation(
+                            operation_id, status="failed", message="Activation sync failed", error=err
+                        )
+                        return
+                    pipeline_defs = sync_status.get("pipeline_definitions") or []
+                    pipeline_id = None
+                    for definition in pipeline_defs:
+                        if definition.get("id") is not None:
+                            pipeline_id = definition.get("id")
+                            break
+                    if pipeline_id is None:
+                        err = "No Azure PR-Agent pipeline definition found. Set up pipeline/check before activating."
+                        self._set_repo_action_step(operation_id, "sync_azure_check", "error", err)
+                        self._update_repo_action_operation(
+                            operation_id, status="failed", message="Activation sync failed", error=err
+                        )
+                        return
+                    branch_result = await self.azure_pipeline_config_service.list_branches(repo_data)
+                    if "error" in branch_result:
+                        err = branch_result.get("error", "Failed to resolve default branch")
+                        self._set_repo_action_step(operation_id, "sync_azure_check", "error", err)
+                        self._update_repo_action_operation(
+                            operation_id, status="failed", message="Activation sync failed", error=err
+                        )
+                        return
+                    branch = (branch_result.get("default_branch") or "main").strip() or "main"
+                    ensure_result = await self.azure_pipeline_config_service.ensure_build_policy(
+                        repo_data, branch=branch, pipeline_definition_id=int(pipeline_id), is_blocking=False
+                    )
+                    if not ensure_result.get("success"):
+                        err = ensure_result.get("error", "Failed to add Azure check")
+                        self._set_repo_action_step(operation_id, "sync_azure_check", "error", err)
+                        self._update_repo_action_operation(
+                            operation_id, status="failed", message="Activation sync failed", error=err
+                        )
+                        return
+                    self._set_repo_action_step(operation_id, "sync_azure_check", "completed", f"Azure check added for branch '{branch}'.")
+                else:
+                    policies_result = await self.azure_pipeline_config_service.list_build_policies(repo_data)
+                    if "error" in policies_result:
+                        err = policies_result.get("error", "Failed to list Azure checks")
+                        self._set_repo_action_step(operation_id, "sync_azure_check", "error", err)
+                        self._update_repo_action_operation(
+                            operation_id, status="failed", message="Activation sync failed", error=err
+                        )
+                        return
+                    removed = 0
+                    for pol in policies_result.get("policies", []):
+                        if not (pol.get("pipeline_name") or "").lower().startswith("pr-agent"):
+                            continue
+                        pol_id = pol.get("policy_id")
+                        if not pol_id:
+                            continue
+                        del_result = await self.azure_pipeline_config_service.delete_build_policy(repo_data, int(pol_id))
+                        if not del_result.get("success"):
+                            err = del_result.get("error", "Failed to remove Azure check")
+                            self._set_repo_action_step(operation_id, "sync_azure_check", "error", err)
+                            self._update_repo_action_operation(
+                                operation_id, status="failed", message="Activation sync failed", error=err
+                            )
+                            return
+                        removed += 1
+                    detail = "No PR-Agent checks found to remove." if removed == 0 else f"Removed {removed} PR-Agent check(s)."
+                    self._set_repo_action_step(operation_id, "sync_azure_check", "completed", detail)
+            else:
+                self._set_repo_action_step(operation_id, "sync_azure_check", "skipped", "No Azure check sync required.")
+
+            self._update_repo_action_operation(
+                operation_id,
+                current_step="update_repository_state",
+                message=f"Updating repository state to {action_label}d",
+            )
+            self._set_repo_action_step(operation_id, "update_repository_state", "running", "Persisting repository state.")
+            repo.is_active = target_active
+            db.commit()
+            self._set_repo_action_step(operation_id, "update_repository_state", "completed", f"Repository set to {action_label}d.")
+            self._set_repo_action_step(operation_id, "complete", "completed", "Activation sync complete.")
+            self._update_repo_action_operation(
+                operation_id,
+                status="completed",
+                current_step="complete",
+                message=f"Repository {action_label}d successfully",
+                result={"repository_id": repo_id, "is_active": target_active},
+            )
+        except Exception as e:
+            db.rollback()
+            logger.error("Repository activation sync operation failed for repo %s: %s", repo_id, e)
+            self._update_repo_action_operation(
+                operation_id,
+                status="failed",
+                message="Repository activation sync failed",
+                error=str(e),
+            )
+        finally:
+            db.close()
     
     def _setup_routes(self):
         """Setup all API routes using service methods"""
@@ -2727,6 +3099,111 @@ class DashboardApplication:
             if not repository:
                 raise HTTPException(status_code=404, detail="Repository not found")
             return APIResponse(data=repository)
+
+        @self.app.get("/api/repositories/{repo_id}/cleanup/preview")
+        async def get_repository_cleanup_preview(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            try:
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                preview = await self._build_repository_cleanup_preview(db, repo)
+                return APIResponse(data=preview, message="Cleanup impact preview generated")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error("Failed to build repository cleanup preview for %s: %s", repo_id, e)
+                raise HTTPException(status_code=500, detail="Failed to build cleanup preview")
+
+        @self.app.post("/api/repositories/{repo_id}/cleanup/start")
+        async def start_repository_cleanup(repo_id: int, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            try:
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                preview = await self._build_repository_cleanup_preview(db, repo)
+                steps = [
+                    {"id": "remove_azure_check", "label": "Remove Azure check", "status": "pending", "detail": ""},
+                    {"id": "delete_repo_metrics", "label": "Delete repository metrics/history", "status": "pending", "detail": ""},
+                    {"id": "delete_dashboard_repo_entry", "label": "Delete dashboard repository entry", "status": "pending", "detail": ""},
+                    {"id": "complete", "label": "Cleanup complete", "status": "pending", "detail": ""},
+                ]
+                op = self._new_repo_action_operation(
+                    repo_id,
+                    "repository_cleanup",
+                    steps,
+                    metadata={"repository_name": repo.name, "provider": repo.provider, "preview": preview},
+                )
+                asyncio.create_task(self._run_repository_cleanup_operation(op["operation_id"], repo_id))
+                return APIResponse(
+                    data={"operation_id": op["operation_id"], "status": op["status"], "steps": op["steps"], "preview": preview},
+                    message="Repository cleanup started",
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error("Failed to start repository cleanup for %s: %s", repo_id, e)
+                raise HTTPException(status_code=500, detail="Failed to start repository cleanup")
+
+        @self.app.get("/api/repositories/{repo_id}/cleanup/status/{operation_id}")
+        async def get_repository_cleanup_status(
+            repo_id: int, operation_id: str, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)
+        ):
+            op = self._get_repo_action_operation(operation_id)
+            if not op or op.get("repo_id") != repo_id or op.get("operation_type") != "repository_cleanup":
+                raise HTTPException(status_code=404, detail="Cleanup operation not found")
+            return APIResponse(data=op, message="Cleanup status retrieved")
+
+        @self.app.post("/api/repositories/{repo_id}/activation-sync/start")
+        async def start_repository_activation_sync(
+            repo_id: int, body: dict, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)
+        ):
+            try:
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                if "target_active" not in (body or {}):
+                    raise HTTPException(status_code=400, detail="target_active is required")
+                target_active = bool(body.get("target_active"))
+                steps = [
+                    {
+                        "id": "sync_azure_check",
+                        "label": "Add Azure check" if target_active else "Remove Azure check",
+                        "status": "pending",
+                        "detail": "",
+                    },
+                    {"id": "update_repository_state", "label": "Update dashboard repository state", "status": "pending", "detail": ""},
+                    {"id": "complete", "label": "Activation sync complete", "status": "pending", "detail": ""},
+                ]
+                op = self._new_repo_action_operation(
+                    repo_id,
+                    "repository_activation_sync",
+                    steps,
+                    metadata={
+                        "repository_name": repo.name,
+                        "provider": repo.provider,
+                        "target_active": target_active,
+                        "current_active": bool(repo.is_active),
+                    },
+                )
+                asyncio.create_task(self._run_repository_activation_sync_operation(op["operation_id"], repo_id, target_active))
+                return APIResponse(
+                    data={"operation_id": op["operation_id"], "status": op["status"], "steps": op["steps"]},
+                    message="Repository activation sync started",
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error("Failed to start repository activation sync for %s: %s", repo_id, e)
+                raise HTTPException(status_code=500, detail="Failed to start repository activation sync")
+
+        @self.app.get("/api/repositories/{repo_id}/activation-sync/status/{operation_id}")
+        async def get_repository_activation_sync_status(
+            repo_id: int, operation_id: str, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)
+        ):
+            op = self._get_repo_action_operation(operation_id)
+            if not op or op.get("repo_id") != repo_id or op.get("operation_type") != "repository_activation_sync":
+                raise HTTPException(status_code=404, detail="Activation sync operation not found")
+            return APIResponse(data=op, message="Activation sync status retrieved")
         
         @self.app.put("/api/repositories/{repo_id}")
         async def update_repository(repo_id: int, repo_update: RepositoryUpdate, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):

@@ -199,6 +199,27 @@ const RepositoryManager = () => {
     pipelineSetupResult: null,
   });
   const [azurePatIdentity, setAzurePatIdentity] = useState({ loading: false, data: null, error: null });
+  const [repoCleanupConfirmModal, setRepoCleanupConfirmModal] = useState({
+    show: false,
+    loading: false,
+    repo: null,
+    preview: null,
+    error: null,
+  });
+  const [repoActionModal, setRepoActionModal] = useState({
+    show: false,
+    running: false,
+    operationType: '',
+    operationId: '',
+    repoId: null,
+    title: '',
+    subtitle: '',
+    status: '',
+    steps: [],
+    message: '',
+    error: null,
+  });
+  const repoActionPollTimeoutRef = useRef(null);
 
   const fetchRepositories = useCallback(async () => {
     try {
@@ -215,6 +236,12 @@ const RepositoryManager = () => {
   useEffect(() => {
     fetchRepositories();
   }, [fetchRepositories]);
+
+  useEffect(() => {
+    return () => {
+      clearRepoActionPollTimeout();
+    };
+  }, []);
 
   useEffect(() => {
     const connId = formData.action_runner_connection_id || wizardState.connectionId;
@@ -698,19 +725,135 @@ const RepositoryManager = () => {
     }
   };
 
-  const handleDelete = async (repo) => {
-    if (window.confirm(`Are you sure you want to delete repository "${repo.name}"?\n\nThis action cannot be undone.`)) {
-      try {
-        await api.deleteRepository(repo.id);
-        showSuccess('Success', 'Repository deleted successfully');
-        // Close expanded view if this repo was expanded
-        if (expandedRepo === repo.id) {
-          setExpandedRepo(null);
+  const clearRepoActionPollTimeout = () => {
+    if (repoActionPollTimeoutRef.current) {
+      clearTimeout(repoActionPollTimeoutRef.current);
+      repoActionPollTimeoutRef.current = null;
+    }
+  };
+
+  const pollRepositoryActionStatus = useCallback(async (repoId, operationType, operationId) => {
+    try {
+      const statusResp = operationType === 'cleanup'
+        ? await api.getRepositoryCleanupStatus(repoId, operationId)
+        : await api.getRepositoryActivationSyncStatus(repoId, operationId);
+      const op = statusResp.data?.data || {};
+      const done = op.status === 'completed' || op.status === 'failed';
+      setRepoActionModal((prev) => ({
+        ...prev,
+        status: op.status || '',
+        steps: Array.isArray(op.steps) ? op.steps : [],
+        message: op.message || '',
+        error: op.error || null,
+        running: !done,
+      }));
+
+      if (done) {
+        if (op.status === 'completed') {
+          if (operationType === 'cleanup') {
+            showSuccess('Repository removed', 'Cleanup completed and repository was removed from the dashboard.');
+            if (expandedRepo === repoId) setExpandedRepo(null);
+          } else {
+            const target = !!op.result?.is_active;
+            showSuccess('Repository updated', `Repository ${target ? 'activated' : 'deactivated'} and Azure check synchronized.`);
+          }
+        } else {
+          showError('Operation failed', op.error || op.message || 'Repository operation failed.');
         }
-        fetchRepositories();
-      } catch (error) {
-        showError('Error', 'Failed to delete repository');
+        await fetchRepositories();
+        clearRepoActionPollTimeout();
+        return;
       }
+
+      clearRepoActionPollTimeout();
+      repoActionPollTimeoutRef.current = setTimeout(
+        () => pollRepositoryActionStatus(repoId, operationType, operationId),
+        1500
+      );
+    } catch (error) {
+      clearRepoActionPollTimeout();
+      setRepoActionModal((prev) => ({
+        ...prev,
+        running: false,
+        status: 'failed',
+        error: error.response?.data?.detail || error.message || 'Failed to poll operation status.',
+      }));
+      showError('Operation failed', error.response?.data?.detail || error.message || 'Failed to poll operation status.');
+    }
+  }, [expandedRepo, fetchRepositories, showError, showSuccess]);
+
+  const startRepoActionModal = async (repo, operationType, startResponse) => {
+    const payload = startResponse?.data?.data || {};
+    const operationId = payload.operation_id;
+    if (!operationId) {
+      throw new Error('Operation id missing from backend response');
+    }
+    setRepoActionModal({
+      show: true,
+      running: true,
+      operationType,
+      operationId,
+      repoId: repo.id,
+      title: operationType === 'cleanup' ? 'Repository Cleanup In Progress' : 'Repository Activation Sync In Progress',
+      subtitle: operationType === 'cleanup'
+        ? `Cleaning up ${repo.name}. This can take a moment.`
+        : `Synchronizing Azure check state for ${repo.name}.`,
+      status: payload.status || 'running',
+      steps: Array.isArray(payload.steps) ? payload.steps : [],
+      message: '',
+      error: null,
+    });
+    clearRepoActionPollTimeout();
+    repoActionPollTimeoutRef.current = setTimeout(
+      () => pollRepositoryActionStatus(repo.id, operationType, operationId),
+      300
+    );
+  };
+
+  const handleDelete = async (repo) => {
+    try {
+      setRepoCleanupConfirmModal({
+        show: true,
+        loading: true,
+        repo,
+        preview: null,
+        error: null,
+      });
+      const previewResp = await api.getRepositoryCleanupPreview(repo.id);
+      setRepoCleanupConfirmModal({
+        show: true,
+        loading: false,
+        repo,
+        preview: previewResp.data?.data || null,
+        error: null,
+      });
+    } catch (error) {
+      setRepoCleanupConfirmModal({
+        show: false,
+        loading: false,
+        repo: null,
+        preview: null,
+        error: null,
+      });
+      showError('Delete failed', error.response?.data?.detail || 'Failed to load cleanup preview.');
+    }
+  };
+
+  const confirmRepositoryCleanupDelete = async () => {
+    const repo = repoCleanupConfirmModal.repo;
+    if (!repo) return;
+    try {
+      const startResp = await api.startRepositoryCleanup(repo.id);
+      setRepoCleanupConfirmModal({
+        show: false,
+        loading: false,
+        repo: null,
+        preview: null,
+        error: null,
+      });
+      await startRepoActionModal(repo, 'cleanup', startResp);
+    } catch (error) {
+      showError('Delete failed', error.response?.data?.detail || 'Failed to start repository cleanup.');
     }
   };
 
@@ -1114,14 +1257,28 @@ const RepositoryManager = () => {
 
   const toggleRepositoryActive = async (repoId, currentIsActive) => {
     try {
-      await api.updateRepository(repoId, { is_active: !currentIsActive });
-      showSuccess('Success', `Repository ${!currentIsActive ? 'activated' : 'deactivated'} successfully`);
-      fetchRepositories(); // Refresh to get updated status
+      const repo = repositories.find((item) => item.id === repoId);
+      if (!repo) {
+        showError('Error', 'Repository not found');
+        return;
+      }
+      const targetActive = !currentIsActive;
+      if (repo.provider === 'azure_devops') {
+        const startResp = await api.startRepositoryActivationSync(repoId, targetActive);
+        await startRepoActionModal(repo, 'activation_sync', startResp);
+      } else {
+        await api.updateRepository(repoId, { is_active: targetActive });
+        showSuccess('Success', `Repository ${targetActive ? 'activated' : 'deactivated'} successfully`);
+        fetchRepositories();
+      }
     } catch (error) {
       const errorMsg = error.response?.data?.detail || 'Failed to update repository status';
       showError('Error', errorMsg);
     }
   };
+
+  const isRepoActionBusy = (repoId) =>
+    repoActionModal.show && repoActionModal.running && repoActionModal.repoId === repoId;
 
   const loadEffectiveConfig = async (repoId) => {
     try {
@@ -3713,27 +3870,37 @@ const RepositoryManager = () => {
                               {/* Active Toggle */}
                               <button
                                 onClick={() => toggleRepositoryActive(repo.id, repo.is_active)}
-                                className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors duration-200 shadow-sm ${
+                                disabled={isRepoActionBusy(repo.id)}
+                                className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-60 disabled:cursor-not-allowed ${
                                   repo.is_active
                                     ? 'text-white bg-red-600 hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-600'
                                     : 'text-white bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600'
                                 }`}
                               >
-                                {repo.is_active ? (
+                                {isRepoActionBusy(repo.id) ? (
+                                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                                ) : repo.is_active ? (
                                   <X className="h-4 w-4 mr-2" />
                                 ) : (
                                   <Check className="h-4 w-4 mr-2" />
                                 )}
-                                {repo.is_active ? 'Deactivate' : 'Activate'}
+                                {isRepoActionBusy(repo.id)
+                                  ? (repo.is_active ? 'Deactivating...' : 'Activating...')
+                                  : (repo.is_active ? 'Deactivate' : 'Activate')}
                               </button>
                               
 
                               <button
                                 onClick={() => handleDelete(repo)}
-                                className="flex items-center px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-600 rounded-lg transition-colors duration-200 shadow-sm"
+                                disabled={isRepoActionBusy(repo.id)}
+                                className="flex items-center px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-600 rounded-lg transition-colors duration-200 shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
                               >
-                                <Trash2 className="h-4 w-4 mr-2" />
-                                Delete
+                                {isRepoActionBusy(repo.id) ? (
+                                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                                ) : (
+                                  <Trash2 className="h-4 w-4 mr-2" />
+                                )}
+                                {isRepoActionBusy(repo.id) ? 'Processing...' : 'Delete'}
                               </button>
                             </>
                           ) : (
@@ -6319,6 +6486,144 @@ const RepositoryManager = () => {
           onClose={closeAzurePipelineConfigEditor}
           onSave={handleAzurePipelineConfigSave}
         />
+      )}
+
+      {repoCleanupConfirmModal.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-2xl rounded-xl bg-white dark:bg-gray-900 shadow-2xl border border-gray-200 dark:border-gray-700">
+            <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Delete Repository</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">
+                This removes the repository from the dashboard and cleans up linked automation artifacts.
+              </p>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              {repoCleanupConfirmModal.loading ? (
+                <div className="flex items-center text-sm text-gray-600 dark:text-gray-300">
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  Loading cleanup impact preview...
+                </div>
+              ) : (
+                <>
+                  <div className="text-sm text-gray-700 dark:text-gray-300">
+                    Repository: <span className="font-medium">{repoCleanupConfirmModal.repo?.name}</span>
+                  </div>
+                  {repoCleanupConfirmModal.preview?.cleanup_scope && (
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
+                      <div className="rounded border border-gray-200 dark:border-gray-700 p-2">Checks: {repoCleanupConfirmModal.preview.cleanup_scope.azure_checks ?? 0}</div>
+                      <div className="rounded border border-gray-200 dark:border-gray-700 p-2">Operations: {repoCleanupConfirmModal.preview.cleanup_scope.operations ?? 0}</div>
+                      <div className="rounded border border-gray-200 dark:border-gray-700 p-2">Jobs: {repoCleanupConfirmModal.preview.cleanup_scope.jobs ?? 0}</div>
+                      <div className="rounded border border-gray-200 dark:border-gray-700 p-2">Logs: {repoCleanupConfirmModal.preview.cleanup_scope.logs ?? 0}</div>
+                      <div className="rounded border border-gray-200 dark:border-gray-700 p-2">Notification Events: {repoCleanupConfirmModal.preview.cleanup_scope.notification_events ?? 0}</div>
+                    </div>
+                  )}
+                  <ul className="text-sm text-gray-700 dark:text-gray-300 space-y-1">
+                    <li>- Deletes this dashboard repository entry (not the target source repository).</li>
+                    <li>- Removes Azure PR-Agent check/policy entries for Azure repositories.</li>
+                    <li>- Cleans repository-scoped metrics/history and recalculates aggregates.</li>
+                  </ul>
+                  {repoCleanupConfirmModal.preview?.azure_policy_warning && (
+                    <div className="rounded-md bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 p-3 text-sm text-yellow-800 dark:text-yellow-300">
+                      Azure check preview warning: {repoCleanupConfirmModal.preview.azure_policy_warning}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setRepoCleanupConfirmModal({ show: false, loading: false, repo: null, preview: null, error: null })}
+                className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmRepositoryCleanupDelete}
+                disabled={repoCleanupConfirmModal.loading}
+                className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                Delete and Cleanup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {repoActionModal.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-2xl rounded-xl bg-white dark:bg-gray-900 shadow-2xl border border-gray-200 dark:border-gray-700">
+            <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{repoActionModal.title}</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">{repoActionModal.subtitle}</p>
+            </div>
+            <div className="px-6 py-5 space-y-3">
+              {(repoActionModal.message || repoActionModal.error) && (
+                <div className={`text-sm rounded-md p-3 border ${
+                  repoActionModal.error
+                    ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'
+                    : 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300'
+                }`}>
+                  {repoActionModal.error || repoActionModal.message}
+                </div>
+              )}
+              {Array.isArray(repoActionModal.steps) && repoActionModal.steps.length > 0 && (
+                <div className="space-y-2">
+                  {repoActionModal.steps.map((step) => {
+                    const status = step.status || 'pending';
+                    return (
+                      <div key={step.id} className="flex items-start gap-3 rounded-md border border-gray-200 dark:border-gray-700 p-3">
+                        <div className="mt-0.5">
+                          {status === 'completed' ? (
+                            <CheckCircle className="h-4 w-4 text-green-600" />
+                          ) : status === 'error' ? (
+                            <AlertCircle className="h-4 w-4 text-red-600" />
+                          ) : status === 'skipped' ? (
+                            <Info className="h-4 w-4 text-gray-500" />
+                          ) : status === 'running' ? (
+                            <RefreshCw className="h-4 w-4 text-blue-600 animate-spin" />
+                          ) : (
+                            <Clock className="h-4 w-4 text-gray-400" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-gray-900 dark:text-white">{step.label || step.id}</div>
+                          {step.detail && <div className="text-xs text-gray-600 dark:text-gray-300 mt-0.5">{step.detail}</div>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-end">
+              <button
+                type="button"
+                disabled={repoActionModal.running}
+                onClick={() => {
+                  clearRepoActionPollTimeout();
+                  setRepoActionModal({
+                    show: false,
+                    running: false,
+                    operationType: '',
+                    operationId: '',
+                    repoId: null,
+                    title: '',
+                    subtitle: '',
+                    status: '',
+                    steps: [],
+                    message: '',
+                    error: null,
+                  });
+                }}
+                className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {repoActionModal.running ? 'Running...' : 'Close'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Effective Configuration Modal */}
