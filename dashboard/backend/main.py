@@ -2492,7 +2492,7 @@ class DashboardApplication:
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.post("/api/azure-devops/pipeline/setup")
-        async def azure_devops_setup_pipeline(body: dict, current_user: UserDB = Depends(require_auth)):
+        async def azure_devops_setup_pipeline(body: dict, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             """Set up Azure pipeline YAML and optional build validation policy without requiring a saved repository."""
             try:
                 repo_url = (body.get("repo_url") or "").strip()
