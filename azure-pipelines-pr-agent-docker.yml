@@ -62,8 +62,20 @@ stages:
         source /opt/pr-agent-runner/env 2>/dev/null || true
 
         IMAGE="${PR_AGENT_IMAGE_OVERRIDE:-${GCP_RUNNER_PR_AGENT_IMAGE:-}}"
+        # Azure can keep unresolved variable references as literals, e.g. '$(PR_AGENT_IMAGE)'.
+        # Treat that as empty so VM-provisioned fallback still works.
+        case "$IMAGE" in
+          '$('*')') IMAGE="" ;;
+        esac
+        if [ -z "$IMAGE" ] && [ -n "${GCP_RUNNER_PR_AGENT_IMAGE:-}" ]; then
+          IMAGE="${GCP_RUNNER_PR_AGENT_IMAGE}"
+        fi
         if [ -z "$IMAGE" ]; then
           echo "##vso[task.logissue type=error]No PR-Agent image found. Set it in Pipeline Variables (PR_AGENT_IMAGE) or verify the VM was provisioned correctly."
+          exit 1
+        fi
+        if echo "$IMAGE" | grep -q '[A-Z]'; then
+          echo "##vso[task.logissue type=error]Invalid PR-Agent image '$IMAGE'. Docker image names must be lowercase."
           exit 1
         fi
 

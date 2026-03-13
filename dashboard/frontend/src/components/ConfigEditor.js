@@ -79,6 +79,79 @@ const ConfigEditor = ({ navigationTarget = null }) => {
   // Flat list wrapped in an object for dropdowns that don't need categories
   const allAvailableModels = MODELS_BY_PROVIDER;
 
+  const tabLabels = {
+    models: 'AI Models',
+    context: 'Code Context',
+    'pr-reviewer': 'PR Reviewer',
+    'pr-description': 'PR Description',
+    'pr-code-suggestions': 'Code Suggestions',
+    github: 'GitHub',
+    dashboard: 'Dashboard',
+    'time-estimation': 'Time Estimation',
+    'pr-filters': 'PR Filters',
+    advanced: 'Advanced',
+  };
+
+  const buildValidationErrorEntries = useCallback((errorMap) => {
+    const toFieldLabel = (path) => {
+      const leaf = (path || '').split('.').pop() || path || 'configuration';
+      return leaf
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, (m) => m.toUpperCase());
+    };
+
+    const resolveTabId = (path) => {
+      if (!path) return 'advanced';
+      if (path.startsWith('csharp_code_context_service.')) return 'context';
+      if (path.startsWith('pr_reviewer.')) return 'pr-reviewer';
+      if (path.startsWith('pr_description.')) return 'pr-description';
+      if (path.startsWith('pr_code_suggestions.')) return 'pr-code-suggestions';
+      if (path.startsWith('github.')) return 'github';
+      if (path.startsWith('dashboard.')) return 'dashboard';
+      if (path.startsWith('pr_dev_time_estimation.')) return 'time-estimation';
+      if (path.startsWith('pr_filters.')) return 'pr-filters';
+      if (path.startsWith('best_practices.') || path.startsWith('auto_best_practices.')) return 'advanced';
+      if (
+        path === 'model' ||
+        path === 'model_reasoning' ||
+        path === 'model_weak' ||
+        path === 'max_model_tokens' ||
+        path === 'temperature' ||
+        path === 'reasoning_effort' ||
+        path.startsWith('api_keys.')
+      ) {
+        return 'models';
+      }
+      return 'advanced';
+    };
+
+    return Object.entries(errorMap || {})
+      .filter(([key, value]) => key !== 'general' && Boolean(value))
+      .map(([path, message]) => {
+        const tabId = resolveTabId(path);
+        return {
+          path,
+          message: String(message),
+          tabId,
+          tabLabel: tabLabels[tabId] || 'Advanced',
+          fieldLabel: toFieldLabel(path),
+        };
+      });
+  }, []);
+
+  const validationErrorEntries = React.useMemo(
+    () => buildValidationErrorEntries(errors),
+    [errors, buildValidationErrorEntries]
+  );
+
+  const validationErrorCountsByTab = React.useMemo(() => {
+    const counts = {};
+    for (const entry of validationErrorEntries) {
+      counts[entry.tabId] = (counts[entry.tabId] || 0) + 1;
+    }
+    return counts;
+  }, [validationErrorEntries]);
+
 
 
   // Check if there are any changes - only after initial load is complete and both configs are loaded
@@ -348,7 +421,16 @@ const ConfigEditor = ({ navigationTarget = null }) => {
       const validationErrors = validateConfig(config);
       if (Object.keys(validationErrors).length > 0) {
         setErrors(validationErrors);
-        showError('Validation Failed', 'Please fix the configuration errors before saving.');
+        const entries = buildValidationErrorEntries(validationErrors);
+        if (entries.length > 0) {
+          setActiveTab(entries[0].tabId);
+          showError(
+            'Validation Failed',
+            `Found ${entries.length} issue(s). First: ${entries[0].tabLabel} > ${entries[0].fieldLabel} - ${entries[0].message}`
+          );
+        } else {
+          showError('Validation Failed', 'Please fix the configuration errors before saving.');
+        }
         return;
       }
 
@@ -633,8 +715,16 @@ const ConfigEditor = ({ navigationTarget = null }) => {
     setErrors(prev => {
       const newErrors = { ...prev };
       const mainKey = path.split('.')[0];
-      if (newErrors[mainKey]) {
-        delete newErrors[mainKey];
+      const keys = Object.keys(newErrors);
+      for (const key of keys) {
+        if (
+          key === mainKey ||
+          key === path ||
+          key.startsWith(`${mainKey}.`) ||
+          path.startsWith(`${key}.`)
+        ) {
+          delete newErrors[key];
+        }
       }
       return newErrors;
     });
@@ -655,6 +745,20 @@ const ConfigEditor = ({ navigationTarget = null }) => {
       return `${baseClasses} hover:border-primary-400 dark:hover:border-primary-500`;
     }
   }, []);
+
+  const renderTabNavLabel = useCallback((tabId, label) => {
+    const count = validationErrorCountsByTab[tabId] || 0;
+    return (
+      <div className="flex items-center justify-between w-full min-w-0">
+        <span className="truncate">{label}</span>
+        {count > 0 && (
+          <span className="ml-2 inline-flex items-center justify-center min-w-5 h-5 rounded-full bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 text-[10px] font-semibold px-1">
+            {count}
+          </span>
+        )}
+      </div>
+    );
+  }, [validationErrorCountsByTab]);
 
   const ModelSelector = useCallback(({ label, value, onChange, models, description, editing }) => (
     <div className="space-y-2">
@@ -843,6 +947,35 @@ const ConfigEditor = ({ navigationTarget = null }) => {
         </div>
       )}
 
+      {editing && validationErrorEntries.length > 0 && (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md p-4">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 mt-0.5" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-red-800 dark:text-red-200">
+                {validationErrorEntries.length} configuration issue{validationErrorEntries.length !== 1 ? 's' : ''} must be fixed before saving
+              </p>
+              <p className="text-xs text-red-700 dark:text-red-300 mt-1">
+                Click an item to jump to the relevant tab.
+              </p>
+              <div className="mt-3 space-y-1 max-h-52 overflow-y-auto pr-1">
+                {validationErrorEntries.map((entry, idx) => (
+                  <button
+                    key={`${entry.path}-${idx}`}
+                    type="button"
+                    onClick={() => setActiveTab(entry.tabId)}
+                    className="w-full text-left text-xs rounded border border-red-200 dark:border-red-700 bg-white/70 dark:bg-red-950/20 px-2.5 py-1.5 hover:bg-white dark:hover:bg-red-900/30 transition-colors"
+                  >
+                    <span className="font-medium text-red-900 dark:text-red-200">{entry.tabLabel}</span>
+                    <span className="text-red-700 dark:text-red-300"> - {entry.fieldLabel}: {entry.message}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main Layout with Sidebar */}
       <div className="flex gap-3">
         {/* Sidebar Navigation */}
@@ -857,7 +990,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 }`}
               >
                 <Brain className="h-4 w-4 mr-3 flex-shrink-0" />
-                <span className="truncate">AI Models</span>
+                {renderTabNavLabel('models', 'AI Models')}
               </button>
               <button
                 onClick={() => setActiveTab('context')}
@@ -868,7 +1001,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 }`}
               >
                 <Database className="h-4 w-4 mr-3 flex-shrink-0" />
-                <span className="truncate">Code Context</span>
+                {renderTabNavLabel('context', 'Code Context')}
               </button>
 
               <button
@@ -880,7 +1013,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 }`}
               >
                 <MessageSquare className="h-4 w-4 mr-3 flex-shrink-0" />
-                <span className="truncate">PR Reviewer</span>
+                {renderTabNavLabel('pr-reviewer', 'PR Reviewer')}
               </button>
               <button
                 onClick={() => setActiveTab('pr-description')}
@@ -891,7 +1024,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 }`}
               >
                 <FileText className="h-4 w-4 mr-3 flex-shrink-0" />
-                <span className="truncate">PR Description</span>
+                {renderTabNavLabel('pr-description', 'PR Description')}
               </button>
               <button
                 onClick={() => setActiveTab('pr-code-suggestions')}
@@ -902,7 +1035,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 }`}
               >
                 <Lightbulb className="h-4 w-4 mr-3 flex-shrink-0" />
-                <span className="truncate">Code Suggestions</span>
+                {renderTabNavLabel('pr-code-suggestions', 'Code Suggestions')}
               </button>
               <button
                 onClick={() => setActiveTab('github')}
@@ -913,7 +1046,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 }`}
               >
                 <Github className="h-4 w-4 mr-3 flex-shrink-0" />
-                <span className="truncate">GitHub</span>
+                {renderTabNavLabel('github', 'GitHub')}
               </button>
 
               <button
@@ -925,7 +1058,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 }`}
               >
                 <Gauge className="h-4 w-4 mr-3 flex-shrink-0" />
-                <span className="truncate">Dashboard</span>
+                {renderTabNavLabel('dashboard', 'Dashboard')}
               </button>
               <button
                 onClick={() => setActiveTab('time-estimation')}
@@ -936,7 +1069,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 }`}
               >
                 <Clock className="h-4 w-4 mr-3 flex-shrink-0" />
-                <span className="truncate">Time Estimation</span>
+                {renderTabNavLabel('time-estimation', 'Time Estimation')}
               </button>
               <button
                 onClick={() => setActiveTab('pr-filters')}
@@ -947,7 +1080,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 }`}
               >
                 <Shield className="h-4 w-4 mr-3 flex-shrink-0" />
-                <span className="truncate">PR Filters</span>
+                {renderTabNavLabel('pr-filters', 'PR Filters')}
               </button>
               <button
                 onClick={() => setActiveTab('advanced')}
@@ -958,7 +1091,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 }`}
               >
                 <Settings className="h-4 w-4 mr-3 flex-shrink-0" />
-                <span className="truncate">Advanced</span>
+                {renderTabNavLabel('advanced', 'Advanced')}
               </button>
             </nav>
         </div>

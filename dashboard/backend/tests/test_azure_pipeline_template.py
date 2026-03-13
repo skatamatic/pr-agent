@@ -16,3 +16,5 @@ def test_docker_pipeline_template_prefers_vm_pat_with_system_fallback():
     assert "DASHBOARD_API_KEY: $(VM_DASHBOARD_API_KEY)" in template
     assert "--entrypoint python3" in template
     assert "-m pr_agent.servers.azuredevops_pipeline_runner" in template
+    assert "case \"$IMAGE\" in" in template
+    assert "Docker image names must be lowercase" in template

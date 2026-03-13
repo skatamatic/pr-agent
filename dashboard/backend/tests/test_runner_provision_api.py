@@ -322,6 +322,52 @@ class TestRunnerProvisionAPI:
         assert response.status_code == 400
         assert "Push failed" in response.json().get("detail", "")
 
+    def test_azure_pipeline_setup_passes_db_session_to_push_template_resolution(self, client_app, auth_headers, monkeypatch):
+        captured = {"db_session_is_none": None}
+
+        async def fake_push_yaml_direct(repo_data, content=None, db_session=None):
+            captured["db_session_is_none"] = db_session is None
+            return {
+                "success": True,
+                "yaml_pushed": True,
+                "yaml_up_to_date": False,
+                "pipeline_created": True,
+                "pipeline_id": 123,
+                "requires_pr_merge": False,
+                "message": "ok",
+                "setup_steps": [],
+                "cleanup_plan": [],
+                "cleanup": {"attempted": False, "actions": []},
+            }
+
+        async def fake_ensure_build_policy(repo_data, branch, pipeline_definition_id, is_blocking=False):
+            return {"success": True, "created": True, "updated": False}
+
+        monkeypatch.setattr(
+            backend_main.dashboard_app.azure_pipeline_config_service,
+            "push_yaml_direct",
+            fake_push_yaml_direct,
+        )
+        monkeypatch.setattr(
+            backend_main.dashboard_app.azure_pipeline_config_service,
+            "ensure_build_policy",
+            fake_ensure_build_policy,
+        )
+
+        response = client_app.post(
+            "/api/azure-devops/pipeline/setup",
+            json={
+                "repo_url": "https://mdt-software.visualstudio.com/Product/_git/Archive.MDT.ConfigEditor",
+                "pat": "pat",
+                "branch": "master",
+                "is_blocking": False,
+                "action_runner_connection_id": 42,
+            },
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        assert captured["db_session_is_none"] is False
+
     def test_provision_azure_auto_selects_pool_when_missing(self, client_app, auth_headers, monkeypatch):
         # Configure minimal GCP settings so endpoint reaches provisioning logic.
         monkeypatch.setattr(backend_main.settings, "gcp_runner_project_id", "test-project", raising=False)

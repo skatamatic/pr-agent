@@ -2515,7 +2515,9 @@ class DashboardApplication:
                     "action_runner_connection_id": connection_id,
                 }
 
-                push_result = await self.azure_pipeline_config_service.push_yaml_direct(repo_data, content, None)
+                # Pass DB session so canonical template can resolve the selected
+                # action runner connection pool during initial (unsaved) wizard setup.
+                push_result = await self.azure_pipeline_config_service.push_yaml_direct(repo_data, content, db)
                 if not push_result.get("success"):
                     detail: Any = push_result.get("error", "Failed to push pipeline YAML")
                     if push_result.get("setup_steps") or push_result.get("cleanup") or push_result.get("cleanup_plan"):

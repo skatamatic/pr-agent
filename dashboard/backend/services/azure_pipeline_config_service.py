@@ -756,8 +756,20 @@ stages:
         source /opt/pr-agent-runner/env 2>/dev/null || true
 
         IMAGE="${{PR_AGENT_IMAGE_OVERRIDE:-${{GCP_RUNNER_PR_AGENT_IMAGE:-}}}}"
+        # Azure leaves unresolved variables as literal strings like '$(PR_AGENT_IMAGE)'.
+        # Treat those as unset so we can fall back to VM-provisioned config.
+        case "$IMAGE" in
+          '$('*')') IMAGE="" ;;
+        esac
+        if [ -z "$IMAGE" ] && [ -n "${{GCP_RUNNER_PR_AGENT_IMAGE:-}}" ]; then
+          IMAGE="${{GCP_RUNNER_PR_AGENT_IMAGE}}"
+        fi
         if [ -z "$IMAGE" ]; then
           echo "##vso[task.logissue type=error]No PR-Agent image found."
+          exit 1
+        fi
+        if echo "$IMAGE" | grep -q '[A-Z]'; then
+          echo "##vso[task.logissue type=error]Invalid PR-Agent image '$IMAGE'. Docker image names must be lowercase."
           exit 1
         fi
 
