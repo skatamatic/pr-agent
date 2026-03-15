@@ -16,6 +16,7 @@ class AzurePipelineConfigService:
 
     AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=30)
     SHARED_PIPELINE_REPO_NAME = os.getenv("PR_AGENT_AZDO_SHARED_PIPELINE_REPO", "pr-agent-pipelines")
+    SHARED_PIPELINE_NAME = os.getenv("PR_AGENT_AZDO_SHARED_PIPELINE_NAME", "PR-Agent Shared")
 
     def __init__(self):
         pass
@@ -932,6 +933,110 @@ stages:
                 lines.append(stripped)
         return '\n'.join(lines)
 
+    def _to_pipeline_definition_summary(self, definition: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            'id': definition.get('id'),
+            'name': definition.get('name'),
+            'path': definition.get('path', '\\'),
+            'type': definition.get('type', 'build'),
+            'url': definition.get('_links', {}).get('web', {}).get('href', ''),
+            'queue_status': definition.get('queueStatus', 'enabled'),
+            'trigger_info': self._extract_trigger_info(definition),
+        }
+
+    def _is_shared_pipeline_name(self, name: str) -> bool:
+        name_l = (name or "").strip().lower()
+        canonical_l = (self.SHARED_PIPELINE_NAME or "PR-Agent Shared").strip().lower()
+        return name_l == canonical_l or name_l == "pr-agent shared"
+
+    def _select_shared_pipeline_definitions(
+        self,
+        definitions: List[Dict[str, Any]],
+        shared_repo: str,
+        shared_repo_id: str,
+    ) -> List[Dict[str, Any]]:
+        """Select candidate shared pipeline definitions with tolerant matching."""
+        selected: List[Dict[str, Any]] = []
+        for d in definitions or []:
+            repo = d.get("repository", {}) or {}
+            repo_name = (repo.get("name") or "").strip().lower()
+            repo_id = str(repo.get("id") or "").strip().lower()
+            shared_repo_l = (shared_repo or "").strip().lower()
+            shared_repo_id_l = str(shared_repo_id or "").strip().lower()
+            repo_match = (
+                (repo_name and repo_name == shared_repo_l) or
+                (repo_id and shared_repo_id_l and repo_id == shared_repo_id_l)
+            )
+            if not repo_match:
+                continue
+
+            yaml_filename = (d.get("process", {}) or {}).get("yamlFilename", "")
+            yaml_norm = (yaml_filename or "").strip().lstrip('/').lower()
+            # Accept canonical filename and tolerant path variants.
+            yaml_match = (not yaml_norm) or yaml_norm.endswith("azure-pipelines.yml")
+            if yaml_match:
+                selected.append(self._to_pipeline_definition_summary(d))
+
+        if selected:
+            return selected
+
+        # Fallback: some environments report unusual metadata; recover by canonical name.
+        for d in definitions or []:
+            if self._is_shared_pipeline_name(d.get("name") or ""):
+                selected.append(self._to_pipeline_definition_summary(d))
+        return selected
+
+    async def _fallback_find_pipeline_definitions_for_sync(
+        self,
+        organization: str,
+        project: str,
+        token: str,
+        shared_repo_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fallback discovery for variable sync when strict sync status has no definitions."""
+        headers = self._build_headers(token)
+        defs_url = f"https://dev.azure.com/{organization}/{project}/_apis/build/definitions?api-version=7.1-preview.7"
+        try:
+            async with aiohttp.ClientSession(timeout=self.AIOHTTP_TIMEOUT) as session:
+                async with session.get(defs_url, headers=headers) as resp:
+                    if resp.status != 200:
+                        return []
+                    defs = (await resp.json()).get("value", [])
+            candidates: List[Dict[str, Any]] = []
+            for d in defs:
+                repo = d.get("repository", {}) or {}
+                repo_id_l = str(repo.get("id") or "").strip().lower()
+                shared_repo_id_l = str(shared_repo_id or "").strip().lower()
+                name_match = self._is_shared_pipeline_name(d.get("name") or "")
+                repo_match = bool(shared_repo_id_l and repo_id_l and repo_id_l == shared_repo_id_l)
+                if name_match or repo_match:
+                    candidates.append(self._to_pipeline_definition_summary(d))
+            if candidates:
+                return candidates
+
+            # Last fallback: pipelines API name lookup (build definitions can omit repository/yaml metadata).
+            pipelines_url = f"https://dev.azure.com/{organization}/{project}/_apis/pipelines?api-version=7.1-preview.1"
+            async with aiohttp.ClientSession(timeout=self.AIOHTTP_TIMEOUT) as session:
+                async with session.get(pipelines_url, headers=headers) as p_resp:
+                    if p_resp.status != 200:
+                        return []
+                    pipelines = (await p_resp.json()).get("value", [])
+            for p in pipelines:
+                if self._is_shared_pipeline_name(p.get("name") or ""):
+                    pid = p.get("id")
+                    candidates.append({
+                        "id": pid,
+                        "name": p.get("name"),
+                        "path": p.get("folder", "\\"),
+                        "type": "build",
+                        "url": f"https://dev.azure.com/{organization}/{project}/_build?definitionId={pid}",
+                        "queue_status": "enabled",
+                        "trigger_info": {},
+                    })
+            return candidates
+        except Exception:
+            return []
+
     async def get_sync_status(self, repo_data: Dict[str, Any], db_session=None) -> Dict[str, Any]:
         """Compare deployed pipeline YAML against canonical template."""
         try:
@@ -954,14 +1059,19 @@ stages:
                     repo_url = f"https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{shared_repo}?api-version=7.0"
                     async with session.get(repo_url, headers=headers) as repo_resp:
                         if repo_resp.status == 404:
+                            fallback_defs = await self._fallback_find_pipeline_definitions_for_sync(
+                                organization=organization,
+                                project=project,
+                                token=token,
+                            )
                             return {
                                 'yaml_exists': False,
-                                'pipeline_exists': False,
+                                'pipeline_exists': len(fallback_defs) > 0,
                                 'sync_status': 'missing',
                                 'remote_content': None,
                                 'canonical_content': canonical,
                                 'diff_lines_changed': 0,
-                                'pipeline_definitions': [],
+                                'pipeline_definitions': fallback_defs,
                                 'organization': organization,
                                 'project': project,
                                 'repository': repository,
@@ -1001,19 +1111,14 @@ stages:
                     async with session.get(defs_url, headers=headers) as defs_resp:
                         if defs_resp.status == 200:
                             defs = (await defs_resp.json()).get("value", [])
-                            for d in defs:
-                                r = d.get("repository", {})
-                                if (r.get("name") == shared_repo or r.get("id") == shared_repo_id) and \
-                                   d.get("process", {}).get("yamlFilename", "") == "azure-pipelines.yml":
-                                    shared_defs.append({
-                                        'id': d.get('id'),
-                                        'name': d.get('name'),
-                                        'path': d.get('path', '\\'),
-                                        'type': d.get('type', 'build'),
-                                        'url': d.get('_links', {}).get('web', {}).get('href', ''),
-                                        'queue_status': d.get('queueStatus', 'enabled'),
-                                        'trigger_info': self._extract_trigger_info(d),
-                                    })
+                            shared_defs = self._select_shared_pipeline_definitions(defs, shared_repo, shared_repo_id)
+                    if not shared_defs:
+                        shared_defs = await self._fallback_find_pipeline_definitions_for_sync(
+                            organization=organization,
+                            project=project,
+                            token=token,
+                            shared_repo_id=shared_repo_id,
+                        )
                     variables_status = await self._collect_pipeline_variables_status(
                         session=session,
                         headers=headers,
@@ -1318,13 +1423,9 @@ stages:
                         async with session.get(defs_url, headers=headers) as resp:
                             if resp.status == 200:
                                 defs = (await resp.json()).get('value', [])
-                                shared = next(
-                                    (
-                                        d for d in defs
-                                        if "pr-agent" in (d.get("name") or "").lower()
-                                    ),
-                                    None,
-                                )
+                                shared = next((d for d in defs if self._is_shared_pipeline_name(d.get("name") or "")), None)
+                                if not shared:
+                                    shared = next((d for d in defs if "pr-agent" in (d.get("name") or "").lower()), None)
                                 if shared:
                                     pipeline_id = shared.get("id")
                                     logger.info("Reusing shared PR-Agent pipeline definition %s for %s/%s/%s",
@@ -1612,18 +1713,15 @@ stages:
                 async with session.get(defs_url, headers=headers) as d_resp:
                     if d_resp.status == 200:
                         defs = (await d_resp.json()).get("value", [])
-                        for d in defs:
-                            r = d.get("repository", {})
-                            if (r.get("name") == shared_repo_name or r.get("id") == repo_id) and \
-                               d.get("process", {}).get("yamlFilename", "") == "azure-pipelines.yml":
-                                pipeline_id = d.get("id")
-                                break
+                        matched_defs = self._select_shared_pipeline_definitions(defs, shared_repo_name, repo_id)
+                        if matched_defs:
+                            pipeline_id = matched_defs[0].get("id")
 
                 pipeline_created = False
                 if not pipeline_id:
                     create_url = f"https://dev.azure.com/{organization}/{project}/_apis/pipelines?api-version=7.0"
                     create_body = {
-                        "name": "PR-Agent Shared",
+                        "name": self.SHARED_PIPELINE_NAME,
                         "folder": "\\",
                         "configuration": {
                             "type": "yaml",
@@ -1948,6 +2046,12 @@ stages:
             return {"success": False, "error": sync_status.get("error")}
 
         pipeline_defs = sync_status.get("pipeline_definitions") or []
+        if not pipeline_defs:
+            pipeline_defs = await self._fallback_find_pipeline_definitions_for_sync(
+                organization=organization,
+                project=project,
+                token=token,
+            )
         if pipeline_definition_id:
             pipeline_defs = [p for p in pipeline_defs if str(p.get("id")) == str(pipeline_definition_id)]
         if not pipeline_defs:

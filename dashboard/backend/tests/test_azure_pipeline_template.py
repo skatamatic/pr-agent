@@ -300,6 +300,62 @@ async def test_collect_pipeline_variables_status_detects_empty_plain_values():
     assert "DASHBOARD_API_KEY" in pipeline["missing_secret_keys"]
 
 
+def test_select_shared_pipeline_definitions_accepts_yaml_path_variants():
+    svc = AzurePipelineConfigService()
+    defs = [
+        {
+            "id": 1,
+            "name": "PR-Agent Shared",
+            "repository": {"name": "pr-agent-pipelines", "id": "repo-guid"},
+            "process": {"yamlFilename": "/azure-pipelines.yml"},
+            "_links": {"web": {"href": "https://example/p/1"}},
+        }
+    ]
+    selected = svc._select_shared_pipeline_definitions(defs, "pr-agent-pipelines", "repo-guid")
+    assert len(selected) == 1
+    assert selected[0]["id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_pipeline_variables_uses_fallback_discovery_when_sync_status_empty(monkeypatch):
+    svc = AzurePipelineConfigService()
+
+    async def _fake_get_sync_status(repo_data, db_session=None):
+        return {"sync_status": "missing", "pipeline_definitions": []}
+
+    async def _fake_fallback_find_pipeline_definitions_for_sync(organization, project, token):
+        return [{"id": 88, "name": "PR-Agent Shared"}]
+
+    calls = []
+
+    async def _fake_set_pipeline_definition_variables(**kwargs):
+        calls.append(kwargs)
+        return {"success": True, "updated_keys": list((kwargs.get("variables_to_set") or {}).keys())}
+
+    monkeypatch.setattr(svc, "get_sync_status", _fake_get_sync_status)
+    monkeypatch.setattr(
+        svc,
+        "_fallback_find_pipeline_definitions_for_sync",
+        _fake_fallback_find_pipeline_definitions_for_sync,
+    )
+    monkeypatch.setattr(svc, "_set_pipeline_definition_variables", _fake_set_pipeline_definition_variables)
+    monkeypatch.setattr(svc, "_get_expected_pipeline_plain_variables", lambda: {"DASHBOARD_URL": "https://dash"})
+
+    result = await svc.sync_pipeline_variables(
+        repo_data={
+            "provider": "azure_devops",
+            "url": "https://dev.azure.com/org/project/_git/repo",
+            "azure_pat": "pat-secret",
+        },
+        db_session=None,
+    )
+
+    assert result["success"] is True
+    assert result["pipelines_targeted"] == 1
+    assert len(calls) == 1
+    assert calls[0]["pipeline_id"] == 88
+
+
 def test_resolve_pr_repo_name_from_source_repository_uri(monkeypatch):
     """_resolve_pr_repo_name prefers SourceRepositoryUri over Build.Repository.Name."""
     import sys

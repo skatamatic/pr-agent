@@ -1900,11 +1900,14 @@ const RepositoryManager = () => {
         const targeted = result.pipelines_targeted || 0;
         showSuccess('Variables synchronized', `Updated pipeline variables/secrets for ${targeted} pipeline${targeted === 1 ? '' : 's'}.`);
         await loadSyncStatus(repoId);
+        return result;
       } else {
-        showError('Sync failed', result.error || 'Failed to synchronize pipeline variables/secrets');
+        throw new Error(result.error || 'Failed to synchronize pipeline variables/secrets');
       }
     } catch (err) {
-      showError('Sync failed', err.response?.data?.detail || err.message);
+      const message = err.response?.data?.detail || err.message;
+      showError('Sync failed', message);
+      throw err;
     } finally {
       setSyncingPipelineVariables(prev => { const s = new Set(prev); s.delete(repoId); return s; });
     }
@@ -2005,11 +2008,7 @@ const RepositoryManager = () => {
 
       // 2) Sync required vars/secrets
       if (ss?.variables_status?.missing_any) {
-        const syncResp = await api.syncPipelineVariables(repoId, {});
-        const syncData = syncResp.data?.data || syncResp.data || {};
-        if (!syncData.success) {
-          throw new Error(syncData.error || 'Failed to sync pipeline variables/secrets');
-        }
+        await handleSyncPipelineVariables(repoId);
         ss = await loadSyncStatus(repoId);
       }
 
@@ -5476,22 +5475,6 @@ const RepositoryManager = () => {
                                 </h4>
                                 <div className="flex items-center space-x-2">
                                   <button
-                                    onClick={() => verifyAzurePipelineSetup(repo.id)}
-                                    disabled={verifyingAzureSetup.has(repo.id) || autoFixingAzureSetup.has(repo.id)}
-                                    className="flex items-center px-3 py-1.5 text-xs font-medium text-teal-700 dark:text-teal-300 bg-teal-50 dark:bg-teal-900/20 border border-teal-200 dark:border-teal-800 rounded-md hover:bg-teal-100 dark:hover:bg-teal-900/30 transition-colors disabled:opacity-50"
-                                  >
-                                    <CheckCircle className={`h-3.5 w-3.5 mr-1.5 ${verifyingAzureSetup.has(repo.id) ? 'animate-pulse' : ''}`} />
-                                    {verifyingAzureSetup.has(repo.id) ? 'Verifying...' : 'Verify Setup'}
-                                  </button>
-                                  <button
-                                    onClick={() => autoFixAzurePipelineSetup(repo)}
-                                    disabled={autoFixingAzureSetup.has(repo.id) || verifyingAzureSetup.has(repo.id)}
-                                    className="flex items-center px-3 py-1.5 text-xs font-medium text-orange-700 dark:text-orange-300 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-md hover:bg-orange-100 dark:hover:bg-orange-900/30 transition-colors disabled:opacity-50"
-                                  >
-                                    <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${autoFixingAzureSetup.has(repo.id) ? 'animate-spin' : ''}`} />
-                                    {autoFixingAzureSetup.has(repo.id) ? 'Auto-fixing...' : 'Auto-fix Setup'}
-                                  </button>
-                                  <button
                                     onClick={() => { loadSyncStatus(repo.id); loadPolicies(repo.id); }}
                                     disabled={loadingSyncStatus.has(repo.id)}
                                     className="flex items-center px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
@@ -5536,11 +5519,11 @@ const RepositoryManager = () => {
                                   const variablesStatus = ss.variables_status || {};
                                   const variableDrift = !!variablesStatus.missing_any;
                                   const yamlDrift = ss.sync_status === 'missing' || ss.sync_status === 'outdated';
-                                  const needsAnyUpdate = !!ss.needs_update || yamlDrift || variableDrift;
                                   const matchingPolicyCount = getMatchingEnabledPolicyCount(
                                     policiesData[repo.id]?.policies || [],
                                     ss.pipeline_definitions || []
                                   );
+                                  const enabledPolicyCount = (policiesData[repo.id]?.policies || []).filter((p) => p.is_enabled !== false).length;
                                   const isBusy =
                                     pushingYaml.has(repo.id) ||
                                     syncingPipelineVariables.has(repo.id) ||
@@ -5559,6 +5542,17 @@ const RepositoryManager = () => {
                                       if (p.variables_fetch_error) parts.push('fetch error');
                                       return `${p.pipeline_name || p.pipeline_id}: ${parts.join(', ')}`;
                                     });
+                                  const uiIssues = [];
+                                  if (!ss.pipeline_exists) uiIssues.push('Pipeline definition is missing.');
+                                  if (yamlDrift) uiIssues.push('Pipeline YAML is missing or outdated.');
+                                  if (variableDrift) uiIssues.push('Required pipeline variables/secrets are missing or invalid.');
+                                  if (matchingPolicyCount === 0) {
+                                    if (enabledPolicyCount > 0) {
+                                      uiIssues.push('Enabled check policies exist, but none target this PR-Agent pipeline.');
+                                    } else {
+                                      uiIssues.push('No enabled build validation check policy is configured.');
+                                    }
+                                  }
                                   return (
                                     <div className="space-y-4">
                                       <div className="bg-slate-50 dark:bg-slate-900/30 border border-slate-200 dark:border-slate-700 rounded-lg p-3">
@@ -5595,6 +5589,29 @@ const RepositoryManager = () => {
                                           </div>
                                         </div>
                                       </div>
+                                      {uiIssues.length > 0 && (
+                                        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3">
+                                          <div className="flex items-start justify-between gap-3">
+                                            <div>
+                                              <p className="text-sm font-medium text-amber-800 dark:text-amber-200 mb-1">Issues detected</p>
+                                              <ul className="text-xs text-amber-800 dark:text-amber-200 space-y-1 list-disc pl-4">
+                                                {uiIssues.map((issue, idx) => (
+                                                  <li key={idx}>{issue}</li>
+                                                ))}
+                                              </ul>
+                                            </div>
+                                            <button
+                                              onClick={() => autoFixAzurePipelineSetup(repo)}
+                                              disabled={isBusy}
+                                              className="shrink-0 flex items-center px-3 py-2 text-xs font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-md transition-colors disabled:opacity-50"
+                                            >
+                                              {autoFixingAzureSetup.has(repo.id)
+                                                ? <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" /> Fixing...</>
+                                                : <><RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Fix Issues</>}
+                                            </button>
+                                          </div>
+                                        </div>
+                                      )}
                                       <div className="text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-900/30 border border-gray-200 dark:border-gray-700 rounded-md px-3 py-2">
                                         {ss.using_shared_pipeline_repo
                                           ? `Using shared pipeline repository: ${ss.shared_pipeline_repo || 'pr-agent-pipelines'}`
@@ -5630,61 +5647,7 @@ const RepositoryManager = () => {
                                             </span>
                                           )}
                                         </div>
-                                        <div className="flex items-center space-x-2">
-                                          {needsAnyUpdate && (
-                                            <button
-                                              onClick={() => {
-                                                if (yamlDrift) {
-                                                  handlePushYaml(repo.id);
-                                                } else {
-                                                  handleSyncPipelineVariables(repo.id);
-                                                }
-                                              }}
-                                              disabled={isBusy}
-                                              className={`flex items-center px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors shadow-sm disabled:opacity-50 ${
-                                                yamlDrift
-                                                  ? 'bg-green-600 hover:bg-green-700'
-                                                  : 'bg-amber-600 hover:bg-amber-700'
-                                              }`}
-                                            >
-                                              {pushingYaml.has(repo.id) ? (
-                                                <><RefreshCw className="h-4 w-4 mr-1.5 animate-spin" /> Pushing...</>
-                                              ) : syncingPipelineVariables.has(repo.id) ? (
-                                                <><RefreshCw className="h-4 w-4 mr-1.5 animate-spin" /> Syncing vars...</>
-                                              ) : ss.sync_status === 'missing' ? (
-                                                <><Plus className="h-4 w-4 mr-1.5" /> Deploy Pipeline YAML</>
-                                              ) : ss.sync_status === 'outdated' ? (
-                                                <><RefreshCw className="h-4 w-4 mr-1.5" /> Update Pipeline YAML</>
-                                              ) : (
-                                                <><RefreshCw className="h-4 w-4 mr-1.5" /> Update Variables/Secrets</>
-                                              )}
-                                            </button>
-                                          )}
-                                          <button
-                                            onClick={() => handleSyncPipelineVariables(repo.id)}
-                                            disabled={isBusy || !ss.pipeline_exists}
-                                            className="flex items-center px-3 py-2 text-sm font-medium text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded-lg hover:bg-indigo-100 dark:hover:bg-indigo-900/30 transition-colors disabled:opacity-50"
-                                            title="Push dashboard-backed variables and secrets to existing pipeline definitions"
-                                          >
-                                            {syncingPipelineVariables.has(repo.id)
-                                              ? <><RefreshCw className="h-4 w-4 mr-1.5 animate-spin" /> Syncing...</>
-                                              : <><RefreshCw className="h-4 w-4 mr-1.5" /> Sync Variables/Secrets</>}
-                                          </button>
-                                          <button
-                                            onClick={() => openAzurePipelineConfigEditor(repo.id)}
-                                            className="flex items-center px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
-                                          >
-                                            <Edit className="h-4 w-4 mr-1.5" /> Edit
-                                          </button>
-                                          <a
-                                            href={checksUrl}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="flex items-center px-3 py-2 text-sm font-medium text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg hover:bg-purple-100 dark:hover:bg-purple-900/30 transition-colors"
-                                          >
-                                            <ExternalLink className="h-4 w-4 mr-1.5" /> Checks Page
-                                          </a>
-                                        </div>
+                                        <div />
                                       </div>
                                       {ss.remote_content && (
                                         <details className="bg-gray-50 dark:bg-gray-900/30 rounded-lg border border-gray-200 dark:border-gray-700">
