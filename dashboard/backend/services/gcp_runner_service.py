@@ -54,15 +54,19 @@ def _get_startup_script(
     """Build startup script equivalent to terraform/gcp/runner-startup.sh.tpl.
     Keep in sync: same sections, env vars, and optional pre-pull block.
     When ado_org_url + ado_pat + ado_pool are provided, auto-registers the Azure DevOps agent."""
+    raw_ado_org_url = (ado_org_url or "").strip()
+    raw_ado_pat = (ado_pat or "").strip()
+    raw_ado_pool = (ado_pool or "").strip()
+
     dashboard_url = _shell_safe(dashboard_url)
     config_bucket = _shell_safe(config_bucket)
     config_prefix = _shell_safe(config_prefix)
     pr_agent_repo_url = _shell_safe(pr_agent_repo_url)
     pr_agent_image_safe = _shell_safe(pr_agent_image) if pr_agent_image else ""
     dashboard_api_key = _shell_safe(dashboard_api_key)
-    ado_org_url = _shell_safe(ado_org_url)
-    ado_pat = _shell_safe(ado_pat)
-    ado_pool = _shell_safe(ado_pool)
+    ado_org_url = _shell_safe(raw_ado_org_url)
+    ado_pat = _shell_safe(raw_ado_pat)
+    ado_pool = _shell_safe(raw_ado_pool)
     ado_agent_name = _shell_safe(ado_agent_name)
 
     pre_pull_block = ""
@@ -91,7 +95,7 @@ docker run --rm --entrypoint python3 {pr_agent_image_safe} -c "import pr_agent; 
 """
 
     ado_agent_block = ""
-    if ado_org_url and ado_pat and ado_pool:
+    if raw_ado_org_url and raw_ado_pat and raw_ado_pool:
         agent_name_expr = f'{ado_agent_name}' if ado_agent_name else '"$(hostname)"'
         ado_agent_block = f"""
 # --- Azure DevOps agent auto-registration ---
@@ -144,6 +148,13 @@ if [ ! -f "$AGENT_DIR/.agent" ]; then
   log "Azure DevOps agent '$AGENT_NAME' registered in pool {ado_pool} and started."
 else
   log "Azure DevOps agent already configured at $AGENT_DIR."
+fi
+
+# Ensure Azure agent service user can read runner env (for pipeline image/config resolution).
+if id azagent >/dev/null 2>&1 && [ -f /opt/pr-agent-runner/env ]; then
+  chown root:azagent /opt/pr-agent-runner/env || true
+  chmod 640 /opt/pr-agent-runner/env || true
+  log "Adjusted /opt/pr-agent-runner/env permissions for azagent."
 fi
 """
 

@@ -3,7 +3,10 @@ from services.azure_pipeline_config_service import AzurePipelineConfigService
 
 def test_docker_pipeline_template_prefers_vm_pat_with_system_fallback():
     svc = AzurePipelineConfigService()
-    template = svc.get_docker_pipeline_template("PRAgent_SelfHosted")
+    template = svc.get_docker_pipeline_template(
+        "PRAgent_SelfHosted",
+        "us-central1-docker.pkg.dev/test-project/test-repo/pr-agent:latest",
+    )
 
     assert "VM_AZURE_DEVOPS_PAT" in template
     assert "AZURE_DEVOPS_PAT: $(VM_AZURE_DEVOPS_PAT)" in template
@@ -18,3 +21,5 @@ def test_docker_pipeline_template_prefers_vm_pat_with_system_fallback():
     assert "-m pr_agent.servers.azuredevops_pipeline_runner" in template
     assert "case \"$IMAGE\" in" in template
     assert "Docker image names must be lowercase" in template
+    assert "- name: PR_AGENT_IMAGE" in template
+    assert "value: 'us-central1-docker.pkg.dev/test-project/test-repo/pr-agent:latest'" in template

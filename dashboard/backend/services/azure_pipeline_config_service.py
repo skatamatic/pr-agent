@@ -717,8 +717,11 @@ steps:
     #  Template selection & sync status
     # ──────────────────────────────────────────────────────────────
 
-    def get_docker_pipeline_template(self, pool_name: str = "PRAgent_Cloud") -> str:
+    def get_docker_pipeline_template(self, pool_name: str = "PRAgent_Cloud", pr_agent_image: str = "") -> str:
         """Return the Docker-based pipeline YAML with pool name filled in."""
+        configured_image = (pr_agent_image or "").strip()
+        escaped_image = configured_image.replace("'", "''")
+        image_var_block = f"- name: PR_AGENT_IMAGE\n  value: '{escaped_image}'\n" if escaped_image else ""
         return f"""# PR-Agent on a self-hosted runner using Docker
 # Auto-managed by PR-Agent Dashboard - do not edit manually
 trigger: none
@@ -735,6 +738,7 @@ pool:
 variables:
 - name: PYTHONUTF8
   value: 1
+{image_var_block}
 
 stages:
 - stage: pr_agent
@@ -835,6 +839,7 @@ stages:
         """Select the right pipeline template based on runner configuration."""
         pool_name = None
         uses_docker = False
+        configured_image = ""
 
         if db_session:
             try:
@@ -857,15 +862,16 @@ stages:
 
         try:
             from config import settings
-            if getattr(settings, 'gcp_runner_pr_agent_image', ''):
+            configured_image = (getattr(settings, 'gcp_runner_pr_agent_image', '') or '').strip()
+            if configured_image:
                 uses_docker = True
         except Exception:
             pass
 
         if uses_docker and pool_name:
-            return self.get_docker_pipeline_template(pool_name)
+            return self.get_docker_pipeline_template(pool_name, configured_image)
         elif uses_docker:
-            return self.get_docker_pipeline_template()
+            return self.get_docker_pipeline_template(pr_agent_image=configured_image)
         else:
             return self.generate_yaml_config(self.get_default_env_vars())
 

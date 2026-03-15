@@ -2713,6 +2713,35 @@ class DashboardApplication:
                     pr_agent_runner_image=pr_agent_runner_image,
                     ado_pat=ado_pat,
                 )
+
+                replace_existing_vm = True if body is None else bool(body.replace_existing_vm if body.replace_existing_vm is not None else True)
+                if replace_existing_vm and conn.gcp_instance_name and conn.gcp_zone:
+                    existing_name = conn.gcp_instance_name
+                    existing_zone = conn.gcp_zone
+                    existing_status = svc.get_instance_status(existing_name, existing_zone)
+                    if existing_status == "RUNNING":
+                        logger.info(
+                            "Replacing existing runner VM %s (%s) for connection %s to refresh startup env/config.",
+                            existing_name,
+                            existing_zone,
+                            conn.id,
+                        )
+                        deprov_result = svc.deprovision(existing_name, existing_zone)
+                        if not deprov_result.get("success"):
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Failed to replace existing VM '{existing_name}': {deprov_result.get('error', 'unknown error')}",
+                            )
+                        # Wait briefly until the instance is gone to avoid name-collision races.
+                        for _ in range(45):
+                            status = svc.get_instance_status(existing_name, existing_zone)
+                            if status is None:
+                                break
+                            await asyncio.sleep(2)
+                        conn.gcp_instance_name = None
+                        conn.gcp_zone = None
+                        db.commit()
+
                 result = svc.provision(
                     conn.id,
                     conn.provider,

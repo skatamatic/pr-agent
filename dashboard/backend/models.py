@@ -691,6 +691,10 @@ class ProvisionRunnerRequest(BaseModel):
     """Optional body for provisioning; ADO PAT is needed once for agent auto-registration."""
     ado_pat: Optional[str] = Field(default=None, description="Azure DevOps PAT with Agent Pools (read, manage) scope. Used once for registration, not stored.")
     agent_pool: Optional[str] = Field(default=None, description="Override agent pool (defaults to connection's agent_pool)")
+    replace_existing_vm: Optional[bool] = Field(
+        default=True,
+        description="When true (default), delete an existing running VM for this connection before provisioning so startup env and image config are refreshed.",
+    )
 
 
 class ActionRunnerConnectionResponse(BaseModel):

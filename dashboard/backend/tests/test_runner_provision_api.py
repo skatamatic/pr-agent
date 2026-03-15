@@ -494,6 +494,98 @@ class TestRunnerProvisionAPI:
         assert response.status_code == 400
         assert "GCP_RUNNER_PR_AGENT_IMAGE" in response.json().get("detail", "")
 
+    def test_provision_replaces_existing_running_vm_by_default(self, client_app, auth_headers, monkeypatch):
+        monkeypatch.setattr(backend_main.settings, "gcp_runner_project_id", "test-project", raising=False)
+        monkeypatch.setattr(backend_main.settings, "gcp_runner_region", "us-central1", raising=False)
+        monkeypatch.setattr(backend_main.settings, "gcp_runner_zone", "us-central1-a", raising=False)
+        monkeypatch.setattr(backend_main.settings, "gcp_runner_machine_type", "e2-medium", raising=False)
+        monkeypatch.setattr(backend_main.settings, "gcp_runner_subnet", "", raising=False)
+        monkeypatch.setattr(backend_main.settings, "gcp_runner_prefix", "test-runner", raising=False)
+        monkeypatch.setattr(backend_main.settings, "backend_base_url", "http://localhost", raising=False)
+        monkeypatch.setattr(backend_main.settings, "pr_agent_config_gcs_bucket", "", raising=False)
+        monkeypatch.setattr(backend_main.settings, "pr_agent_config_gcs_prefix", "pr-agent-config/", raising=False)
+        monkeypatch.setattr(backend_main.settings, "gcp_runner_pr_agent_repo_url", "https://github.com/Codium-ai/pr-agent.git", raising=False)
+        monkeypatch.setattr(
+            backend_main.settings,
+            "gcp_runner_pr_agent_image",
+            "us-central1-docker.pkg.dev/test-project/pr-agent/pr-agent:latest",
+            raising=False,
+        )
+        monkeypatch.setattr(backend_main.settings, "dashboard_api_key", "", raising=False)
+
+        create_conn = client_app.post(
+            "/api/action-runner-connections",
+            json={
+                "provider": "azure_devops",
+                "organization": "mdt-software",
+                "project": "Product",
+                "agent_pool": "PRAgent_Cloud",
+            },
+            headers=auth_headers,
+        )
+        assert create_conn.status_code == 200
+        conn_id = create_conn.json()["data"]["id"]
+
+        create_repo = client_app.post(
+            "/api/repositories",
+            json={
+                "name": f"Product/Archive.MDT.ConfigEditor.replace.{conn_id}",
+                "provider": "azure_devops",
+                "url": f"https://mdt-software.visualstudio.com/Product/_git/Archive.MDT.ConfigEditor.replace.{conn_id}",
+                "azure_pat": "pat",
+                "action_runner_connection_id": conn_id,
+                "is_active": True,
+            },
+            headers=auth_headers,
+        )
+        assert create_repo.status_code == 200
+
+        from services.gcp_runner_service import GCPRunnerService
+
+        calls = {"deprovision": 0, "provision": 0}
+
+        def fake_get_instance_status(self, instance_name, zone):
+            return "RUNNING" if instance_name == "vm-existing" else None
+
+        def fake_deprovision(self, instance_name, zone):
+            calls["deprovision"] += 1
+            assert instance_name == "vm-existing"
+            return {"success": True, "message": "VM deletion started."}
+
+        def fake_provision(self, connection_id, provider, organization, project, agent_pool="", ado_org_url=""):
+            calls["provision"] += 1
+            if calls["provision"] == 1:
+                return {
+                    "success": True,
+                    "instance_name": "vm-existing",
+                    "zone": "us-central1-a",
+                    "message": "ok",
+                }
+            return {
+                "success": True,
+                "instance_name": "vm-new",
+                "zone": "us-central1-a",
+                "message": "ok",
+            }
+
+        monkeypatch.setattr(GCPRunnerService, "get_instance_status", fake_get_instance_status)
+        monkeypatch.setattr(GCPRunnerService, "deprovision", fake_deprovision)
+        monkeypatch.setattr(GCPRunnerService, "provision", fake_provision)
+
+        first_response = client_app.post(
+            f"/api/action-runner-connections/{conn_id}/provision",
+            headers=auth_headers,
+        )
+        assert first_response.status_code == 200
+
+        response = client_app.post(
+            f"/api/action-runner-connections/{conn_id}/provision",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        assert calls["deprovision"] == 1
+        assert calls["provision"] == 2
+
     def test_deprovision_attempts_azure_deregister_with_derived_agent_name(self, client_app, auth_headers, monkeypatch):
         org_name = "cleanup-derived-org"
         create_conn = client_app.post(

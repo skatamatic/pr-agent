@@ -82,3 +82,39 @@ class TestGCPRunnerService:
         assert "install_instructions" in result
         assert result["install_instructions"].get("ssh_command")
         assert "github" in result["install_instructions"].get("docs_url", "").lower() or "runner" in str(result["install_instructions"])
+
+    def test_startup_script_adjusts_env_permissions_for_ado_agent(self):
+        from services.gcp_runner_service import _get_startup_script
+
+        script = _get_startup_script(
+            dashboard_url="https://dash.example.com",
+            config_bucket="cfg-bucket",
+            config_prefix="pr-agent-config/",
+            pr_agent_repo_url="https://example.com/pr-agent.git",
+            pr_agent_image="us-central1-docker.pkg.dev/proj/repo/pr-agent:latest",
+            dashboard_api_key="api-key",
+            ado_org_url="https://dev.azure.com/myorg",
+            ado_pat="pat",
+            ado_pool="PRAgent_Cloud",
+            ado_agent_name="agent-1",
+        )
+
+        assert "chmod 600 /opt/pr-agent-runner/env" in script
+        assert "chown root:azagent /opt/pr-agent-runner/env" in script
+        assert "chmod 640 /opt/pr-agent-runner/env" in script
+
+    def test_startup_script_does_not_add_azagent_env_permissions_without_ado(self):
+        from services.gcp_runner_service import _get_startup_script
+
+        script = _get_startup_script(
+            dashboard_url="https://dash.example.com",
+            config_bucket="cfg-bucket",
+            config_prefix="pr-agent-config/",
+            pr_agent_repo_url="https://example.com/pr-agent.git",
+            pr_agent_image="us-central1-docker.pkg.dev/proj/repo/pr-agent:latest",
+            dashboard_api_key="api-key",
+        )
+
+        assert "chmod 600 /opt/pr-agent-runner/env" in script
+        assert "Installing Azure DevOps agent..." not in script
+        assert "chown root:azagent /opt/pr-agent-runner/env" not in script
