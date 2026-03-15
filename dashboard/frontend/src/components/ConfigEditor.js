@@ -49,6 +49,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
   const [initialLoadComplete, setInitialLoadComplete] = useState(false);
   const [activeTab, setActiveTab] = useState('models');
   const [dashboardAutoSetupLoading, setDashboardAutoSetupLoading] = useState(false);
+  const [contextTestLoading, setContextTestLoading] = useState(false);
+  const [contextTestResult, setContextTestResult] = useState(null);
 
   const [errors, setErrors] = useState({});
   const [animatingCheckbox, setAnimatingCheckbox] = useState(null);
@@ -446,6 +448,49 @@ const ConfigEditor = ({ navigationTarget = null }) => {
     }
   };
 
+  const handleContextServiceSmokeTest = async () => {
+    const contextConfig = config?.csharp_code_context_service || {};
+    const url = (contextConfig.url || '').trim();
+    const username = (contextConfig.username || '').trim();
+    const password = (contextConfig.password || '').trim();
+
+    if (!url || !username || !password) {
+      setContextTestResult({
+        success: false,
+        message: 'URL, username, and password are required for smoke test.',
+      });
+      return;
+    }
+
+    try {
+      setContextTestLoading(true);
+      setContextTestResult(null);
+      const response = await api.testContextService({ url, username, password });
+      const data = response?.data || {};
+      setContextTestResult({
+        success: Boolean(data.success),
+        message: data.message || 'Context service smoke test completed.',
+        details: data.details || {},
+      });
+    } catch (error) {
+      const apiError = error?.response?.data;
+      if (apiError && typeof apiError === 'object') {
+        setContextTestResult({
+          success: Boolean(apiError.success),
+          message: apiError.message || apiError.detail || 'Context service smoke test failed.',
+          details: apiError.details || {},
+        });
+      } else {
+        setContextTestResult({
+          success: false,
+          message: error.message || 'Context service smoke test failed.',
+        });
+      }
+    } finally {
+      setContextTestLoading(false);
+    }
+  };
+
   const handleBulkUploadWithFiles = async (files) => {
     if (!files?.length) return;
     try {
@@ -728,6 +773,14 @@ const ConfigEditor = ({ navigationTarget = null }) => {
       }
       return newErrors;
     });
+
+    if (
+      path === 'csharp_code_context_service.url' ||
+      path === 'csharp_code_context_service.username' ||
+      path === 'csharp_code_context_service.password'
+    ) {
+      setContextTestResult(null);
+    }
   }, []);
 
   // Smart checkbox styling that makes checked disabled checkboxes more obvious
@@ -1325,6 +1378,34 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                         className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
                       />
                     </div>
+                  </div>
+                  <div>
+                    <button
+                      type="button"
+                      onClick={handleContextServiceSmokeTest}
+                      disabled={
+                        !editing ||
+                        contextTestLoading ||
+                        !(config.csharp_code_context_service?.url || '').trim() ||
+                        !(config.csharp_code_context_service?.username || '').trim() ||
+                        !(config.csharp_code_context_service?.password || '').trim()
+                      }
+                      className="inline-flex items-center px-3 py-2 bg-primary-600 hover:bg-primary-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white text-sm font-medium rounded-md transition-colors"
+                    >
+                      {contextTestLoading ? 'Running Smoke Test...' : 'Smoke Test'}
+                    </button>
+                    {contextTestResult && (
+                      <p
+                        className={`mt-2 text-sm ${
+                          contextTestResult.success
+                            ? 'text-green-600 dark:text-green-400'
+                            : 'text-red-600 dark:text-red-400'
+                        }`}
+                      >
+                        {contextTestResult.message}
+                        {contextTestResult.details?.status_code ? ` (status: ${contextTestResult.details.status_code})` : ''}
+                      </p>
+                    )}
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div>

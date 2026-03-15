@@ -12,8 +12,10 @@ import os
 import sys
 import logging
 import threading
+import ssl
 from datetime import datetime, timedelta
 from uuid import uuid4
+import aiohttp
 
 # Import configuration and database
 from config import settings
@@ -2035,6 +2037,112 @@ class DashboardApplication:
         async def update_config(config_update: ConfigUpdate, current_user: UserDB = Depends(require_auth)):
             result = await self.config_service.update_config(config_update.config)
             return result
+
+        @self.app.post("/api/config/test-context-service")
+        async def test_context_service_connection(payload: dict, current_user: UserDB = Depends(require_auth)):
+            """Smoke-test C# code context service credentials via login endpoint."""
+            raw_url = (payload.get("url") or "").strip()
+            username = (payload.get("username") or "").strip()
+            password = (payload.get("password") or "").strip()
+
+            if not raw_url:
+                return {
+                    "success": False,
+                    "message": "Context service URL is required.",
+                }
+
+            if raw_url.lower().endswith("/login") or raw_url.lower().endswith("/api/auth/login"):
+                return {
+                    "success": False,
+                    "message": "Use the context service root URL (for example: https://host:port), not a /login endpoint URL.",
+                }
+
+            if not username or not password:
+                return {
+                    "success": False,
+                    "message": "Context service username and password are required.",
+                }
+
+            login_url = f"{raw_url.rstrip('/')}/api/auth/login"
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            timeout = aiohttp.ClientTimeout(total=15)
+
+            try:
+                async with aiohttp.ClientSession(
+                    timeout=timeout,
+                    connector=aiohttp.TCPConnector(ssl=ssl_context),
+                ) as session:
+                    async with session.post(
+                        login_url,
+                        json={"username": username, "password": password},
+                    ) as response:
+                        status_code = response.status
+                        response_text = await response.text()
+
+                        if status_code != 200:
+                            return {
+                                "success": False,
+                                "message": f"Context service login failed with status {status_code}.",
+                                "details": {
+                                    "status_code": status_code,
+                                    "response_snippet": (response_text or "")[:300],
+                                },
+                            }
+
+                        try:
+                            response_json = await response.json()
+                        except Exception:
+                            return {
+                                "success": False,
+                                "message": "Context service returned an invalid JSON response.",
+                                "details": {
+                                    "status_code": status_code,
+                                    "response_snippet": (response_text or "")[:300],
+                                },
+                            }
+
+                        token = response_json.get("token") if isinstance(response_json, dict) else None
+                        if not token:
+                            return {
+                                "success": False,
+                                "message": "Context service login response did not include a token field.",
+                                "details": {
+                                    "status_code": status_code,
+                                    "token_received": False,
+                                },
+                            }
+
+                        return {
+                            "success": True,
+                            "message": "Context service smoke test succeeded.",
+                            "details": {
+                                "status_code": status_code,
+                                "token_received": True,
+                            },
+                        }
+            except asyncio.TimeoutError:
+                return {
+                    "success": False,
+                    "message": "Context service smoke test timed out after 15 seconds.",
+                }
+            except aiohttp.ClientConnectorError as e:
+                return {
+                    "success": False,
+                    "message": f"Could not connect to context service: {str(e)}",
+                }
+            except aiohttp.ClientError as e:
+                return {
+                    "success": False,
+                    "message": f"Context service request failed: {str(e)}",
+                }
+            except Exception as e:
+                logger.exception("Unexpected error while testing context service connection")
+                return {
+                    "success": False,
+                    "message": f"Unexpected error while testing context service: {str(e)}",
+                }
 
         @self.app.post("/api/config/bulk-upload")
         async def bulk_upload_config(
@@ -4915,6 +5023,33 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise
             except Exception as e:
                 logger.error(f"Error pushing pipeline YAML for repo {repo_id}: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/repositories/{repo_id}/azure-pipeline-config/sync-variables")
+        async def sync_pipeline_variables(repo_id: int, body: dict = None, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
+            """Sync Azure pipeline variables/secrets from dashboard settings without pushing YAML."""
+            try:
+                repo = db.query(RepositoryDB).filter(RepositoryDB.id == repo_id).first()
+                if not repo:
+                    raise HTTPException(status_code=404, detail="Repository not found")
+                repo_data = {
+                    'id': repo.id, 'name': repo.name, 'provider': repo.provider,
+                    'url': repo.url, 'azure_pat': repo.azure_pat,
+                    'action_runner_connection_id': repo.action_runner_connection_id,
+                }
+                pipeline_definition_id = (body or {}).get("pipeline_definition_id")
+                result = await self.azure_pipeline_config_service.sync_pipeline_variables(
+                    repo_data,
+                    db,
+                    pipeline_definition_id=pipeline_definition_id,
+                )
+                if not result.get('success'):
+                    raise HTTPException(status_code=400, detail=result.get('error', 'Variable sync failed'))
+                return APIResponse(data=result, message="Pipeline variables/secrets synchronized successfully")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error syncing pipeline variables for repo {repo_id}: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.get("/api/repositories/{repo_id}/branches")

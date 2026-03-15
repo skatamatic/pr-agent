@@ -283,6 +283,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             deployment_id = self.deployment_id
             if self.azure:
                 model = 'azure/' + model
+            model_for_check = model.removeprefix('azure/')
             if 'claude' in model and not system:
                 system = "No system prompt provided"
                 get_logger().warning(
@@ -304,7 +305,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                                           {"type": "image_url", "image_url": {"url": img_path}}]
 
             # Currently, some models do not support a separate system and user prompts
-            if model in self.user_message_only_models or get_settings().config.custom_reasoning_model:
+            if model_for_check in self.user_message_only_models or get_settings().config.custom_reasoning_model:
                 user = f"{system}\n\n\n{user}"
                 system = ""
                 get_logger().info(f"Using model {model}, combining system and user prompts")
@@ -326,19 +327,19 @@ class LiteLLMAIHandler(BaseAiHandler):
                 }
 
             # Add temperature only if model supports it
-            if model not in self.no_support_temperature_models and not get_settings().config.custom_reasoning_model:
+            if model_for_check not in self.no_support_temperature_models and not get_settings().config.custom_reasoning_model:
                 # get_logger().info(f"Adding temperature with value {temperature} to model {model}.")
                 kwargs["temperature"] = temperature
 
             # Add reasoning_effort if model supports it
-            if (model in self.support_reasoning_models):
+            if (model_for_check in self.support_reasoning_models):
                 supported_reasoning_efforts = [ReasoningEffort.HIGH.value, ReasoningEffort.MEDIUM.value, ReasoningEffort.LOW.value]
                 reasoning_effort = get_settings().config.reasoning_effort if (get_settings().config.reasoning_effort in supported_reasoning_efforts) else ReasoningEffort.MEDIUM.value
                 get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
                 kwargs["reasoning_effort"] = reasoning_effort
 
             # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
-            if (model in self.claude_extended_thinking_models) and get_settings().config.get("enable_claude_extended_thinking", False):
+            if (model_for_check in self.claude_extended_thinking_models) and get_settings().config.get("enable_claude_extended_thinking", False):
                 kwargs = self._configure_claude_extended_thinking(model, kwargs)
 
             if get_settings().litellm.get("enable_callbacks", False):
@@ -370,7 +371,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 "temperature": kwargs.get("temperature", "not_set"),
                 "system_prompt_chars": len(system),
                 "user_prompt_chars": len(user),
-                "combined_prompt": model in self.user_message_only_models or get_settings().config.custom_reasoning_model
+                "combined_prompt": model_for_check in self.user_message_only_models or get_settings().config.custom_reasoning_model
             })
             
             # Log full prompts for debugging purposes

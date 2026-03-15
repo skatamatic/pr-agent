@@ -98,7 +98,7 @@ async def run_action():
     BUILD_REASON = os.environ.get('BUILD_REASON')
     SYSTEM_PULLREQUEST_PULLREQUESTID = os.environ.get('SYSTEM_PULLREQUEST_PULLREQUESTID')
     SYSTEM_COLLECTIONURI = os.environ.get('SYSTEM_COLLECTIONURI')
-    AZURE_DEVOPS_PAT = os.environ.get('AZURE_DEVOPS_PAT') or os.environ.get('SYSTEM_ACCESSTOKEN')
+    AZURE_DEVOPS_PAT = os.environ.get('AZURE_DEVOPS_PAT')
 
     # Resolve the *actual* PR repo and project (handles cross-repo build validation)
     PR_REPOSITORY_NAME = _resolve_pr_repo_name()
@@ -146,7 +146,7 @@ async def run_action():
             print(f"{var_name} not set")
             return
     if not AZURE_DEVOPS_PAT:
-        print("AZURE_DEVOPS_PAT or SYSTEM_ACCESSTOKEN not set")
+        print("AZURE_DEVOPS_PAT not set. Configure pipeline secret variable AZURE_DEVOPS_PAT.")
         return
 
     # ── Apply env-var overrides on top of GCS-loaded settings ──

@@ -63,8 +63,6 @@ stages:
         _PIPELINE_GCS_BUCKET="${PR_AGENT_CONFIG_GCS_BUCKET:-}"
         _PIPELINE_GCS_PREFIX="${PR_AGENT_CONFIG_GCS_PREFIX:-}"
         _PIPELINE_DASHBOARD_URL="${DASHBOARD_URL:-}"
-        _PIPELINE_DASHBOARD_API_KEY="${DASHBOARD_API_KEY:-}"
-        _PIPELINE_AZURE_DEVOPS_PAT="${AZURE_DEVOPS_PAT:-}"
 
         # Source VM env (best-effort, may not be readable by agent user).
         source /opt/pr-agent-runner/env 2>/dev/null || true
@@ -99,8 +97,6 @@ stages:
         echo "##vso[task.setvariable variable=VM_GCS_BUCKET]${_PIPELINE_GCS_BUCKET:-${PR_AGENT_CONFIG_GCS_BUCKET:-}}"
         echo "##vso[task.setvariable variable=VM_GCS_PREFIX]${_PIPELINE_GCS_PREFIX:-${PR_AGENT_CONFIG_GCS_PREFIX:-}}"
         echo "##vso[task.setvariable variable=VM_DASHBOARD_URL]${_PIPELINE_DASHBOARD_URL:-${DASHBOARD_URL:-}}"
-        echo "##vso[task.setvariable variable=VM_DASHBOARD_API_KEY;issecret=true]${_PIPELINE_DASHBOARD_API_KEY:-${DASHBOARD_API_KEY:-}}"
-        echo "##vso[task.setvariable variable=VM_AZURE_DEVOPS_PAT;issecret=true]${_PIPELINE_AZURE_DEVOPS_PAT:-${AZURE_DEVOPS_PAT:-}}"
       displayName: 'Pull image & load VM config'
       env:
         PR_AGENT_IMAGE_OVERRIDE: $(PR_AGENT_IMAGE)
@@ -147,9 +143,9 @@ stages:
         SYSTEM_TEAMPROJECT: $(System.TeamProject)
         BUILD_REPOSITORY_NAME: $(Build.Repository.Name)
         SYSTEM_COLLECTIONURI: $(System.CollectionUri)
-        AZURE_DEVOPS_PAT: $(VM_AZURE_DEVOPS_PAT)
+        AZURE_DEVOPS_PAT: $(AZURE_DEVOPS_PAT)
         SYSTEM_ACCESSTOKEN: $(System.AccessToken)
         DASHBOARD_URL: $(VM_DASHBOARD_URL)
-        DASHBOARD_API_KEY: $(VM_DASHBOARD_API_KEY)
+        DASHBOARD_API_KEY: $(DASHBOARD_API_KEY)
         PR_AGENT_CONFIG_GCS_BUCKET: $(VM_GCS_BUCKET)
         PR_AGENT_CONFIG_GCS_PREFIX: $(VM_GCS_PREFIX)

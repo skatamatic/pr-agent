@@ -9,6 +9,43 @@ from datetime import datetime, timezone
 import main as backend_main
 
 
+class _MockAiohttpResponse:
+    def __init__(self, status, json_payload=None, text_payload=""):
+        self.status = status
+        self._json_payload = json_payload if json_payload is not None else {}
+        self._text_payload = text_payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def json(self):
+        return self._json_payload
+
+    async def text(self):
+        return self._text_payload
+
+
+class _MockAiohttpSession:
+    def __init__(self, response):
+        self._response = response
+        self.last_post_url = None
+        self.last_post_json = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def post(self, url, json=None, **kwargs):
+        self.last_post_url = url
+        self.last_post_json = json or {}
+        return self._response
+
+
 class TestAdminCleanupRoutes:
     """Data cleanup preview and execute (hit DataCleanupService)."""
 
@@ -145,6 +182,73 @@ class TestConfigAndDeveloperRoutes:
             headers=auth_headers,
         )
         assert r.status_code == 200
+
+    def test_context_service_smoke_success_with_token(self, client_app, auth_headers, monkeypatch):
+        mock_response = _MockAiohttpResponse(status=200, json_payload={"token": "test-token"})
+        mock_session = _MockAiohttpSession(response=mock_response)
+        monkeypatch.setattr(backend_main.aiohttp, "ClientSession", lambda *args, **kwargs: mock_session)
+
+        r = client_app.post(
+            "/api/config/test-context-service",
+            json={
+                "url": "https://context.local",
+                "username": "svc-user",
+                "password": "svc-pass",
+            },
+            headers=auth_headers,
+        )
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["success"] is True
+        assert body["details"]["status_code"] == 200
+        assert body["details"]["token_received"] is True
+        assert mock_session.last_post_url == "https://context.local/api/auth/login"
+        assert mock_session.last_post_json == {"username": "svc-user", "password": "svc-pass"}
+
+    def test_context_service_smoke_fails_when_login_url_used(self, client_app, auth_headers):
+        r = client_app.post(
+            "/api/config/test-context-service",
+            json={
+                "url": "https://context.local/api/auth/login",
+                "username": "svc-user",
+                "password": "svc-pass",
+            },
+            headers=auth_headers,
+        )
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["success"] is False
+        assert "root URL" in body["message"]
+
+    def test_context_service_smoke_fails_when_missing_token(self, client_app, auth_headers, monkeypatch):
+        mock_response = _MockAiohttpResponse(
+            status=200,
+            json_payload={"message": "ok"},
+            text_payload='{"message":"ok"}',
+        )
+        monkeypatch.setattr(
+            backend_main.aiohttp,
+            "ClientSession",
+            lambda *args, **kwargs: _MockAiohttpSession(response=mock_response),
+        )
+
+        r = client_app.post(
+            "/api/config/test-context-service",
+            json={
+                "url": "https://context.local",
+                "username": "svc-user",
+                "password": "svc-pass",
+            },
+            headers=auth_headers,
+        )
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["success"] is False
+        assert "token" in body["message"].lower()
+        assert body["details"]["status_code"] == 200
 
     def test_get_pr_agent_path_200(self, client_app, auth_headers):
         r = client_app.get("/api/config/pr-agent-path", headers=auth_headers)
@@ -380,6 +484,43 @@ class TestRepositoriesById:
         )
         assert start.status_code == 400
         assert "target_active" in (start.json().get("detail") or "")
+
+    def test_repository_sync_pipeline_variables_endpoint(self, client_app, auth_headers, monkeypatch):
+        create = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "Product/VarSyncRepo",
+                "provider": "azure_devops",
+                "url": "https://mdt-software.visualstudio.com/Product/_git/VarSyncRepo",
+                "azure_pat": "pat",
+            },
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        repo_id = create.json()["data"]["id"]
+
+        async def _fake_sync(repo_data, db_session=None, pipeline_definition_id=None):
+            return {
+                "success": True,
+                "pipelines_targeted": 1,
+                "results": [{"pipeline_id": 77, "success": True}],
+            }
+
+        monkeypatch.setattr(
+            backend_main.dashboard_app.azure_pipeline_config_service,
+            "sync_pipeline_variables",
+            _fake_sync,
+        )
+
+        resp = client_app.post(
+            f"/api/repositories/{repo_id}/azure-pipeline-config/sync-variables",
+            json={},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        data = resp.json().get("data", {})
+        assert data.get("success") is True
+        assert data.get("pipelines_targeted") == 1
 
     def test_best_practices_azure_fallback_without_pr_agent_provider(self, client_app, auth_headers, monkeypatch):
         create = client_app.post(

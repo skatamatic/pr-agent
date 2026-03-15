@@ -110,6 +110,7 @@ const apiService = {
   getConfig: () => api.get('/api/config'),
   getDashboardAutoSetup: () => api.get('/api/config/dashboard-auto-setup'),
   updateConfig: (config) => api.post('/api/config', { config }),
+  testContextService: (params) => api.post('/api/config/test-context-service', params),
   bulkUploadConfig: (file) => {
     const formData = new FormData();
     formData.append('file', file);
@@ -199,6 +200,8 @@ const apiService = {
     api.get(`/api/repositories/${repoId}/azure-pipeline-config/sync-status`),
   pushPipelineYaml: (repoId, content = null) =>
     api.post(`/api/repositories/${repoId}/azure-pipeline-config/push`, content ? { content } : {}),
+  syncPipelineVariables: (repoId, body = {}) =>
+    api.post(`/api/repositories/${repoId}/azure-pipeline-config/sync-variables`, body),
   getRepoBranches: (repoId) =>
     api.get(`/api/repositories/${repoId}/branches`),
   getPipelinePolicies: (repoId) =>

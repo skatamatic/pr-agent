@@ -139,6 +139,10 @@ const RepositoryManager = () => {
   const [branchesData, setBranchesData] = useState({});
   const [loadingSyncStatus, setLoadingSyncStatus] = useState(new Set());
   const [pushingYaml, setPushingYaml] = useState(new Set());
+  const [syncingPipelineVariables, setSyncingPipelineVariables] = useState(new Set());
+  const [verifyingAzureSetup, setVerifyingAzureSetup] = useState(new Set());
+  const [autoFixingAzureSetup, setAutoFixingAzureSetup] = useState(new Set());
+  const [azureSetupVerification, setAzureSetupVerification] = useState({});
   const [loadingPolicies, setLoadingPolicies] = useState(new Set());
   const [savingPolicy, setSavingPolicy] = useState(new Set());
   const [deletingPolicy, setDeletingPolicy] = useState(new Set());
@@ -1883,6 +1887,173 @@ const RepositoryManager = () => {
       showError('Push Failed', err.response?.data?.detail || err.message);
     } finally {
       setPushingYaml(prev => { const s = new Set(prev); s.delete(repoId); return s; });
+    }
+  };
+
+  const handleSyncPipelineVariables = async (repoId, pipelineDefinitionId = null) => {
+    try {
+      setSyncingPipelineVariables(prev => new Set([...prev, repoId]));
+      const body = pipelineDefinitionId ? { pipeline_definition_id: pipelineDefinitionId } : {};
+      const resp = await api.syncPipelineVariables(repoId, body);
+      const result = resp.data?.data || resp.data || {};
+      if (result.success) {
+        const targeted = result.pipelines_targeted || 0;
+        showSuccess('Variables synchronized', `Updated pipeline variables/secrets for ${targeted} pipeline${targeted === 1 ? '' : 's'}.`);
+        await loadSyncStatus(repoId);
+      } else {
+        showError('Sync failed', result.error || 'Failed to synchronize pipeline variables/secrets');
+      }
+    } catch (err) {
+      showError('Sync failed', err.response?.data?.detail || err.message);
+    } finally {
+      setSyncingPipelineVariables(prev => { const s = new Set(prev); s.delete(repoId); return s; });
+    }
+  };
+
+  const getMatchingEnabledPolicyCount = useCallback((policies, pipelineDefinitions) => {
+    const enabledPolicies = (policies || []).filter((p) => p.is_enabled !== false);
+    if (!enabledPolicies.length) return 0;
+    const definitionIds = new Set((pipelineDefinitions || []).map((d) => String(d.id)));
+    if (!definitionIds.size) return 0;
+    return enabledPolicies.filter((p) => definitionIds.has(String(p.pipeline_id))).length;
+  }, []);
+
+  const verifyAzurePipelineSetup = useCallback(async (repoId, options = {}) => {
+    const { silent = false } = options;
+    try {
+      setVerifyingAzureSetup(prev => new Set([...prev, repoId]));
+      const [ss, pol] = await Promise.all([
+        loadSyncStatus(repoId),
+        loadPolicies(repoId),
+      ]);
+
+      const enabledPolicies = (pol?.policies || []).filter((p) => p.is_enabled !== false);
+      const matchingPolicyCount = getMatchingEnabledPolicyCount(pol?.policies, ss?.pipeline_definitions);
+      const checks = {
+        yaml_up_to_date: ss?.sync_status === 'up_to_date',
+        pipeline_definition_exists: !!ss?.pipeline_exists,
+        variables_synced: !(ss?.variables_status?.missing_any),
+        check_policy_exists: matchingPolicyCount > 0,
+      };
+
+      const issues = [];
+      if (!checks.pipeline_definition_exists) issues.push('Pipeline definition is missing.');
+      if (!checks.yaml_up_to_date) issues.push('Pipeline YAML is missing or outdated.');
+      if (!checks.variables_synced) issues.push('Required pipeline variables/secrets are missing.');
+      if (!checks.check_policy_exists) {
+        if (enabledPolicies.length > 0) {
+          issues.push('Enabled build validation policies exist, but none are linked to the current PR-Agent pipeline definition.');
+        } else {
+          issues.push('No enabled build validation check policy is configured.');
+        }
+      }
+
+      const result = {
+        checked_at: new Date().toISOString(),
+        checks,
+        issues,
+        success: issues.length === 0,
+      };
+      setAzureSetupVerification(prev => ({ ...prev, [repoId]: result }));
+
+      if (!silent) {
+        if (result.success) {
+          showSuccess('Setup verified', 'Azure pipeline setup looks healthy and ready.');
+        } else {
+          showWarning('Setup needs attention', issues.join(' '));
+        }
+      }
+      return result;
+    } catch (error) {
+      if (!silent) {
+        showError('Verification failed', error.response?.data?.detail || error.message || 'Failed to verify setup.');
+      }
+      const failed = {
+        checked_at: new Date().toISOString(),
+        checks: {
+          yaml_up_to_date: false,
+          pipeline_definition_exists: false,
+          variables_synced: false,
+          check_policy_exists: false,
+        },
+        issues: ['Unable to run verification due to an API error.'],
+        success: false,
+      };
+      setAzureSetupVerification(prev => ({ ...prev, [repoId]: failed }));
+      return failed;
+    } finally {
+      setVerifyingAzureSetup(prev => { const s = new Set(prev); s.delete(repoId); return s; });
+    }
+  }, [getMatchingEnabledPolicyCount, loadPolicies, loadSyncStatus, showError, showSuccess, showWarning]);
+
+  const autoFixAzurePipelineSetup = async (repo) => {
+    const repoId = repo.id;
+    try {
+      setAutoFixingAzureSetup(prev => new Set([...prev, repoId]));
+      let ss = await loadSyncStatus(repoId);
+      if (!ss) throw new Error('Unable to load pipeline sync status');
+
+      // 1) Fix YAML drift first (this can also create the pipeline definition)
+      if (ss.sync_status === 'missing' || ss.sync_status === 'outdated') {
+        const pushResp = await api.pushPipelineYaml(repoId);
+        const pushData = pushResp.data?.data || pushResp.data || {};
+        if (!pushData.success) {
+          throw new Error(pushData.error || 'Failed to push pipeline YAML');
+        }
+        ss = await loadSyncStatus(repoId);
+      }
+
+      // 2) Sync required vars/secrets
+      if (ss?.variables_status?.missing_any) {
+        const syncResp = await api.syncPipelineVariables(repoId, {});
+        const syncData = syncResp.data?.data || syncResp.data || {};
+        if (!syncData.success) {
+          throw new Error(syncData.error || 'Failed to sync pipeline variables/secrets');
+        }
+        ss = await loadSyncStatus(repoId);
+      }
+
+      // 3) Ensure at least one enabled check policy exists (optional by default)
+      let pol = await loadPolicies(repoId);
+      let matchingPolicyCount = getMatchingEnabledPolicyCount(pol?.policies, ss?.pipeline_definitions);
+      if (matchingPolicyCount === 0) {
+        const defs = ss?.pipeline_definitions || [];
+        const pipelineDefinitionId = defs[0]?.id;
+        const branchData = branchesData[repoId] || await loadBranches(repoId);
+        const defaultBranch = branchData?.default_branch
+          || (branchData?.branches || []).find((b) => b.is_default)?.name
+          || (branchData?.branches || [])[0]?.name;
+
+        if (pipelineDefinitionId && defaultBranch) {
+          const policyResp = await api.ensurePipelinePolicy(repoId, {
+            branch: defaultBranch,
+            pipeline_definition_id: pipelineDefinitionId,
+            is_blocking: false,
+          });
+          const policyData = policyResp.data?.data || policyResp.data || {};
+          if (!policyData.success) {
+            throw new Error(policyData.error || 'Failed to create default optional build validation policy');
+          }
+          pol = await loadPolicies(repoId);
+          matchingPolicyCount = getMatchingEnabledPolicyCount(pol?.policies, ss?.pipeline_definitions);
+        } else {
+          showWarning(
+            'Auto-fix partially completed',
+            'YAML and variables were fixed, but no default branch/pipeline definition was available to auto-create a check policy.'
+          );
+        }
+      }
+
+      const verification = await verifyAzurePipelineSetup(repoId, { silent: true });
+      if (verification?.success) {
+        showSuccess('Auto-fix completed', 'Azure setup is now fully configured and verified.');
+      } else {
+        showWarning('Auto-fix completed with remaining items', (verification?.issues || []).join(' '));
+      }
+    } catch (error) {
+      showError('Auto-fix failed', error.response?.data?.detail || error.message || 'Failed to auto-fix Azure setup.');
+    } finally {
+      setAutoFixingAzureSetup(prev => { const s = new Set(prev); s.delete(repoId); return s; });
     }
   };
 
@@ -5305,6 +5476,22 @@ const RepositoryManager = () => {
                                 </h4>
                                 <div className="flex items-center space-x-2">
                                   <button
+                                    onClick={() => verifyAzurePipelineSetup(repo.id)}
+                                    disabled={verifyingAzureSetup.has(repo.id) || autoFixingAzureSetup.has(repo.id)}
+                                    className="flex items-center px-3 py-1.5 text-xs font-medium text-teal-700 dark:text-teal-300 bg-teal-50 dark:bg-teal-900/20 border border-teal-200 dark:border-teal-800 rounded-md hover:bg-teal-100 dark:hover:bg-teal-900/30 transition-colors disabled:opacity-50"
+                                  >
+                                    <CheckCircle className={`h-3.5 w-3.5 mr-1.5 ${verifyingAzureSetup.has(repo.id) ? 'animate-pulse' : ''}`} />
+                                    {verifyingAzureSetup.has(repo.id) ? 'Verifying...' : 'Verify Setup'}
+                                  </button>
+                                  <button
+                                    onClick={() => autoFixAzurePipelineSetup(repo)}
+                                    disabled={autoFixingAzureSetup.has(repo.id) || verifyingAzureSetup.has(repo.id)}
+                                    className="flex items-center px-3 py-1.5 text-xs font-medium text-orange-700 dark:text-orange-300 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-md hover:bg-orange-100 dark:hover:bg-orange-900/30 transition-colors disabled:opacity-50"
+                                  >
+                                    <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${autoFixingAzureSetup.has(repo.id) ? 'animate-spin' : ''}`} />
+                                    {autoFixingAzureSetup.has(repo.id) ? 'Auto-fixing...' : 'Auto-fix Setup'}
+                                  </button>
+                                  <button
                                     onClick={() => { loadSyncStatus(repo.id); loadPolicies(repo.id); }}
                                     disabled={loadingSyncStatus.has(repo.id)}
                                     className="flex items-center px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
@@ -5345,8 +5532,69 @@ const RepositoryManager = () => {
                                   const ss = syncStatusData[repo.id];
                                   const azureInfo = parseAzureDevOpsUrl(repo.url);
                                   const checksUrl = `${azureInfo.baseUrl}/${azureInfo.project}/_settings/repositories?repo=${encodeURIComponent(azureInfo.repository)}&_a=policies`;
+                                  const verification = azureSetupVerification[repo.id];
+                                  const variablesStatus = ss.variables_status || {};
+                                  const variableDrift = !!variablesStatus.missing_any;
+                                  const yamlDrift = ss.sync_status === 'missing' || ss.sync_status === 'outdated';
+                                  const needsAnyUpdate = !!ss.needs_update || yamlDrift || variableDrift;
+                                  const matchingPolicyCount = getMatchingEnabledPolicyCount(
+                                    policiesData[repo.id]?.policies || [],
+                                    ss.pipeline_definitions || []
+                                  );
+                                  const isBusy =
+                                    pushingYaml.has(repo.id) ||
+                                    syncingPipelineVariables.has(repo.id) ||
+                                    autoFixingAzureSetup.has(repo.id) ||
+                                    verifyingAzureSetup.has(repo.id);
+                                  const missingSummary = (variablesStatus.pipelines || [])
+                                    .filter((p) => p.has_missing_required)
+                                    .map((p) => {
+                                      const missPlain = (p.missing_plain_keys || []).length;
+                                      const invalidPlain = (p.invalid_plain_keys || []).length;
+                                      const missSecret = (p.missing_secret_keys || []).length;
+                                      const parts = [];
+                                      if (missPlain) parts.push(`${missPlain} plain`);
+                                      if (invalidPlain) parts.push(`${invalidPlain} plain-empty`);
+                                      if (missSecret) parts.push(`${missSecret} secret`);
+                                      if (p.variables_fetch_error) parts.push('fetch error');
+                                      return `${p.pipeline_name || p.pipeline_id}: ${parts.join(', ')}`;
+                                    });
                                   return (
                                     <div className="space-y-4">
+                                      <div className="bg-slate-50 dark:bg-slate-900/30 border border-slate-200 dark:border-slate-700 rounded-lg p-3">
+                                        <div className="flex items-center justify-between mb-2">
+                                          <p className="text-sm font-medium text-slate-800 dark:text-slate-100">
+                                            Setup Readiness Checklist
+                                          </p>
+                                          {verification?.checked_at && (
+                                            <span className="text-xs text-slate-500 dark:text-slate-400">
+                                              Last checked: {formatLastChecked(verification.checked_at)}
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                                          <div className="flex items-center">
+                                            {ss.pipeline_exists ? <CheckCircle className="h-3.5 w-3.5 text-green-600 mr-1.5" /> : <X className="h-3.5 w-3.5 text-red-500 mr-1.5" />}
+                                            <span className={ss.pipeline_exists ? 'text-green-700 dark:text-green-300' : 'text-red-700 dark:text-red-300'}>Pipeline definition exists</span>
+                                          </div>
+                                          <div className="flex items-center">
+                                            {ss.sync_status === 'up_to_date' ? <CheckCircle className="h-3.5 w-3.5 text-green-600 mr-1.5" /> : <X className="h-3.5 w-3.5 text-red-500 mr-1.5" />}
+                                            <span className={ss.sync_status === 'up_to_date' ? 'text-green-700 dark:text-green-300' : 'text-red-700 dark:text-red-300'}>Pipeline YAML up to date</span>
+                                          </div>
+                                          <div className="flex items-center">
+                                            {!variableDrift ? <CheckCircle className="h-3.5 w-3.5 text-green-600 mr-1.5" /> : <X className="h-3.5 w-3.5 text-red-500 mr-1.5" />}
+                                            <span className={!variableDrift ? 'text-green-700 dark:text-green-300' : 'text-red-700 dark:text-red-300'}>Variables/secrets synchronized</span>
+                                          </div>
+                                          <div className="flex items-center">
+                                            {matchingPolicyCount > 0
+                                              ? <CheckCircle className="h-3.5 w-3.5 text-green-600 mr-1.5" />
+                                              : <X className="h-3.5 w-3.5 text-red-500 mr-1.5" />}
+                                            <span className={matchingPolicyCount > 0 ? 'text-green-700 dark:text-green-300' : 'text-red-700 dark:text-red-300'}>
+                                              Build validation check policy configured
+                                            </span>
+                                          </div>
+                                        </div>
+                                      </div>
                                       <div className="text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-900/30 border border-gray-200 dark:border-gray-700 rounded-md px-3 py-2">
                                         {ss.using_shared_pipeline_repo
                                           ? `Using shared pipeline repository: ${ss.shared_pipeline_repo || 'pr-agent-pipelines'}`
@@ -5372,27 +5620,56 @@ const RepositoryManager = () => {
                                           {ss.pipeline_exists && (
                                             <span className="text-xs text-gray-500 dark:text-gray-400">Pipeline definition exists</span>
                                           )}
+                                          {variableDrift ? (
+                                            <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300">
+                                              <AlertCircle className="h-4 w-4 mr-1.5" /> Variables/Secrets Missing
+                                            </span>
+                                          ) : (
+                                            <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
+                                              <CheckCircle className="h-4 w-4 mr-1.5" /> Variables/Secrets Synced
+                                            </span>
+                                          )}
                                         </div>
                                         <div className="flex items-center space-x-2">
-                                          {(ss.sync_status === 'missing' || ss.sync_status === 'outdated') && (
+                                          {needsAnyUpdate && (
                                             <button
-                                              onClick={() => handlePushYaml(repo.id)}
-                                              disabled={pushingYaml.has(repo.id)}
+                                              onClick={() => {
+                                                if (yamlDrift) {
+                                                  handlePushYaml(repo.id);
+                                                } else {
+                                                  handleSyncPipelineVariables(repo.id);
+                                                }
+                                              }}
+                                              disabled={isBusy}
                                               className={`flex items-center px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors shadow-sm disabled:opacity-50 ${
-                                                ss.sync_status === 'missing'
+                                                yamlDrift
                                                   ? 'bg-green-600 hover:bg-green-700'
                                                   : 'bg-amber-600 hover:bg-amber-700'
                                               }`}
                                             >
                                               {pushingYaml.has(repo.id) ? (
                                                 <><RefreshCw className="h-4 w-4 mr-1.5 animate-spin" /> Pushing...</>
+                                              ) : syncingPipelineVariables.has(repo.id) ? (
+                                                <><RefreshCw className="h-4 w-4 mr-1.5 animate-spin" /> Syncing vars...</>
                                               ) : ss.sync_status === 'missing' ? (
                                                 <><Plus className="h-4 w-4 mr-1.5" /> Deploy Pipeline YAML</>
-                                              ) : (
+                                              ) : ss.sync_status === 'outdated' ? (
                                                 <><RefreshCw className="h-4 w-4 mr-1.5" /> Update Pipeline YAML</>
+                                              ) : (
+                                                <><RefreshCw className="h-4 w-4 mr-1.5" /> Update Variables/Secrets</>
                                               )}
                                             </button>
                                           )}
+                                          <button
+                                            onClick={() => handleSyncPipelineVariables(repo.id)}
+                                            disabled={isBusy || !ss.pipeline_exists}
+                                            className="flex items-center px-3 py-2 text-sm font-medium text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded-lg hover:bg-indigo-100 dark:hover:bg-indigo-900/30 transition-colors disabled:opacity-50"
+                                            title="Push dashboard-backed variables and secrets to existing pipeline definitions"
+                                          >
+                                            {syncingPipelineVariables.has(repo.id)
+                                              ? <><RefreshCw className="h-4 w-4 mr-1.5 animate-spin" /> Syncing...</>
+                                              : <><RefreshCw className="h-4 w-4 mr-1.5" /> Sync Variables/Secrets</>}
+                                          </button>
                                           <button
                                             onClick={() => openAzurePipelineConfigEditor(repo.id)}
                                             className="flex items-center px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
@@ -5438,6 +5715,18 @@ const RepositoryManager = () => {
                                             <pre className="text-xs font-mono text-gray-600 dark:text-gray-400 whitespace-pre-wrap max-h-96 overflow-y-auto">{ss.canonical_content}</pre>
                                           </div>
                                         </details>
+                                      )}
+                                      {!!missingSummary.length && (
+                                        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3">
+                                          <p className="text-sm font-medium text-red-700 dark:text-red-300 mb-1">
+                                            Missing required pipeline variables/secrets were detected:
+                                          </p>
+                                          <ul className="text-xs text-red-700 dark:text-red-300 space-y-1 list-disc pl-4">
+                                            {missingSummary.map((item, idx) => (
+                                              <li key={idx}>{item}</li>
+                                            ))}
+                                          </ul>
+                                        </div>
                                       )}
                                     </div>
                                   );

@@ -733,10 +733,10 @@ steps:
 
     def get_docker_pipeline_template(self, pool_name: str = "PRAgent_Cloud", pr_agent_image: str = "",
                                       gcs_bucket: str = "", gcs_prefix: str = "",
-                                      dashboard_url: str = "", dashboard_api_key: str = "") -> str:
+                                      dashboard_url: str = "") -> str:
         """Return the Docker-based pipeline YAML with pool name filled in.
 
-        All known backend config (image, GCS bucket, dashboard URL) is baked
+        Non-secret backend config (image, GCS bucket, dashboard URL) is baked
         into the YAML variables so the pipeline does not depend on the VM env
         file being readable by the agent process.
         """
@@ -752,9 +752,6 @@ steps:
             extra_vars += f"- name: PR_AGENT_CONFIG_GCS_PREFIX\n  value: '{gcs_prefix}'\n"
         if dashboard_url:
             extra_vars += f"- name: DASHBOARD_URL\n  value: '{dashboard_url}'\n"
-        if dashboard_api_key:
-            extra_vars += f"- name: DASHBOARD_API_KEY\n  value: '{dashboard_api_key}'\n"
-
         return f"""# PR-Agent on a self-hosted runner using Docker
 # Auto-managed by PR-Agent Dashboard - do not edit manually
 trigger: none
@@ -795,8 +792,6 @@ stages:
         _PIPELINE_GCS_BUCKET="${{PR_AGENT_CONFIG_GCS_BUCKET:-}}"
         _PIPELINE_GCS_PREFIX="${{PR_AGENT_CONFIG_GCS_PREFIX:-}}"
         _PIPELINE_DASHBOARD_URL="${{DASHBOARD_URL:-}}"
-        _PIPELINE_DASHBOARD_API_KEY="${{DASHBOARD_API_KEY:-}}"
-        _PIPELINE_AZURE_DEVOPS_PAT="${{AZURE_DEVOPS_PAT:-}}"
 
         # Source VM env (best-effort, may not be readable by agent user).
         source /opt/pr-agent-runner/env 2>/dev/null || true
@@ -829,8 +824,6 @@ stages:
         echo "##vso[task.setvariable variable=VM_GCS_BUCKET]${{_PIPELINE_GCS_BUCKET:-${{PR_AGENT_CONFIG_GCS_BUCKET:-}}}}"
         echo "##vso[task.setvariable variable=VM_GCS_PREFIX]${{_PIPELINE_GCS_PREFIX:-${{PR_AGENT_CONFIG_GCS_PREFIX:-}}}}"
         echo "##vso[task.setvariable variable=VM_DASHBOARD_URL]${{_PIPELINE_DASHBOARD_URL:-${{DASHBOARD_URL:-}}}}"
-        echo "##vso[task.setvariable variable=VM_DASHBOARD_API_KEY;issecret=true]${{_PIPELINE_DASHBOARD_API_KEY:-${{DASHBOARD_API_KEY:-}}}}"
-        echo "##vso[task.setvariable variable=VM_AZURE_DEVOPS_PAT;issecret=true]${{_PIPELINE_AZURE_DEVOPS_PAT:-${{AZURE_DEVOPS_PAT:-}}}}"
       displayName: 'Pull image & load VM config'
       env:
         PR_AGENT_IMAGE_OVERRIDE: $(PR_AGENT_IMAGE)
@@ -866,10 +859,10 @@ stages:
         SYSTEM_TEAMPROJECT: $(System.TeamProject)
         BUILD_REPOSITORY_NAME: $(Build.Repository.Name)
         SYSTEM_COLLECTIONURI: $(System.CollectionUri)
-        AZURE_DEVOPS_PAT: $(VM_AZURE_DEVOPS_PAT)
+        AZURE_DEVOPS_PAT: $(AZURE_DEVOPS_PAT)
         SYSTEM_ACCESSTOKEN: $(System.AccessToken)
         DASHBOARD_URL: $(VM_DASHBOARD_URL)
-        DASHBOARD_API_KEY: $(VM_DASHBOARD_API_KEY)
+        DASHBOARD_API_KEY: $(DASHBOARD_API_KEY)
         PR_AGENT_CONFIG_GCS_BUCKET: $(VM_GCS_BUCKET)
         PR_AGENT_CONFIG_GCS_PREFIX: $(VM_GCS_PREFIX)
 """
@@ -910,25 +903,22 @@ stages:
         gcs_bucket = ""
         gcs_prefix = ""
         dashboard_url = ""
-        dashboard_api_key = ""
         try:
             from config import settings as _s
             gcs_bucket = (getattr(_s, 'pr_agent_config_gcs_bucket', '') or '').strip()
             gcs_prefix = (getattr(_s, 'pr_agent_config_gcs_prefix', '') or '').strip()
             dashboard_url = (getattr(_s, 'backend_base_url', '') or '').strip()
-            dashboard_api_key = (getattr(_s, 'dashboard_api_key', '') or '').strip()
         except Exception:
             pass
 
         if uses_docker and pool_name:
             return self.get_docker_pipeline_template(pool_name, configured_image,
                                                      gcs_bucket, gcs_prefix,
-                                                     dashboard_url, dashboard_api_key)
+                                                     dashboard_url)
         elif uses_docker:
             return self.get_docker_pipeline_template(pr_agent_image=configured_image,
                                                      gcs_bucket=gcs_bucket, gcs_prefix=gcs_prefix,
-                                                     dashboard_url=dashboard_url,
-                                                     dashboard_api_key=dashboard_api_key)
+                                                     dashboard_url=dashboard_url)
         else:
             return self.generate_yaml_config(self.get_default_env_vars())
 
@@ -953,6 +943,9 @@ stages:
             use_shared = os.getenv("PR_AGENT_AZDO_USE_SHARED_PIPELINE_REPO", "true").strip().lower() in ("1", "true", "yes", "on")
             canonical = self.get_canonical_template(repo_data, db_session)
             headers = self._build_headers(token)
+            expected_plain_vars = self._get_expected_pipeline_plain_variables()
+            required_plain_keys = list(expected_plain_vars.keys())
+            required_secret_keys = ["AZURE_DEVOPS_PAT", "DASHBOARD_API_KEY"]
 
             if use_shared:
                 shared_repo = self.SHARED_PIPELINE_REPO_NAME
@@ -975,6 +968,14 @@ stages:
                                 'shared_pipeline_repo': shared_repo,
                                 'using_shared_pipeline_repo': True,
                                 'pipelines_url': f"https://dev.azure.com/{organization}/{project}/_build",
+                                'variables_status': {
+                                    'required_plain_keys': required_plain_keys,
+                                    'required_secret_keys': required_secret_keys,
+                                    'missing_any': True,
+                                    'pipelines_checked': 0,
+                                    'pipelines': [],
+                                },
+                                'needs_update': True,
                             }
                         if repo_resp.status != 200:
                             msg = await repo_resp.text()
@@ -1013,8 +1014,18 @@ stages:
                                         'queue_status': d.get('queueStatus', 'enabled'),
                                         'trigger_info': self._extract_trigger_info(d),
                                     })
+                    variables_status = await self._collect_pipeline_variables_status(
+                        session=session,
+                        headers=headers,
+                        organization=organization,
+                        project=project,
+                        pipeline_defs=shared_defs,
+                        required_plain_keys=required_plain_keys,
+                        required_secret_keys=required_secret_keys,
+                    )
 
                 if remote is None:
+                    needs_update = True
                     return {
                         'yaml_exists': False,
                         'pipeline_exists': len(shared_defs) > 0,
@@ -1030,6 +1041,8 @@ stages:
                         'shared_pipeline_repo_url': shared_repo_web_url,
                         'using_shared_pipeline_repo': True,
                         'pipelines_url': f"https://dev.azure.com/{organization}/{project}/_build",
+                        'variables_status': variables_status,
+                        'needs_update': needs_update,
                     }
 
                 norm_remote = self._normalize_yaml(remote)
@@ -1044,6 +1057,7 @@ stages:
                     ))
                     diff_count = sum(1 for l in diff if (l.startswith('+') or l.startswith('-')) and not l.startswith('---') and not l.startswith('+++'))
 
+                needs_update = (sync_status != 'up_to_date') or bool(variables_status.get('missing_any'))
                 return {
                     'yaml_exists': True,
                     'pipeline_exists': len(shared_defs) > 0,
@@ -1059,6 +1073,8 @@ stages:
                     'shared_pipeline_repo_url': shared_repo_web_url,
                     'using_shared_pipeline_repo': True,
                     'pipelines_url': f"https://dev.azure.com/{organization}/{project}/_build",
+                    'variables_status': variables_status,
+                    'needs_update': needs_update,
                 }
 
             yaml_file = await self._get_file_content(
@@ -1071,6 +1087,13 @@ stages:
             if not yaml_file['exists']:
                 if yaml_file.get('error') and yaml_file['error'] != 'File not found':
                     return {'error': f"Failed to check YAML file: {yaml_file['error']}"}
+                variables_status = {
+                    'required_plain_keys': required_plain_keys,
+                    'required_secret_keys': required_secret_keys,
+                    'missing_any': True,
+                    'pipelines_checked': 0,
+                    'pipelines': [],
+                }
                 return {
                     'yaml_exists': False,
                     'pipeline_exists': pipeline_info.get('has_pipelines', False),
@@ -1084,6 +1107,8 @@ stages:
                     'repository': repository,
                     'using_shared_pipeline_repo': False,
                     'pipelines_url': f"https://dev.azure.com/{organization}/{project}/_build",
+                    'variables_status': variables_status,
+                    'needs_update': True,
                 }
 
             remote = yaml_file['content']
@@ -1100,6 +1125,18 @@ stages:
                 ))
                 diff_count = sum(1 for l in diff if (l.startswith('+') or l.startswith('-')) and not l.startswith('---') and not l.startswith('+++'))
 
+            async with aiohttp.ClientSession(timeout=self.AIOHTTP_TIMEOUT) as session:
+                variables_status = await self._collect_pipeline_variables_status(
+                    session=session,
+                    headers=headers,
+                    organization=organization,
+                    project=project,
+                    pipeline_defs=pipeline_info.get('pipelines', []),
+                    required_plain_keys=required_plain_keys,
+                    required_secret_keys=required_secret_keys,
+                )
+
+            needs_update = (sync_status != 'up_to_date') or bool(variables_status.get('missing_any'))
             return {
                 'yaml_exists': True,
                 'pipeline_exists': pipeline_info.get('has_pipelines', False),
@@ -1113,6 +1150,8 @@ stages:
                 'repository': repository,
                 'using_shared_pipeline_repo': False,
                 'pipelines_url': f"https://dev.azure.com/{organization}/{project}/_build",
+                'variables_status': variables_status,
+                'needs_update': needs_update,
             }
 
         except Exception as e:
@@ -1138,7 +1177,7 @@ stages:
             # This avoids per-repo branch policy issues and keeps one canonical pipeline YAML.
             try_shared_first = os.getenv("PR_AGENT_AZDO_USE_SHARED_PIPELINE_REPO", "true").strip().lower() in ("1", "true", "yes", "on")
             if try_shared_first:
-                shared_result = await self._ensure_shared_pipeline_definition(organization, project, token, content)
+                shared_result = await self._ensure_shared_pipeline_definition(organization, project, token, content, repo_data)
                 if shared_result.get("success"):
                     return {
                         "success": True,
@@ -1151,6 +1190,7 @@ stages:
                         "setup_steps": shared_result.get("setup_steps", []),
                         "cleanup_plan": shared_result.get("cleanup_plan", []),
                         "cleanup": shared_result.get("cleanup", {"attempted": False, "actions": []}),
+                        "secret_variables": shared_result.get("secret_variables"),
                         "pipeline_create_error": None,
                     }
                 logger.warning("Shared pipeline setup failed; falling back to direct repo push path: %s", shared_result.get("error"))
@@ -1292,6 +1332,28 @@ stages:
                     except Exception as e:
                         logger.warning("Shared pipeline discovery failed: %s", e)
 
+            secret_set_result: Optional[Dict[str, Any]] = None
+            if pipeline_id:
+                dashboard_api_key = ""
+                try:
+                    from config import settings as _s
+                    dashboard_api_key = (getattr(_s, 'dashboard_api_key', '') or '').strip()
+                except Exception:
+                    dashboard_api_key = ""
+                variables_to_set: Dict[str, Any] = {
+                    "AZURE_DEVOPS_PAT": {"value": repo_data.get("azure_pat", ""), "is_secret": True},
+                    "DASHBOARD_API_KEY": {"value": dashboard_api_key, "is_secret": True},
+                }
+                for k, v in self._get_expected_pipeline_plain_variables().items():
+                    variables_to_set[k] = {"value": v, "is_secret": False}
+                secret_set_result = await self._set_pipeline_definition_variables(
+                    organization=organization,
+                    project=project,
+                    token=token,
+                    pipeline_id=pipeline_id,
+                    variables_to_set=variables_to_set,
+                )
+
             if push_blocked_by_policy and not pipeline_id:
                 # Fall back to PR flow so protected branches can still be updated safely.
                 pr_result = await self._create_config_pr(organization, project, repository, token, content)
@@ -1324,14 +1386,21 @@ stages:
                     'pr_creation_error': pr_result.get('error'),
                 }
 
+            has_pipeline = bool(pipeline_created or pipeline_id)
+            secret_ok = bool(not secret_set_result or secret_set_result.get('success'))
             return {
-                'success': True,
+                'success': bool(has_pipeline and secret_ok),
                 'yaml_pushed': yaml_pushed,
                 'pipeline_created': pipeline_created,
                 'pipeline_id': pipeline_id,
                 'push_blocked_by_policy': push_blocked_by_policy,
                 'push_error': push_block_error,
-                'pipeline_create_error': None if pipeline_created or pipeline_id else 'Pipeline definition could not be created. You may need to create it manually.',
+                'secret_variables': secret_set_result,
+                'pipeline_create_error': (
+                    secret_set_result.get('error')
+                    if secret_set_result and not secret_set_result.get('success')
+                    else (None if pipeline_created or pipeline_id else 'Pipeline definition could not be created. You may need to create it manually.')
+                ),
             }
 
         except Exception as e:
@@ -1344,6 +1413,7 @@ stages:
         project: str,
         token: str,
         yaml_content: str,
+        repo_data: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Create/reuse a shared pipeline repo and pipeline definition for this project."""
         headers = self._build_headers(token)
@@ -1599,6 +1669,32 @@ stages:
                     "Pipeline definition is available.",
                 )
 
+                dashboard_api_key = ""
+                if repo_data:
+                    try:
+                        from config import settings as _s
+                        dashboard_api_key = (getattr(_s, 'dashboard_api_key', '') or '').strip()
+                    except Exception:
+                        dashboard_api_key = ""
+                variables_to_set: Dict[str, Any] = {
+                    "AZURE_DEVOPS_PAT": {"value": (repo_data or {}).get("azure_pat", ""), "is_secret": True},
+                    "DASHBOARD_API_KEY": {"value": dashboard_api_key, "is_secret": True},
+                }
+                for k, v in self._get_expected_pipeline_plain_variables().items():
+                    variables_to_set[k] = {"value": v, "is_secret": False}
+                secret_set_result = await self._set_pipeline_definition_variables(
+                    organization=organization,
+                    project=project,
+                    token=token,
+                    pipeline_id=pipeline_id,
+                    variables_to_set=variables_to_set,
+                )
+                if not secret_set_result.get("success"):
+                    return await _fail(
+                        secret_set_result.get("error") or "Failed to set pipeline secret variables",
+                        "wait_pipeline_available",
+                    )
+
                 return {
                     "success": True,
                     "pipeline_id": pipeline_id,
@@ -1607,12 +1703,300 @@ stages:
                     "yaml_up_to_date": file_unchanged,
                     "shared_repo_name": shared_repo_name,
                     "shared_repo_web_url": repo_web_url,
+                    "secret_variables": secret_set_result,
                     "setup_steps": steps,
                     "cleanup_plan": cleanup_plan,
                     "cleanup": {"attempted": False, "actions": []},
                 }
         except Exception as e:
             return await _fail(str(e))
+
+    def _get_expected_pipeline_plain_variables(self) -> Dict[str, str]:
+        """Return plain-text pipeline variables expected from dashboard runtime settings."""
+        values: Dict[str, str] = {}
+        try:
+            from config import settings as _s
+            image = self._normalize_pipeline_image_tag((getattr(_s, 'gcp_runner_pr_agent_image', '') or '').strip())
+            gcs_bucket = (getattr(_s, 'pr_agent_config_gcs_bucket', '') or '').strip()
+            gcs_prefix = (getattr(_s, 'pr_agent_config_gcs_prefix', '') or '').strip()
+            dashboard_url = (getattr(_s, 'backend_base_url', '') or '').strip()
+            if image:
+                values["PR_AGENT_IMAGE"] = image
+            if gcs_bucket:
+                values["PR_AGENT_CONFIG_GCS_BUCKET"] = gcs_bucket
+            if gcs_prefix:
+                values["PR_AGENT_CONFIG_GCS_PREFIX"] = gcs_prefix
+            if dashboard_url:
+                values["DASHBOARD_URL"] = dashboard_url
+        except Exception:
+            pass
+        return values
+
+    async def _collect_pipeline_variables_status(
+        self,
+        session: aiohttp.ClientSession,
+        headers: Dict[str, str],
+        organization: str,
+        project: str,
+        pipeline_defs: List[Dict[str, Any]],
+        required_plain_keys: List[str],
+        required_secret_keys: List[str],
+    ) -> Dict[str, Any]:
+        """Inspect build definitions and report missing required plain/secret variables."""
+        pipelines = []
+        missing_any = False
+        for p in (pipeline_defs or []):
+            pipeline_id = p.get("id")
+            if not pipeline_id:
+                continue
+            definition_url = (
+                f"https://dev.azure.com/{organization}/{project}/_apis/build/definitions/"
+                f"{pipeline_id}?api-version=7.1-preview.7"
+            )
+            variables: Dict[str, Any] = {}
+            fetch_error = None
+            try:
+                async with session.get(definition_url, headers=headers) as resp:
+                    if resp.status == 200:
+                        definition = await resp.json()
+                        raw_vars = definition.get("variables")
+                        if isinstance(raw_vars, dict):
+                            variables = raw_vars
+                    else:
+                        fetch_error = f"Failed to fetch definition variables ({resp.status})"
+            except Exception as e:
+                fetch_error = str(e)
+
+            missing_plain = [k for k in required_plain_keys if k not in variables]
+            invalid_plain = []
+            for k in required_plain_keys:
+                if k not in variables:
+                    continue
+                raw_var = variables.get(k)
+                raw_value = raw_var.get("value") if isinstance(raw_var, dict) else raw_var
+                if raw_value is None:
+                    invalid_plain.append(k)
+                    continue
+                if isinstance(raw_value, str) and not raw_value.strip():
+                    invalid_plain.append(k)
+            missing_secret = [k for k in required_secret_keys if k not in variables]
+            has_missing = bool(missing_plain or invalid_plain or missing_secret or fetch_error)
+            missing_any = missing_any or has_missing
+            pipelines.append({
+                "pipeline_id": pipeline_id,
+                "pipeline_name": p.get("name"),
+                "missing_plain_keys": missing_plain,
+                "invalid_plain_keys": invalid_plain,
+                "missing_secret_keys": missing_secret,
+                "variables_found_count": len(variables),
+                "variables_fetch_error": fetch_error,
+                "has_missing_required": has_missing,
+            })
+
+        return {
+            "required_plain_keys": required_plain_keys,
+            "required_secret_keys": required_secret_keys,
+            "missing_any": missing_any or len(pipelines) == 0,
+            "pipelines_checked": len(pipelines),
+            "pipelines": pipelines,
+        }
+
+    async def _set_pipeline_definition_variables(
+        self,
+        organization: str,
+        project: str,
+        token: str,
+        pipeline_id: int,
+        variables_to_set: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Merge variables into a build definition and persist via PUT.
+        variables_to_set value supports:
+          - "value" (str)
+          - "is_secret" (bool)
+        """
+        if not pipeline_id:
+            return {"success": False, "error": "Pipeline ID is required", "pipeline_id": pipeline_id}
+
+        filtered_variables = {}
+        for key, entry in (variables_to_set or {}).items():
+            if not isinstance(entry, dict):
+                continue
+            value = entry.get("value")
+            if not isinstance(value, str) or not value.strip():
+                continue
+            filtered_variables[key] = {
+                "value": value,
+                "is_secret": bool(entry.get("is_secret", False)),
+            }
+        if not filtered_variables:
+            return {
+                "success": True,
+                "pipeline_id": pipeline_id,
+                "updated_keys": [],
+                "message": "No non-empty variables provided",
+            }
+
+        headers = self._build_headers(token)
+        definition_url = (
+            f"https://dev.azure.com/{organization}/{project}/_apis/build/definitions/"
+            f"{pipeline_id}?api-version=7.1-preview.7"
+        )
+
+        try:
+            async with aiohttp.ClientSession(timeout=self.AIOHTTP_TIMEOUT) as session:
+                async with session.get(definition_url, headers=headers) as get_resp:
+                    if get_resp.status != 200:
+                        msg = await get_resp.text()
+                        error = (
+                            f"Failed to fetch build definition {pipeline_id} "
+                            f"for secret update ({get_resp.status}): {msg}"
+                        )
+                        logger.error(
+                            "Pipeline secret update fetch failed: org=%s project=%s pipeline_id=%s keys=%s status=%s error=%s",
+                            organization, project, pipeline_id, list(filtered_variables.keys()), get_resp.status, msg,
+                        )
+                        return {
+                            "success": False,
+                            "error": error,
+                            "pipeline_id": pipeline_id,
+                            "updated_keys": [],
+                        }
+                    definition = await get_resp.json()
+
+                variables = definition.get("variables")
+                if not isinstance(variables, dict):
+                    variables = {}
+
+                for key, value_data in filtered_variables.items():
+                    variables[key] = {
+                        "value": value_data["value"],
+                        "isSecret": bool(value_data.get("is_secret", False)),
+                        "allowOverride": True,
+                    }
+                definition["variables"] = variables
+
+                async with session.put(definition_url, headers=headers, json=definition) as put_resp:
+                    if put_resp.status in (200, 201):
+                        return {
+                            "success": True,
+                            "pipeline_id": pipeline_id,
+                            "updated_keys": list(filtered_variables.keys()),
+                        }
+                    msg = await put_resp.text()
+                    error = (
+                        f"Failed to update build definition {pipeline_id} "
+                        f"with secret variables ({put_resp.status}): {msg}"
+                    )
+                    logger.error(
+                        "Pipeline secret update put failed: org=%s project=%s pipeline_id=%s keys=%s status=%s error=%s",
+                        organization, project, pipeline_id, list(filtered_variables.keys()), put_resp.status, msg,
+                    )
+                    return {
+                        "success": False,
+                        "error": error,
+                        "pipeline_id": pipeline_id,
+                        "updated_keys": list(filtered_variables.keys()),
+                    }
+        except Exception as e:
+            logger.error(
+                "Pipeline secret update exception: org=%s project=%s pipeline_id=%s keys=%s error=%s",
+                organization, project, pipeline_id, list(filtered_variables.keys()), e,
+            )
+            return {
+                "success": False,
+                "error": f"Failed to set pipeline secret variables: {e}",
+                "pipeline_id": pipeline_id,
+                "updated_keys": list(filtered_variables.keys()),
+            }
+
+    async def _set_pipeline_secret_variables(
+        self,
+        organization: str,
+        project: str,
+        token: str,
+        pipeline_id: int,
+        secret_values: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """Backward-compatible wrapper for secret-only variable updates."""
+        variables_to_set = {
+            key: {"value": value, "is_secret": True}
+            for key, value in (secret_values or {}).items()
+        }
+        return await self._set_pipeline_definition_variables(
+            organization=organization,
+            project=project,
+            token=token,
+            pipeline_id=pipeline_id,
+            variables_to_set=variables_to_set,
+        )
+
+    async def sync_pipeline_variables(
+        self,
+        repo_data: Dict[str, Any],
+        db_session=None,
+        pipeline_definition_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Sync required pipeline variables/secrets from dashboard settings without touching YAML."""
+        try:
+            organization, project, repository, token = self._validate_and_parse(repo_data)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        sync_status = await self.get_sync_status(repo_data, db_session)
+        if sync_status.get("error"):
+            return {"success": False, "error": sync_status.get("error")}
+
+        pipeline_defs = sync_status.get("pipeline_definitions") or []
+        if pipeline_definition_id:
+            pipeline_defs = [p for p in pipeline_defs if str(p.get("id")) == str(pipeline_definition_id)]
+        if not pipeline_defs:
+            return {
+                "success": False,
+                "error": "No pipeline definitions found to sync variables. Create/setup pipeline first.",
+            }
+
+        dashboard_api_key = ""
+        try:
+            from config import settings as _s
+            dashboard_api_key = (getattr(_s, 'dashboard_api_key', '') or '').strip()
+        except Exception:
+            dashboard_api_key = ""
+        expected_plain = self._get_expected_pipeline_plain_variables()
+        results = []
+        overall_success = True
+        for p in pipeline_defs:
+            pid = p.get("id")
+            if not pid:
+                continue
+            variable_map: Dict[str, Any] = {
+                "AZURE_DEVOPS_PAT": {"value": repo_data.get("azure_pat", ""), "is_secret": True},
+                "DASHBOARD_API_KEY": {"value": dashboard_api_key, "is_secret": True},
+            }
+            for k, v in expected_plain.items():
+                variable_map[k] = {"value": v, "is_secret": False}
+            result = await self._set_pipeline_definition_variables(
+                organization=organization,
+                project=project,
+                token=token,
+                pipeline_id=int(pid),
+                variables_to_set=variable_map,
+            )
+            results.append({
+                "pipeline_id": pid,
+                "pipeline_name": p.get("name"),
+                **result,
+            })
+            if not result.get("success"):
+                overall_success = False
+
+        return {
+            "success": overall_success,
+            "results": results,
+            "pipelines_targeted": len(results),
+            "updated_plain_keys": list(expected_plain.keys()),
+            "updated_secret_keys": ["AZURE_DEVOPS_PAT", "DASHBOARD_API_KEY"],
+        }
 
     async def _wait_for_pipeline_availability(
         self,
