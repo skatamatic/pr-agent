@@ -731,11 +731,30 @@ steps:
             return f"{image[:last_colon]}:latest"
         return f"{image}:latest"
 
-    def get_docker_pipeline_template(self, pool_name: str = "PRAgent_Cloud", pr_agent_image: str = "") -> str:
-        """Return the Docker-based pipeline YAML with pool name filled in."""
+    def get_docker_pipeline_template(self, pool_name: str = "PRAgent_Cloud", pr_agent_image: str = "",
+                                      gcs_bucket: str = "", gcs_prefix: str = "",
+                                      dashboard_url: str = "", dashboard_api_key: str = "") -> str:
+        """Return the Docker-based pipeline YAML with pool name filled in.
+
+        All known backend config (image, GCS bucket, dashboard URL) is baked
+        into the YAML variables so the pipeline does not depend on the VM env
+        file being readable by the agent process.
+        """
         configured_image = self._normalize_pipeline_image_tag(pr_agent_image)
         escaped_image = configured_image.replace("'", "''")
-        image_var_block = f"- name: PR_AGENT_IMAGE\n  value: '{escaped_image}'\n" if escaped_image else ""
+
+        extra_vars = ""
+        if escaped_image:
+            extra_vars += f"- name: PR_AGENT_IMAGE\n  value: '{escaped_image}'\n"
+        if gcs_bucket:
+            extra_vars += f"- name: PR_AGENT_CONFIG_GCS_BUCKET\n  value: '{gcs_bucket}'\n"
+        if gcs_prefix:
+            extra_vars += f"- name: PR_AGENT_CONFIG_GCS_PREFIX\n  value: '{gcs_prefix}'\n"
+        if dashboard_url:
+            extra_vars += f"- name: DASHBOARD_URL\n  value: '{dashboard_url}'\n"
+        if dashboard_api_key:
+            extra_vars += f"- name: DASHBOARD_API_KEY\n  value: '{dashboard_api_key}'\n"
+
         return f"""# PR-Agent on a self-hosted runner using Docker
 # Auto-managed by PR-Agent Dashboard - do not edit manually
 trigger: none
@@ -752,7 +771,7 @@ pool:
 variables:
 - name: PYTHONUTF8
   value: 1
-{image_var_block}
+{extra_vars}
 
 stages:
 - stage: pr_agent
@@ -771,20 +790,24 @@ stages:
 
     - bash: |
         set -e
+        # Save pipeline-level variables (baked by dashboard) before sourcing VM env.
+        _PIPELINE_IMAGE="${{PR_AGENT_IMAGE_OVERRIDE:-}}"
+        _PIPELINE_GCS_BUCKET="${{PR_AGENT_CONFIG_GCS_BUCKET:-}}"
+        _PIPELINE_GCS_PREFIX="${{PR_AGENT_CONFIG_GCS_PREFIX:-}}"
+        _PIPELINE_DASHBOARD_URL="${{DASHBOARD_URL:-}}"
+        _PIPELINE_DASHBOARD_API_KEY="${{DASHBOARD_API_KEY:-}}"
+        _PIPELINE_AZURE_DEVOPS_PAT="${{AZURE_DEVOPS_PAT:-}}"
+
+        # Source VM env (best-effort, may not be readable by agent user).
         source /opt/pr-agent-runner/env 2>/dev/null || true
 
-        IMAGE="${{PR_AGENT_IMAGE_OVERRIDE:-${{GCP_RUNNER_PR_AGENT_IMAGE:-}}}}"
-        # Azure leaves unresolved variables as literal strings like '$(PR_AGENT_IMAGE)'.
-        # Treat those as unset so we can fall back to VM-provisioned config.
+        # Pipeline variables take precedence over VM env; fall back to VM values.
+        IMAGE="${{_PIPELINE_IMAGE:-${{GCP_RUNNER_PR_AGENT_IMAGE:-}}}}"
         case "$IMAGE" in
           '$('*')') IMAGE="" ;;
         esac
-        if [ -z "$IMAGE" ] && [ -n "${{GCP_RUNNER_PR_AGENT_IMAGE:-}}" ]; then
-          IMAGE="${{GCP_RUNNER_PR_AGENT_IMAGE}}"
-        fi
         if [ -z "$IMAGE" ]; then
-          echo "##vso[task.logissue type=error]No PR-Agent image found. Runner env is missing GCP_RUNNER_PR_AGENT_IMAGE and pipeline variable PR_AGENT_IMAGE is unset."
-          echo "##vso[task.logissue type=error]Re-provision the runner VM after setting backend GCP_RUNNER_PR_AGENT_IMAGE to your deployed Artifact Registry image."
+          echo "##vso[task.logissue type=error]No PR-Agent image found. Set PR_AGENT_IMAGE pipeline variable or re-provision the runner."
           exit 1
         fi
         if echo "$IMAGE" | grep -q '[A-Z]'; then
@@ -803,11 +826,11 @@ stages:
         docker pull "$IMAGE"
 
         echo "##vso[task.setvariable variable=RESOLVED_IMAGE]$IMAGE"
-        echo "##vso[task.setvariable variable=VM_GCS_BUCKET]${{PR_AGENT_CONFIG_GCS_BUCKET:-}}"
-        echo "##vso[task.setvariable variable=VM_GCS_PREFIX]${{PR_AGENT_CONFIG_GCS_PREFIX:-}}"
-        echo "##vso[task.setvariable variable=VM_DASHBOARD_URL]${{DASHBOARD_URL:-}}"
-        echo "##vso[task.setvariable variable=VM_DASHBOARD_API_KEY;issecret=true]${{DASHBOARD_API_KEY:-}}"
-        echo "##vso[task.setvariable variable=VM_AZURE_DEVOPS_PAT;issecret=true]${{AZURE_DEVOPS_PAT:-}}"
+        echo "##vso[task.setvariable variable=VM_GCS_BUCKET]${{_PIPELINE_GCS_BUCKET:-${{PR_AGENT_CONFIG_GCS_BUCKET:-}}}}"
+        echo "##vso[task.setvariable variable=VM_GCS_PREFIX]${{_PIPELINE_GCS_PREFIX:-${{PR_AGENT_CONFIG_GCS_PREFIX:-}}}}"
+        echo "##vso[task.setvariable variable=VM_DASHBOARD_URL]${{_PIPELINE_DASHBOARD_URL:-${{DASHBOARD_URL:-}}}}"
+        echo "##vso[task.setvariable variable=VM_DASHBOARD_API_KEY;issecret=true]${{_PIPELINE_DASHBOARD_API_KEY:-${{DASHBOARD_API_KEY:-}}}}"
+        echo "##vso[task.setvariable variable=VM_AZURE_DEVOPS_PAT;issecret=true]${{_PIPELINE_AZURE_DEVOPS_PAT:-${{AZURE_DEVOPS_PAT:-}}}}"
       displayName: 'Pull image & load VM config'
       env:
         PR_AGENT_IMAGE_OVERRIDE: $(PR_AGENT_IMAGE)
@@ -820,6 +843,7 @@ stages:
           -w "${{SOURCE_DIR}}" \\
           -e BUILD_REASON \\
           -e SYSTEM_PULLREQUEST_PULLREQUESTID \\
+          -e SYSTEM_PULLREQUEST_SOURCEREPOSITORYURI \\
           -e SYSTEM_TEAMPROJECT \\
           -e BUILD_REPOSITORY_NAME \\
           -e SYSTEM_COLLECTIONURI \\
@@ -838,6 +862,7 @@ stages:
         RESOLVED_IMAGE: $(RESOLVED_IMAGE)
         BUILD_REASON: $(Build.Reason)
         SYSTEM_PULLREQUEST_PULLREQUESTID: $(System.PullRequest.PullRequestId)
+        SYSTEM_PULLREQUEST_SOURCEREPOSITORYURI: $(System.PullRequest.SourceRepositoryUri)
         SYSTEM_TEAMPROJECT: $(System.TeamProject)
         BUILD_REPOSITORY_NAME: $(Build.Repository.Name)
         SYSTEM_COLLECTIONURI: $(System.CollectionUri)
@@ -882,10 +907,28 @@ stages:
         except Exception:
             pass
 
+        gcs_bucket = ""
+        gcs_prefix = ""
+        dashboard_url = ""
+        dashboard_api_key = ""
+        try:
+            from config import settings as _s
+            gcs_bucket = (getattr(_s, 'pr_agent_config_gcs_bucket', '') or '').strip()
+            gcs_prefix = (getattr(_s, 'pr_agent_config_gcs_prefix', '') or '').strip()
+            dashboard_url = (getattr(_s, 'backend_base_url', '') or '').strip()
+            dashboard_api_key = (getattr(_s, 'dashboard_api_key', '') or '').strip()
+        except Exception:
+            pass
+
         if uses_docker and pool_name:
-            return self.get_docker_pipeline_template(pool_name, configured_image)
+            return self.get_docker_pipeline_template(pool_name, configured_image,
+                                                     gcs_bucket, gcs_prefix,
+                                                     dashboard_url, dashboard_api_key)
         elif uses_docker:
-            return self.get_docker_pipeline_template(pr_agent_image=configured_image)
+            return self.get_docker_pipeline_template(pr_agent_image=configured_image,
+                                                     gcs_bucket=gcs_bucket, gcs_prefix=gcs_prefix,
+                                                     dashboard_url=dashboard_url,
+                                                     dashboard_api_key=dashboard_api_key)
         else:
             return self.generate_yaml_config(self.get_default_env_vars())
 

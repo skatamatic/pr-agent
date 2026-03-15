@@ -17,6 +17,7 @@ COPY requirements.txt ./
 # layer changes.
 RUN pip install --no-cache-dir "setuptools<81" && pip install --no-cache-dir -r requirements.txt
 RUN python -c "import pkg_resources, azure.devops, msrest"
+ENV GITHUB__RATELIMIT_RETRIES=5
 
 # 3. Now, copy the rest of your application code.
 # This layer will change more frequently (whenever your source code changes),

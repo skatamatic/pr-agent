@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 from typing import Union
 
@@ -49,24 +48,79 @@ def get_setting_or_env(key: str, default: Union[str, bool, None] = None) -> Unio
     return value
 
 
+def _resolve_pr_repo_name() -> str:
+    """Resolve the actual repository where the PR lives.
+
+    In a shared-pipeline / build-validation-policy setup the pipeline YAML
+    lives in a *different* repo from the one the PR targets.
+    Azure DevOps provides ``System.PullRequest.SourceRepositoryUri`` for
+    exactly this case.  ``Build.Repository.Name`` refers to the repository
+    that *hosts the pipeline YAML*, which is the wrong one.
+
+    Fallback order:
+      1. SYSTEM_PULLREQUEST_SOURCEREPOSITORYURI  (cross-repo build-validation)
+      2. BUILD_REPOSITORY_NAME                   (same-repo pipeline)
+    """
+    source_repo_uri = os.environ.get('SYSTEM_PULLREQUEST_SOURCEREPOSITORYURI', '').strip()
+    if source_repo_uri:
+        # URI looks like https://dev.azure.com/{org}/{project}/_git/{repo}
+        # or https://{org}.visualstudio.com/{project}/_git/{repo}
+        parts = source_repo_uri.rstrip('/').split('/')
+        try:
+            git_idx = parts.index('_git')
+            return parts[git_idx + 1]
+        except (ValueError, IndexError):
+            pass
+    return os.environ.get('BUILD_REPOSITORY_NAME', '')
+
+
+def _resolve_pr_project() -> str:
+    """Resolve the Azure DevOps project that owns the PR's repository.
+
+    ``System.PullRequest.SourceRepositoryUri`` encodes the project name,
+    which may differ from ``System.TeamProject`` in cross-project
+    build-validation scenarios.
+    """
+    source_repo_uri = os.environ.get('SYSTEM_PULLREQUEST_SOURCEREPOSITORYURI', '').strip()
+    if source_repo_uri:
+        parts = source_repo_uri.rstrip('/').split('/')
+        try:
+            git_idx = parts.index('_git')
+            if git_idx >= 1:
+                return parts[git_idx - 1]
+        except (ValueError, IndexError):
+            pass
+    return os.environ.get('SYSTEM_TEAMPROJECT', '')
+
+
 async def run_action():
     # ── Azure DevOps system variables (MUST come from the pipeline) ──
     BUILD_REASON = os.environ.get('BUILD_REASON')
     SYSTEM_PULLREQUEST_PULLREQUESTID = os.environ.get('SYSTEM_PULLREQUEST_PULLREQUESTID')
-    SYSTEM_TEAMPROJECT = os.environ.get('SYSTEM_TEAMPROJECT')
-    BUILD_REPOSITORY_NAME = os.environ.get('BUILD_REPOSITORY_NAME')
     SYSTEM_COLLECTIONURI = os.environ.get('SYSTEM_COLLECTIONURI')
     AZURE_DEVOPS_PAT = os.environ.get('AZURE_DEVOPS_PAT') or os.environ.get('SYSTEM_ACCESSTOKEN')
 
+    # Resolve the *actual* PR repo and project (handles cross-repo build validation)
+    PR_REPOSITORY_NAME = _resolve_pr_repo_name()
+    PR_PROJECT = _resolve_pr_project()
+
     # ── Config sourcing: env vars override GCS-loaded settings ──
-    # API keys, dashboard config, and azure_devops_config are loaded from GCS
-    # via config_loader.py from GCS (secrets use native [openai] key, [anthropic] key, etc.).
-    # Env vars below only override if explicitly set; otherwise GCS config wins.
     OPENAI_KEY = os.environ.get('OPENAI_KEY') or os.environ.get('OPENAI.KEY')
     OPENAI_ORG = os.environ.get('OPENAI_ORG') or os.environ.get('OPENAI.ORG')
 
+    # Ensure pipeline-provided DASHBOARD_URL / API_KEY override any GCS defaults
+    # BEFORE dashboard integration is initialized.  GCS config may have stale or
+    # placeholder values; the VM env file (sourced by step 2 of the pipeline)
+    # carries the authoritative dashboard coordinates.
+    env_dashboard_url = os.environ.get('DASHBOARD_URL', '').strip()
+    env_dashboard_api_key = os.environ.get('DASHBOARD_API_KEY', '').strip()
+    if env_dashboard_url:
+        get_settings().set("DASHBOARD.URL", env_dashboard_url)
+    if env_dashboard_api_key:
+        get_settings().set("DASHBOARD.API_KEY", env_dashboard_api_key)
+
     # Setup dashboard integration (reads DASHBOARD.URL / DASHBOARD.API_KEY from
-    # GCS-loaded settings or env vars; error-resilient)
+    # settings or env vars; error-resilient)
     dashboard_enabled = False
     if DASHBOARD_AVAILABLE:
         try:
@@ -84,8 +138,8 @@ async def run_action():
         return
     for var_name, var_val in [
         ("SYSTEM_PULLREQUEST_PULLREQUESTID", SYSTEM_PULLREQUEST_PULLREQUESTID),
-        ("SYSTEM_TEAMPROJECT", SYSTEM_TEAMPROJECT),
-        ("BUILD_REPOSITORY_NAME", BUILD_REPOSITORY_NAME),
+        ("PR_PROJECT (System.TeamProject / SourceRepositoryUri)", PR_PROJECT),
+        ("PR_REPOSITORY_NAME (Build.Repository.Name / SourceRepositoryUri)", PR_REPOSITORY_NAME),
         ("SYSTEM_COLLECTIONURI", SYSTEM_COLLECTIONURI),
     ]:
         if not var_val:
@@ -107,18 +161,22 @@ async def run_action():
     get_settings().set("AZURE_DEVOPS.PAT", AZURE_DEVOPS_PAT)
     get_settings().set("AZURE_DEVOPS.ORG", SYSTEM_COLLECTIONURI)
 
-    # git_provider + azure_devops_config may already be in GCS config; ensure defaults
-    if not get_settings().get("CONFIG.GIT_PROVIDER", None):
-        get_settings().set("CONFIG.GIT_PROVIDER", "azure")
+    # This IS the Azure DevOps pipeline runner -- always force the provider.
+    # GCS config may still have the package default (github); override it.
+    get_settings().set("CONFIG.GIT_PROVIDER", "azure")
     enable_output = get_setting_or_env("AZURE_DEVOPS_CONFIG.ENABLE_OUTPUT", True)
     get_settings().set("AZURE_DEVOPS_CONFIG.ENABLE_OUTPUT", enable_output)
     get_settings().set("CONFIG.PUBLISH_OUTPUT_PROGRESS", False)
 
-    # Construct PR URL from Azure DevOps environment variables
-    # Format: https://dev.azure.com/{organization}/{project}/_git/{repo}/pullrequest/{pr_id}
-    organization = SYSTEM_COLLECTIONURI.rstrip('/').split('/')[-1]
-    pr_url = f"{SYSTEM_COLLECTIONURI.rstrip('/')}/{SYSTEM_TEAMPROJECT}/_git/{BUILD_REPOSITORY_NAME}/pullrequest/{SYSTEM_PULLREQUEST_PULLREQUESTID}"
-    
+    # Construct PR URL using the *actual* PR repo, not the pipeline repo.
+    pr_url = f"{SYSTEM_COLLECTIONURI.rstrip('/')}/{PR_PROJECT}/_git/{PR_REPOSITORY_NAME}/pullrequest/{SYSTEM_PULLREQUEST_PULLREQUESTID}"
+
+    build_repo = os.environ.get('BUILD_REPOSITORY_NAME', '?')
+    if build_repo != PR_REPOSITORY_NAME:
+        get_logger().info(
+            f"Cross-repo build validation: pipeline repo='{build_repo}', "
+            f"PR repo='{PR_REPOSITORY_NAME}' (project={PR_PROJECT})"
+        )
     get_logger().info(f"Processing Azure DevOps PR: {pr_url}")
 
     try:
@@ -129,9 +187,11 @@ async def run_action():
         get_logger().info(f"azure devops pipeline: failed to apply repo settings: {e}")
 
     # Re-assert per-run auth context after repo settings are applied.
-    # Repo settings may include [azure_devops] overrides; runtime pipeline auth must win.
+    # Repo settings may include [azure_devops] or [config] overrides;
+    # runtime pipeline auth and provider must win.
     get_settings().set("AZURE_DEVOPS.PAT", AZURE_DEVOPS_PAT)
     get_settings().set("AZURE_DEVOPS.ORG", SYSTEM_COLLECTIONURI)
+    get_settings().set("CONFIG.GIT_PROVIDER", "azure")
 
     # Handle pull request event (equivalent to GitHub's pull_request event)
     if BUILD_REASON == "PullRequest":

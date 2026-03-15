@@ -58,20 +58,24 @@ stages:
     # ----------------------------------------------------------------
     - bash: |
         set -e
-        # Source the env file written by the VM startup script
+        # Save pipeline-level variables (baked by dashboard) before sourcing VM env.
+        _PIPELINE_IMAGE="${PR_AGENT_IMAGE_OVERRIDE:-}"
+        _PIPELINE_GCS_BUCKET="${PR_AGENT_CONFIG_GCS_BUCKET:-}"
+        _PIPELINE_GCS_PREFIX="${PR_AGENT_CONFIG_GCS_PREFIX:-}"
+        _PIPELINE_DASHBOARD_URL="${DASHBOARD_URL:-}"
+        _PIPELINE_DASHBOARD_API_KEY="${DASHBOARD_API_KEY:-}"
+        _PIPELINE_AZURE_DEVOPS_PAT="${AZURE_DEVOPS_PAT:-}"
+
+        # Source VM env (best-effort, may not be readable by agent user).
         source /opt/pr-agent-runner/env 2>/dev/null || true
 
-        IMAGE="${PR_AGENT_IMAGE_OVERRIDE:-${GCP_RUNNER_PR_AGENT_IMAGE:-}}"
-        # Azure can keep unresolved variable references as literals, e.g. '$(PR_AGENT_IMAGE)'.
-        # Treat that as empty so VM-provisioned fallback still works.
+        # Pipeline variables take precedence over VM env; fall back to VM values.
+        IMAGE="${_PIPELINE_IMAGE:-${GCP_RUNNER_PR_AGENT_IMAGE:-}}"
         case "$IMAGE" in
           '$('*')') IMAGE="" ;;
         esac
-        if [ -z "$IMAGE" ] && [ -n "${GCP_RUNNER_PR_AGENT_IMAGE:-}" ]; then
-          IMAGE="${GCP_RUNNER_PR_AGENT_IMAGE}"
-        fi
         if [ -z "$IMAGE" ]; then
-          echo "##vso[task.logissue type=error]No PR-Agent image found. Set it in Pipeline Variables (PR_AGENT_IMAGE) or verify the VM was provisioned correctly."
+          echo "##vso[task.logissue type=error]No PR-Agent image found. Set PR_AGENT_IMAGE pipeline variable or re-provision the runner."
           exit 1
         fi
         if echo "$IMAGE" | grep -q '[A-Z]'; then
@@ -92,11 +96,11 @@ stages:
 
         # Export resolved values for the run step
         echo "##vso[task.setvariable variable=RESOLVED_IMAGE]$IMAGE"
-        echo "##vso[task.setvariable variable=VM_GCS_BUCKET]${PR_AGENT_CONFIG_GCS_BUCKET:-}"
-        echo "##vso[task.setvariable variable=VM_GCS_PREFIX]${PR_AGENT_CONFIG_GCS_PREFIX:-}"
-        echo "##vso[task.setvariable variable=VM_DASHBOARD_URL]${DASHBOARD_URL:-}"
-        echo "##vso[task.setvariable variable=VM_DASHBOARD_API_KEY;issecret=true]${DASHBOARD_API_KEY:-}"
-        echo "##vso[task.setvariable variable=VM_AZURE_DEVOPS_PAT;issecret=true]${AZURE_DEVOPS_PAT:-}"
+        echo "##vso[task.setvariable variable=VM_GCS_BUCKET]${_PIPELINE_GCS_BUCKET:-${PR_AGENT_CONFIG_GCS_BUCKET:-}}"
+        echo "##vso[task.setvariable variable=VM_GCS_PREFIX]${_PIPELINE_GCS_PREFIX:-${PR_AGENT_CONFIG_GCS_PREFIX:-}}"
+        echo "##vso[task.setvariable variable=VM_DASHBOARD_URL]${_PIPELINE_DASHBOARD_URL:-${DASHBOARD_URL:-}}"
+        echo "##vso[task.setvariable variable=VM_DASHBOARD_API_KEY;issecret=true]${_PIPELINE_DASHBOARD_API_KEY:-${DASHBOARD_API_KEY:-}}"
+        echo "##vso[task.setvariable variable=VM_AZURE_DEVOPS_PAT;issecret=true]${_PIPELINE_AZURE_DEVOPS_PAT:-${AZURE_DEVOPS_PAT:-}}"
       displayName: 'Pull image & load VM config'
       env:
         PR_AGENT_IMAGE_OVERRIDE: $(PR_AGENT_IMAGE)
@@ -120,6 +124,7 @@ stages:
           -w "${SOURCE_DIR}" \
           -e BUILD_REASON \
           -e SYSTEM_PULLREQUEST_PULLREQUESTID \
+          -e SYSTEM_PULLREQUEST_SOURCEREPOSITORYURI \
           -e SYSTEM_TEAMPROJECT \
           -e BUILD_REPOSITORY_NAME \
           -e SYSTEM_COLLECTIONURI \
@@ -138,6 +143,7 @@ stages:
         RESOLVED_IMAGE: $(RESOLVED_IMAGE)
         BUILD_REASON: $(Build.Reason)
         SYSTEM_PULLREQUEST_PULLREQUESTID: $(System.PullRequest.PullRequestId)
+        SYSTEM_PULLREQUEST_SOURCEREPOSITORYURI: $(System.PullRequest.SourceRepositoryUri)
         SYSTEM_TEAMPROJECT: $(System.TeamProject)
         BUILD_REPOSITORY_NAME: $(Build.Repository.Name)
         SYSTEM_COLLECTIONURI: $(System.CollectionUri)

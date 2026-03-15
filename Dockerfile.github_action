@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir "setuptools<81" \
     && pip install --no-cache-dir . \
     && python -c "import pkg_resources, azure.devops, msrest"
 RUN rm pyproject.toml requirements.txt
+ENV GITHUB__RATELIMIT_RETRIES=5
 ENV PYTHONPATH=/app
 ADD docs docs
 ADD github_action/entrypoint.sh /
