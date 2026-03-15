@@ -310,6 +310,75 @@ class TestConfigServiceApiKeyMasking:
         assert "anthropic" not in secrets or secrets.get("anthropic", {}).get("key") in ("", None)
         assert "api_keys" not in secrets
 
+    async def test_update_config_writes_sections_top_level_and_keeps_csharp_out_of_main(self, config_service):
+        """Non-secret sections must stay top-level; csharp context remains in dedicated files."""
+        from services.config_backend import CONFIG_KEY, CSHARP_CONFIG_KEY, CSHARP_SECRETS_KEY
+        import toml
+
+        backend = MagicMock()
+        backend.exists.return_value = False
+        backend.get.return_value = None
+        config_service.backend = backend
+        config_service._create_rotated_backup = MagicMock()
+
+        config_data = {
+            "config": {"model": "gpt-5.3-codex"},
+            "pr_reviewer": {"enabled": True, "auto_review": False},
+            "pr_description": {"enabled": True},
+            "csharp_code_context_service": {
+                "enabled": True,
+                "url": "https://ctx.example.com",
+                "username": "ctx-user",
+                "password": "ctx-pass",
+            },
+        }
+
+        await config_service.update_config(config_data)
+        put_calls = {c[0][0]: c[0][1] for c in backend.put.call_args_list}
+        assert CONFIG_KEY in put_calls
+        main = toml.loads(put_calls[CONFIG_KEY])
+        assert "config" in main and main["config"].get("model") == "gpt-5.3-codex"
+        assert "pr_reviewer" in main
+        assert "pr_description" in main
+        assert "csharp_code_context_service" not in main
+        assert not isinstance(main.get("config", {}).get("pr_reviewer"), dict)
+        assert CSHARP_CONFIG_KEY in put_calls
+        assert CSHARP_SECRETS_KEY in put_calls
+
+    async def test_update_config_migrates_legacy_config_prefixed_sections(self, config_service):
+        """Legacy nested [config.<section>] should be migrated back to top-level on save."""
+        from services.config_backend import CONFIG_KEY
+        import toml
+
+        backend = MagicMock()
+        backend.exists.return_value = True
+
+        legacy_main = toml.dumps({
+            "config": {
+                "model": "legacy-model",
+                "pr_reviewer": {"enabled": False, "auto_review": True},
+                "pr_description": {"enabled": False},
+                "csharp_code_context_service": {"enabled": True},
+            },
+            "csharp_code_context_service": {"enabled": True},
+        })
+
+        backend.get.side_effect = lambda key: legacy_main if key == CONFIG_KEY else None
+        config_service.backend = backend
+        config_service._create_rotated_backup = MagicMock()
+
+        await config_service.update_config({"config": {"model": "new-model"}})
+
+        put_calls = {c[0][0]: c[0][1] for c in backend.put.call_args_list}
+        updated_main = toml.loads(put_calls[CONFIG_KEY])
+        assert updated_main.get("config", {}).get("model") == "new-model"
+        assert "pr_reviewer" in updated_main
+        assert "pr_description" in updated_main
+        assert "pr_reviewer" not in updated_main.get("config", {})
+        assert "pr_description" not in updated_main.get("config", {})
+        assert "csharp_code_context_service" not in updated_main
+        assert "csharp_code_context_service" not in updated_main.get("config", {})
+
 
 @pytest.mark.asyncio
 class TestConfigServiceBackupRotation:

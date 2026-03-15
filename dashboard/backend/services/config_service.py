@@ -404,11 +404,12 @@ class ConfigService:
                     logger.debug(f"Skipping {section_key} section")
                     continue
                 else:
-                    # Everything else goes to main config under [config] section
-                    if 'config' not in main_config:
-                        main_config['config'] = {}
-                    main_config['config'][section_key] = section_value
-                    logger.debug(f"Added {section_key} to main config")
+                    # Keep all non-secret sections at their native top-level TOML path.
+                    main_config[section_key] = section_value
+                    logger.debug("Added %s to main config at top-level", section_key)
+
+            # C# context service is stored in dedicated files only.
+            main_config.pop('csharp_code_context_service', None)
             
             if main_config:
                 logger.info("Updating main config")
@@ -439,7 +440,37 @@ class ConfigService:
         """Update a single config by key (backend handles local or GCS).
         Rotated backup is already created by _create_rotated_backup() before this is called."""
         existing = self._load_toml_from_backend(key)
+        if key == CONFIG_KEY and isinstance(existing, dict):
+            cfg_section = existing.get("config")
+            if isinstance(cfg_section, dict):
+                # Migrate legacy nested sections accidentally written under [config.*]
+                # back to top-level sections.
+                legacy_sections = [
+                    "pr_reviewer",
+                    "pr_description",
+                    "pr_code_suggestions",
+                    "pr_dev_time_estimation",
+                    "pr_filters",
+                    "enabled_actions",
+                    "dashboard",
+                    "azure_devops_config",
+                    "best_practices",
+                    "auto_best_practices",
+                    "github",
+                ]
+                for section_name in legacy_sections:
+                    if section_name in cfg_section and section_name not in existing:
+                        existing[section_name] = cfg_section.get(section_name)
+                    cfg_section.pop(section_name, None)
+                cfg_section.pop("csharp_code_context_service", None)
+            # Never keep C# context service in main configuration file.
+            existing.pop("csharp_code_context_service", None)
         merged = self._deep_merge(existing, config_data)
+        if key == CONFIG_KEY and isinstance(merged, dict):
+            cfg_section = merged.get("config")
+            if isinstance(cfg_section, dict):
+                cfg_section.pop("csharp_code_context_service", None)
+            merged.pop("csharp_code_context_service", None)
         self.backend.put(key, toml.dumps(merged))
     
     def _find_config_changes(self, existing: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:

@@ -1910,15 +1910,15 @@ const RepositoryManager = () => {
     }
   };
 
-  const getMatchingEnabledPolicyCount = useCallback((policies, pipelineDefinitions) => {
+  const getMatchingEnabledPolicyCount = (policies, pipelineDefinitions) => {
     const enabledPolicies = (policies || []).filter((p) => p.is_enabled !== false);
     if (!enabledPolicies.length) return 0;
     const definitionIds = new Set((pipelineDefinitions || []).map((d) => String(d.id)));
     if (!definitionIds.size) return 0;
     return enabledPolicies.filter((p) => definitionIds.has(String(p.pipeline_id))).length;
-  }, []);
+  };
 
-  const verifyAzurePipelineSetup = useCallback(async (repoId, options = {}) => {
+  const verifyAzurePipelineSetup = async (repoId, options = {}) => {
     const { silent = false } = options;
     try {
       setVerifyingAzureSetup(prev => new Set([...prev, repoId]));
@@ -1984,7 +1984,7 @@ const RepositoryManager = () => {
     } finally {
       setVerifyingAzureSetup(prev => { const s = new Set(prev); s.delete(repoId); return s; });
     }
-  }, [getMatchingEnabledPolicyCount, loadPolicies, loadSyncStatus, showError, showSuccess, showWarning]);
+  };
 
   const autoFixAzurePipelineSetup = async (repo) => {
     const repoId = repo.id;
