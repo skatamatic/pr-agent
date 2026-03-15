@@ -233,6 +233,12 @@ const RepositoryManager = () => {
     }
   }, [showError]);
 
+  const fetchActionRunnerConnections = useCallback(() => {
+    return api.getActionRunnerConnections()
+      .then((res) => setActionRunnerConnections(res.data?.data || []))
+      .catch(() => setActionRunnerConnections([]));
+  }, []);
+
   useEffect(() => {
     fetchRepositories();
   }, [fetchRepositories]);
@@ -331,12 +337,6 @@ const RepositoryManager = () => {
     return () => {
       timeouts.forEach(id => clearTimeout(id));
     };
-  }, []);
-
-  const fetchActionRunnerConnections = useCallback(() => {
-    return api.getActionRunnerConnections()
-      .then((res) => setActionRunnerConnections(res.data?.data || []))
-      .catch(() => setActionRunnerConnections([]));
   }, []);
 
   const discoverAzureDevopsResources = async () => {
