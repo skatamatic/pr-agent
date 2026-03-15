@@ -142,3 +142,81 @@ class TestLoginAndGetServiceToken:
             )
 
         assert result is None
+
+
+class TestBuildAnalysisPayload:
+    """Tests for backward/forward-compatible analysis payload builder."""
+
+    def test_payload_includes_new_and_legacy_fields(self):
+        source_control_info = {
+            "isGitHub": False,
+            "token": "ado_pat",
+            "org": "mdt-software",
+            "owner": "mdt-software",
+            "project": "Product",
+            "repo": "Archive.MDT.ConfigEditor",
+        }
+
+        payload = csharp_context_client._build_analysis_payload(
+            source_control_info=source_control_info,
+            owner="Product",
+            repo_name="Archive.MDT.ConfigEditor",
+            pr_number=5214,
+            access_token="ado_pat",
+            depth=2,
+            mode="Minified",
+        )
+
+        assert payload["sourceControlConnectionInfo"] == source_control_info
+        assert payload["prNumber"] == 5214
+        assert payload["depth"] == 2
+        assert payload["mode"] == "Minified"
+        # Legacy compatibility
+        assert payload["token"] == "ado_pat"
+        assert payload["owner"] == "Product"
+        assert payload["repo"] == "Archive.MDT.ConfigEditor"
+
+    def test_payload_falls_back_to_owner_arg_when_source_owner_missing(self):
+        source_control_info = {
+            "isGitHub": True,
+            "token": "gh_pat",
+            "org": "",
+            "owner": "",
+            "project": "",
+            "repo": "repo",
+        }
+
+        payload = csharp_context_client._build_analysis_payload(
+            source_control_info=source_control_info,
+            owner="my-owner",
+            repo_name="repo",
+            pr_number=1,
+            access_token="gh_pat",
+            depth=1,
+            mode="Minified",
+        )
+
+        assert payload["owner"] == "my-owner"
+
+
+class TestResolveSourceControlType:
+    def test_prefers_azure_config_value(self):
+        settings = MagicMock()
+        settings.config.get = lambda key, default=None: "azure"
+        with patch.object(csharp_context_client, "get_settings", return_value=settings):
+            with patch.dict("os.environ", {}, clear=False):
+                assert csharp_context_client._resolve_source_control_type() == "azure"
+
+    def test_detects_azure_from_pipeline_env_when_config_is_github(self):
+        settings = MagicMock()
+        settings.config.get = lambda key, default=None: "github"
+        with patch.object(csharp_context_client, "get_settings", return_value=settings):
+            with patch.dict("os.environ", {"SYSTEM_COLLECTIONURI": "https://mdt-software.visualstudio.com/"}):
+                assert csharp_context_client._resolve_source_control_type() == "azure"
+
+    def test_defaults_to_github_without_azure_signals(self):
+        settings = MagicMock()
+        settings.config.get = lambda key, default=None: "github"
+        with patch.object(csharp_context_client, "get_settings", return_value=settings):
+            with patch.dict("os.environ", {}, clear=True):
+                assert csharp_context_client._resolve_source_control_type() == "github"

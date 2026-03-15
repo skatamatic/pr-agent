@@ -1,6 +1,7 @@
 # pr_agent/algo/csharp_context_client.py
 import httpx
 import json
+import os
 import ssl
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -52,7 +53,42 @@ async def _login_and_get_service_token(client: httpx.AsyncClient, service_settin
     except Exception as e:
         get_logger().error(f"[Context] - Exception during C# context service login: {e}", exc_info=True)
         return None
-    
+
+
+def _build_analysis_payload(source_control_info: dict, owner: str, repo_name: str, pr_number: int, access_token: str, depth: int, mode: str) -> dict:
+    """Build a payload compatible with both legacy and current CodeContextService APIs."""
+    is_github = bool(source_control_info.get("isGitHub", True))
+    if is_github:
+        legacy_owner = source_control_info.get("owner") or owner
+    else:
+        # For Azure DevOps legacy shape, owner should be the project/workspace.
+        legacy_owner = source_control_info.get("project") or owner
+        if not legacy_owner:
+            legacy_owner = source_control_info.get("owner")
+    return {
+        # New contract
+        "sourceControlConnectionInfo": source_control_info,
+        "prNumber": pr_number,
+        "depth": depth,
+        "mode": mode,
+        # Legacy contract
+        "token": access_token,
+        "owner": legacy_owner,
+        "repo": repo_name,
+    }
+
+
+def _resolve_source_control_type() -> str:
+    """Resolve provider with Azure runtime signals taking precedence over config drift."""
+    provider = str(get_settings().config.get("git_provider", "github")).lower()
+    if provider in ("azure", "azuredevops", "azure_devops"):
+        return "azure"
+    # Azure pipeline runtime indicator
+    if os.getenv("SYSTEM_COLLECTIONURI"):
+        return "azure"
+    return "github"
+
+
 async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int, access_token: str) -> dict | None:
     service_settings = get_settings().csharp_code_context_service
     if not service_settings.get("enabled", False):
@@ -68,8 +104,8 @@ async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int,
         get_logger().error("[Context] - Access token (for repo access by C# service) is not available.")
         return None
     
-    # Determine source control type based on git provider setting
-    git_provider_type = get_settings().config.get("git_provider", "github").lower()
+    # Determine source control type; prefer runtime Azure signals over stale config.
+    git_provider_type = _resolve_source_control_type()
     is_github = git_provider_type == "github"
     
     get_logger().info(f"[Context] - Using source control type: {'GitHub' if is_github else 'Azure DevOps'} (git_provider={git_provider_type})")
@@ -124,12 +160,16 @@ async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int,
         
         depth = service_settings.get("default_depth", 1) if hasattr(service_settings, "get") else getattr(service_settings, "default_depth", 1)
         mode = service_settings.get("default_mode", "Minified") if hasattr(service_settings, "get") else getattr(service_settings, "default_mode", "Minified")
-        payload_for_analysis = {
-            "sourceControlConnectionInfo": source_control_info,
-            "prNumber": pr_number,
-            "depth": depth,
-            "mode": mode
-        }
+
+        payload_for_analysis = _build_analysis_payload(
+            source_control_info=source_control_info,
+            owner=owner,
+            repo_name=repo_name,
+            pr_number=pr_number,
+            access_token=access_token,
+            depth=depth,
+            mode=mode,
+        )
         
         # Log context service request
         get_logger().debug(f"[Context] - Requesting analysis for {owner}/{repo_name} PR #{pr_number}")
