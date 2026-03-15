@@ -16,7 +16,8 @@ param(
     [string]$ImageTag = "",   # default: unique deploy-<timestamp> so Terraform updates Cloud Run
     [switch]$AutoApprove,
     [switch]$WaitForHealth,
-    [switch]$SkipPrAgentImage
+    [switch]$SkipPrAgentImage,
+    [switch]$OverwriteConfigSeed
 )
 
 $ErrorActionPreference = "Stop"
@@ -170,6 +171,18 @@ try {
     Write-Host "Frontend:  $FrontendUrl"
     if ($PrAgentImage) {
         Write-Host "PR-Agent:  $PrAgentImage (used by new self-hosted runner VMs)"
+    }
+    if ($OverwriteConfigSeed) {
+        $configBucket = terraform output -raw config_bucket 2>$null
+        if ($configBucket -and $configBucket -ne "null") {
+            Write-Host "Overwriting GCS config seed files (requested by -OverwriteConfigSeed)..."
+            gcloud storage cp (Join-Path $TfDir "config-seed\configuration.toml") "gs://$configBucket/pr-agent-config/configuration.toml"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            gcloud storage cp (Join-Path $TfDir "config-seed\secrets.toml") "gs://$configBucket/pr-agent-config/secrets.toml"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        } else {
+            Write-Host "Warning: -OverwriteConfigSeed was set, but config_bucket output is empty."
+        }
     }
     $ApiKey = terraform output -raw dashboard_api_key 2>$null
     if ($ApiKey -and $ApiKey -ne "null") {

@@ -20,6 +20,7 @@ REPO_ID="${REPO_ID:-pr-agent-dash-repo}"
 # Unique tag per deploy so Terraform sees a new image URL and updates Cloud Run (fixes frontend/backend not updating when using :latest)
 IMAGE_TAG="${IMAGE_TAG:-deploy-$(date +%s)}"
 SKIP_PR_AGENT_IMAGE="${SKIP_PR_AGENT_IMAGE:-0}"
+OVERWRITE_CONFIG_SEED="${OVERWRITE_CONFIG_SEED:-0}"
 echo "Image tag: $IMAGE_TAG"
 
 # Project ID and repo ID from env or tfvars
@@ -130,5 +131,15 @@ echo "=== Redeploy complete ==="
 echo "Backend:   $BACKEND_URL"
 echo "Frontend:  ${FRONTEND_URL:-n/a}"
 [ -n "$PR_AGENT_IMAGE" ] && echo "PR-Agent:  $PR_AGENT_IMAGE (used by new self-hosted runner VMs)"
+if [ "$OVERWRITE_CONFIG_SEED" = "1" ]; then
+  CONFIG_BUCKET=$(terraform output -raw config_bucket 2>/dev/null || true)
+  if [ -n "$CONFIG_BUCKET" ] && [ "$CONFIG_BUCKET" != "null" ]; then
+    echo "Overwriting GCS config seed files (requested by OVERWRITE_CONFIG_SEED=1)..."
+    gcloud storage cp "${TF_DIR}/config-seed/configuration.toml" "gs://${CONFIG_BUCKET}/pr-agent-config/configuration.toml"
+    gcloud storage cp "${TF_DIR}/config-seed/secrets.toml" "gs://${CONFIG_BUCKET}/pr-agent-config/secrets.toml"
+  else
+    echo "Warning: OVERWRITE_CONFIG_SEED=1 was set, but config_bucket output is empty."
+  fi
+fi
 API_KEY=$(terraform output -raw dashboard_api_key 2>/dev/null || true)
 [ -n "$API_KEY" ] && [ "$API_KEY" != "null" ] && echo "" && echo "DASHBOARD_API_KEY: $API_KEY"

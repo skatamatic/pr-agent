@@ -112,12 +112,20 @@ resource "google_storage_bucket_object" "config_seed_configuration" {
   name    = "${local.config_prefix}configuration.toml"
   bucket  = google_storage_bucket.config.name
   content = file("${path.module}/config-seed/configuration.toml")
+
+  lifecycle {
+    ignore_changes = [content, detect_md5hash]
+  }
 }
 
 resource "google_storage_bucket_object" "config_seed_secrets" {
   name    = "${local.config_prefix}secrets.toml"
   bucket  = google_storage_bucket.config.name
   content = file("${path.module}/config-seed/secrets.toml")
+
+  lifecycle {
+    ignore_changes = [content, detect_md5hash]
+  }
 }
 
 # ------------------------------------------------------------------------------

@@ -765,7 +765,8 @@ stages:
           IMAGE="${{GCP_RUNNER_PR_AGENT_IMAGE}}"
         fi
         if [ -z "$IMAGE" ]; then
-          echo "##vso[task.logissue type=error]No PR-Agent image found."
+          echo "##vso[task.logissue type=error]No PR-Agent image found. Runner env is missing GCP_RUNNER_PR_AGENT_IMAGE and pipeline variable PR_AGENT_IMAGE is unset."
+          echo "##vso[task.logissue type=error]Re-provision the runner VM after setting backend GCP_RUNNER_PR_AGENT_IMAGE to your deployed Artifact Registry image."
           exit 1
         fi
         if echo "$IMAGE" | grep -q '[A-Z]'; then

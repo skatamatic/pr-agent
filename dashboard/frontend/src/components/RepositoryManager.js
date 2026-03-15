@@ -237,6 +237,11 @@ const RepositoryManager = () => {
     fetchRepositories();
   }, [fetchRepositories]);
 
+  // Load runner connections immediately so collapsed summary is accurate on first render.
+  useEffect(() => {
+    fetchActionRunnerConnections();
+  }, [fetchActionRunnerConnections]);
+
   useEffect(() => {
     return () => {
       clearRepoActionPollTimeout();

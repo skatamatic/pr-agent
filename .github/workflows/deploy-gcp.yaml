@@ -57,6 +57,18 @@ jobs:
           docker push "$IMAGE"
           echo "backend_image=$IMAGE" >> $GITHUB_ENV
 
+      - name: Build and push PR-Agent runner image
+        run: |
+          REGION=${{ vars.GCP_REGION || 'us-central1' }}
+          REPO_ID=${{ vars.GCP_REPO_ID || 'pr-agent-dash-repo' }}
+          IMAGE="$REGION-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/$REPO_ID/pr-agent:${{ github.sha }}"
+          cp .dockerignore .dockerignore.dashboard-backup || true
+          cp .dockerignore.pr-agent .dockerignore
+          docker build -f Dockerfile.github_action -t "$IMAGE" .
+          docker push "$IMAGE"
+          mv .dockerignore.dashboard-backup .dockerignore || true
+          echo "pr_agent_image=$IMAGE" >> $GITHUB_ENV
+
       - name: Build and push frontend
         env:
           BACKEND_URL: ${{ steps.backend_url.outputs.url }}
@@ -81,6 +93,7 @@ jobs:
           terraform apply -auto-approve \
             -var="backend_image=${{ env.backend_image }}" \
             -var="frontend_image=${{ env.frontend_image }}" \
+            -var="pr_agent_runner_image=${{ env.pr_agent_image }}" \
             -var="backend_base_url=${{ steps.backend_url.outputs.url }}" \
             -var="frontend_base_url="
 
@@ -98,5 +111,6 @@ jobs:
           terraform apply -auto-approve \
             -var="backend_image=${{ env.backend_image }}" \
             -var="frontend_image=${{ env.frontend_image }}" \
+            -var="pr_agent_runner_image=${{ env.pr_agent_image }}" \
             -var="backend_base_url=${{ steps.backend_url.outputs.url }}" \
             -var="frontend_base_url=${{ steps.frontend_url.outputs.url }}"

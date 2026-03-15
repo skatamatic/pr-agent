@@ -23,6 +23,7 @@ REGION="${REGION:-us-central1}"
 REPO_ID="${REPO_ID:-pr-agent-dash-repo}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 SKIP_HEALTH_WAIT="${SKIP_HEALTH_WAIT:-0}"
+OVERWRITE_CONFIG_SEED="${OVERWRITE_CONFIG_SEED:-0}"
 
 # Project ID: from env or from terraform.tfvars
 if [ -n "$TF_VAR_project_id" ]; then
@@ -40,6 +41,7 @@ REGISTRY="${REGION}-docker.pkg.dev"
 IMAGE_BASE="${REGISTRY}/${PROJECT_ID}/${REPO_ID}"
 BACKEND_IMAGE="${IMAGE_BASE}/backend:${IMAGE_TAG}"
 FRONTEND_IMAGE="${IMAGE_BASE}/frontend:${IMAGE_TAG}"
+PR_AGENT_IMAGE="${IMAGE_BASE}/pr-agent:${IMAGE_TAG}"
 
 APPLY_OPTS=("$@")
 if [[ " ${APPLY_OPTS[*]} " != *" -auto-approve "* ]]; then
@@ -54,15 +56,33 @@ terraform init -input=false
 echo "=== 2/7 Terraform apply (infra only; no Cloud Run until images set) ==="
 terraform apply -input=false "${APPLY_OPTS[@]}"
 
-echo "=== 3/7 Build and push backend ==="
+echo "=== 3/8 Build and push PR-Agent runner image ==="
+cd "$REPO_ROOT"
+if [ ! -f .dockerignore.pr-agent ]; then
+  echo "Error: .dockerignore.pr-agent not found. PR-Agent image would be missing pr_agent/ code."
+  exit 1
+fi
+_restore_dockerignore() { [ -f .dockerignore.bak ] && mv .dockerignore.bak .dockerignore || true; }
+[ -f .dockerignore ] && cp .dockerignore .dockerignore.bak
+cp .dockerignore.pr-agent .dockerignore
+trap '_restore_dockerignore' EXIT
+docker build -f Dockerfile.github_action -t "$PR_AGENT_IMAGE" .
+docker push "$PR_AGENT_IMAGE"
+_restore_dockerignore
+trap - EXIT
+
+echo "=== 4/8 Build and push backend ==="
 cd "$REPO_ROOT"
 gcloud auth configure-docker "${REGISTRY}" --quiet
 docker build -f dashboard/backend/Dockerfile -t "$BACKEND_IMAGE" .
 docker push "$BACKEND_IMAGE"
 
-echo "=== 4/7 Deploy backend (Cloud Run) ==="
+echo "=== 5/8 Deploy backend (Cloud Run) ==="
 cd "$TF_DIR"
-terraform apply -input=false -var="backend_image=${BACKEND_IMAGE}" "${APPLY_OPTS[@]}"
+terraform apply -input=false \
+  -var="backend_image=${BACKEND_IMAGE}" \
+  -var="pr_agent_runner_image=${PR_AGENT_IMAGE}" \
+  "${APPLY_OPTS[@]}"
 
 BACKEND_URL=$(terraform output -raw backend_url 2>/dev/null || true)
 if [ -z "$BACKEND_URL" ] || [ "$BACKEND_URL" = "null" ]; then
@@ -72,7 +92,7 @@ fi
 WS_URL="${BACKEND_URL/https/wss}"
 WS_URL="${WS_URL%/}/ws"
 
-echo "=== 5/7 Build and push frontend (REACT_APP_API_URL=$BACKEND_URL) ==="
+echo "=== 6/8 Build and push frontend (REACT_APP_API_URL=$BACKEND_URL) ==="
 cd "$REPO_ROOT"
 docker build -f dashboard/frontend/Dockerfile \
   --build-arg "REACT_APP_API_URL=$BACKEND_URL" \
@@ -80,12 +100,13 @@ docker build -f dashboard/frontend/Dockerfile \
   -t "$FRONTEND_IMAGE" .
 docker push "$FRONTEND_IMAGE"
 
-echo "=== 6/7 Deploy frontend and set backend/frontend URLs (CORS, links) ==="
+echo "=== 7/8 Deploy frontend and set backend/frontend URLs (CORS, links) ==="
 cd "$TF_DIR"
 FRONTEND_URL_PLACEHOLDER=""
 terraform apply -input=false \
   -var="backend_image=${BACKEND_IMAGE}" \
   -var="frontend_image=${FRONTEND_IMAGE}" \
+  -var="pr_agent_runner_image=${PR_AGENT_IMAGE}" \
   -var="backend_base_url=${BACKEND_URL}" \
   -var="frontend_base_url=${FRONTEND_URL_PLACEHOLDER}" \
   "${APPLY_OPTS[@]}"
@@ -96,13 +117,14 @@ if [ -n "$FRONTEND_URL" ] && [ "$FRONTEND_URL" != "null" ]; then
   terraform apply -input=false \
     -var="backend_image=${BACKEND_IMAGE}" \
     -var="frontend_image=${FRONTEND_IMAGE}" \
+    -var="pr_agent_runner_image=${PR_AGENT_IMAGE}" \
     -var="backend_base_url=${BACKEND_URL}" \
     -var="frontend_base_url=${FRONTEND_URL}" \
     "${APPLY_OPTS[@]}"
 fi
 
 if [ "$SKIP_HEALTH_WAIT" != "1" ] && [ -n "$BACKEND_URL" ]; then
-  echo "=== 7/7 Waiting for backend health (up to 120s) ==="
+  echo "=== 8/8 Waiting for backend health (up to 120s) ==="
   for i in $(seq 1 24); do
     if curl -sf "${BACKEND_URL}/api/health" >/dev/null 2>&1; then
       echo "Backend healthy."
@@ -115,13 +137,24 @@ if [ "$SKIP_HEALTH_WAIT" != "1" ] && [ -n "$BACKEND_URL" ]; then
     echo "Warning: backend health check did not succeed; deployment may still be rolling out."
   fi
 else
-  echo "=== 7/7 Skipping health wait (set SKIP_HEALTH_WAIT=0 to wait) ==="
+  echo "=== 8/8 Skipping health wait (set SKIP_HEALTH_WAIT=0 to wait) ==="
 fi
 
 echo ""
 echo "=== Deployment complete ==="
 echo "Backend:  $BACKEND_URL"
 echo "Frontend: ${FRONTEND_URL:-n/a}"
+echo "PR-Agent image: ${PR_AGENT_IMAGE}"
+if [ "$OVERWRITE_CONFIG_SEED" = "1" ]; then
+  CONFIG_BUCKET=$(terraform output -raw config_bucket 2>/dev/null || true)
+  if [ -n "$CONFIG_BUCKET" ] && [ "$CONFIG_BUCKET" != "null" ]; then
+    echo "Overwriting GCS config seed files (requested by OVERWRITE_CONFIG_SEED=1)..."
+    gcloud storage cp "${TF_DIR}/config-seed/configuration.toml" "gs://${CONFIG_BUCKET}/pr-agent-config/configuration.toml"
+    gcloud storage cp "${TF_DIR}/config-seed/secrets.toml" "gs://${CONFIG_BUCKET}/pr-agent-config/secrets.toml"
+  else
+    echo "Warning: OVERWRITE_CONFIG_SEED=1 was set, but config_bucket output is empty."
+  fi
+fi
 echo ""
 API_KEY=$(terraform output -raw dashboard_api_key 2>/dev/null || true)
 if [ -n "$API_KEY" ] && [ "$API_KEY" != "null" ]; then

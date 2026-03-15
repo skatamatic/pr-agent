@@ -16,6 +16,7 @@ prefix     = "pr-agent-dash"
 # Set after building and pushing images (see scripts/build-push-gcp.ps1)
 # backend_image  = "us-central1-docker.pkg.dev/my-gcp-project/pr-agent-dash-repo/backend:latest"
 # frontend_image = "us-central1-docker.pkg.dev/my-gcp-project/pr-agent-dash-repo/frontend:latest"
+# pr_agent_runner_image = "us-central1-docker.pkg.dev/my-gcp-project/pr-agent-dash-repo/pr-agent:latest"
 
 # Optional
 # backend_max_instances   = 1

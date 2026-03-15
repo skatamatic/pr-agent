@@ -11,7 +11,8 @@
 param(
     [switch]$AutoApprove,
     [string]$TerraformDir = "terraform/gcp",
-    [switch]$WaitForHealth   # After apply, wait for backend /api/health (up to 120s)
+    [switch]$WaitForHealth,   # After apply, wait for backend /api/health (up to 120s)
+    [switch]$OverwriteConfigSeed
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,9 +27,14 @@ Push-Location $TfDir
 try {
     $applyOpts = @()
     if ($AutoApprove) { $applyOpts = @("-auto-approve") }
+    $currentPrAgentImage = (terraform output -raw pr_agent_runner_image 2>$null)
+    $prAgentVarOpts = @()
+    if ($currentPrAgentImage -and $currentPrAgentImage -ne "null") {
+        $prAgentVarOpts = @("-var=pr_agent_runner_image=$currentPrAgentImage")
+    }
 
     Write-Host "=== First apply (infra + Cloud Run) ==="
-    terraform apply @applyOpts
+    terraform apply @prAgentVarOpts @applyOpts
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     $backendUrl = (terraform output -raw backend_url 2>$null)
@@ -37,10 +43,10 @@ try {
 
     if ($backendUrl -and $backendUrl -ne "null") {
         Write-Host "=== Second apply (inject backend/frontend URLs for CORS and links) ==="
-        $varOpts = @(
-            "-var=backend_base_url=$backendUrl",
-            "-var=frontend_base_url=$frontendUrl"
-        )
+        $varOpts = @()
+        $varOpts += $prAgentVarOpts
+        $varOpts += "-var=backend_base_url=$backendUrl"
+        $varOpts += "-var=frontend_base_url=$frontendUrl"
         if ($AutoApprove) { $varOpts += "-auto-approve" }
         terraform apply @varOpts
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -63,6 +69,20 @@ try {
     }
     else {
         Write-Host "Backend URL not yet available (set backend_image and frontend_image, then apply again)."
+    }
+
+    if ($OverwriteConfigSeed) {
+        $configBucket = (terraform output -raw config_bucket 2>$null)
+        if ($configBucket -and $configBucket -ne "null") {
+            Write-Host "Overwriting GCS config seed files (requested by -OverwriteConfigSeed)..."
+            gcloud storage cp (Join-Path $TfDir "config-seed\configuration.toml") "gs://$configBucket/pr-agent-config/configuration.toml"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            gcloud storage cp (Join-Path $TfDir "config-seed\secrets.toml") "gs://$configBucket/pr-agent-config/secrets.toml"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        }
+        else {
+            Write-Host "Warning: -OverwriteConfigSeed was set, but config_bucket output is empty."
+        }
     }
 
     $configBucket = (terraform output -raw config_bucket 2>$null)

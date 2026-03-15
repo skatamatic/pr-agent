@@ -13,7 +13,8 @@ param(
     [string]$RepoId = "pr-agent-dash-repo",
     [string]$ImageTag = "latest",
     [switch]$AutoApprove,
-    [switch]$WaitForHealth
+    [switch]$WaitForHealth,
+    [switch]$OverwriteConfigSeed
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,12 +26,32 @@ $Registry = "$Region-docker.pkg.dev"
 $ImageBase = "$Registry/$ProjectId/$RepoId"
 $BackendImage = "$ImageBase/backend:$ImageTag"
 $FrontendImage = "$ImageBase/frontend:$ImageTag"
+$PrAgentImage = "$ImageBase/pr-agent:$ImageTag"
 
 Write-Host "=== Configuring Docker for Artifact Registry ==="
 gcloud auth configure-docker "${Registry}" --quiet
 
 Push-Location $RepoRoot
 try {
+    Write-Host "=== Building PR-Agent image: $PrAgentImage ==="
+    $dockerignorePath = Join-Path $RepoRoot ".dockerignore"
+    $dockerignoreBak = Join-Path $RepoRoot ".dockerignore.bak"
+    $dockerignorePrAgent = Join-Path $RepoRoot ".dockerignore.pr-agent"
+    if (-not (Test-Path $dockerignorePrAgent)) {
+        throw ".dockerignore.pr-agent not found at $dockerignorePrAgent. PR-Agent image would be missing pr_agent/ code."
+    }
+    if (Test-Path $dockerignorePath) { Copy-Item $dockerignorePath $dockerignoreBak -Force }
+    Copy-Item $dockerignorePrAgent $dockerignorePath -Force
+    try {
+        docker build -f Dockerfile.github_action -t $PrAgentImage .
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Write-Host "=== Pushing PR-Agent image ==="
+        docker push $PrAgentImage
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    } finally {
+        if (Test-Path $dockerignoreBak) { Move-Item $dockerignoreBak $dockerignorePath -Force }
+    }
+
     Write-Host "=== Building backend: $BackendImage ==="
     docker build -f dashboard/backend/Dockerfile -t $BackendImage .
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -40,7 +61,11 @@ try {
 
     Write-Host "=== Deploying backend (Cloud Run) ==="
     Push-Location $TfDir
-    $applyOpts = @("-input=false", "-var=backend_image=$BackendImage")
+    $applyOpts = @(
+        "-input=false",
+        "-var=backend_image=$BackendImage",
+        "-var=pr_agent_runner_image=$PrAgentImage"
+    )
     if ($AutoApprove) { $applyOpts += "-auto-approve" }
     terraform apply @applyOpts
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -72,6 +97,7 @@ try {
         "-input=false",
         "-var=backend_image=$BackendImage",
         "-var=frontend_image=$FrontendImage",
+        "-var=pr_agent_runner_image=$PrAgentImage",
         "-var=backend_base_url=$BackendUrl",
         "-var=frontend_base_url=$FrontendUrl"
     )
@@ -86,6 +112,7 @@ try {
             "-input=false",
             "-var=backend_image=$BackendImage",
             "-var=frontend_image=$FrontendImage",
+            "-var=pr_agent_runner_image=$PrAgentImage",
             "-var=backend_base_url=$BackendUrl",
             "-var=frontend_base_url=$FrontendUrl"
         )
@@ -112,6 +139,19 @@ try {
     Write-Host "=== Deployment complete ==="
     Write-Host "Backend:  $BackendUrl"
     Write-Host "Frontend: $FrontendUrl"
+    Write-Host "PR-Agent image: $PrAgentImage"
+    if ($OverwriteConfigSeed) {
+        $configBucket = terraform output -raw config_bucket 2>$null
+        if ($configBucket -and $configBucket -ne "null") {
+            Write-Host "Overwriting GCS config seed files (requested by -OverwriteConfigSeed)..."
+            gcloud storage cp (Join-Path $TfDir "config-seed\configuration.toml") "gs://$configBucket/pr-agent-config/configuration.toml"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            gcloud storage cp (Join-Path $TfDir "config-seed\secrets.toml") "gs://$configBucket/pr-agent-config/secrets.toml"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        } else {
+            Write-Host "Warning: -OverwriteConfigSeed was set, but config_bucket output is empty."
+        }
+    }
     $ApiKey = terraform output -raw dashboard_api_key 2>$null
     if ($ApiKey -and $ApiKey -ne "null") {
         Write-Host ""

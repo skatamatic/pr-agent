@@ -15,6 +15,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TERRAFORM_DIR="${TERRAFORM_DIR:-terraform/gcp}"
 TF_DIR="${REPO_ROOT}/${TERRAFORM_DIR}"
 WAIT_FOR_HEALTH="${WAIT_FOR_HEALTH:-0}"
+OVERWRITE_CONFIG_SEED="${OVERWRITE_CONFIG_SEED:-0}"
 
 if [ ! -f "${TF_DIR}/main.tf" ]; then
   echo "Terraform dir not found: ${TF_DIR}" >&2
@@ -23,8 +24,15 @@ fi
 
 cd "$TF_DIR"
 
+CURRENT_PR_AGENT_IMAGE=$(terraform output -raw pr_agent_runner_image 2>/dev/null || true)
+[ "$CURRENT_PR_AGENT_IMAGE" = "null" ] && CURRENT_PR_AGENT_IMAGE=""
+PR_AGENT_VAR_ARGS=()
+if [ -n "$CURRENT_PR_AGENT_IMAGE" ]; then
+  PR_AGENT_VAR_ARGS=(-var="pr_agent_runner_image=$CURRENT_PR_AGENT_IMAGE")
+fi
+
 echo "=== First apply (infra + Cloud Run) ==="
-terraform apply "$@"
+terraform apply "${PR_AGENT_VAR_ARGS[@]}" "$@"
 
 BACKEND_URL=$(terraform output -raw backend_url 2>/dev/null || true)
 FRONTEND_URL=$(terraform output -raw frontend_url 2>/dev/null || true)
@@ -33,6 +41,7 @@ FRONTEND_URL=$(terraform output -raw frontend_url 2>/dev/null || true)
 if [ -n "$BACKEND_URL" ] && [ "$BACKEND_URL" != "null" ]; then
   echo "=== Second apply (inject backend/frontend URLs for CORS and links) ==="
   terraform apply "$@" \
+    "${PR_AGENT_VAR_ARGS[@]}" \
     -var="backend_base_url=$BACKEND_URL" \
     -var="frontend_base_url=$FRONTEND_URL"
   echo "Done. Backend and frontend URLs are set."
@@ -53,6 +62,17 @@ if [ -n "$BACKEND_URL" ] && [ "$BACKEND_URL" != "null" ]; then
   fi
 else
   echo "Backend URL not yet available (set backend_image and frontend_image, then apply again)."
+fi
+
+if [ "$OVERWRITE_CONFIG_SEED" = "1" ]; then
+  CONFIG_BUCKET=$(terraform output -raw config_bucket 2>/dev/null || true)
+  if [ -n "$CONFIG_BUCKET" ] && [ "$CONFIG_BUCKET" != "null" ]; then
+    echo "Overwriting GCS config seed files (requested by OVERWRITE_CONFIG_SEED=1)..."
+    gcloud storage cp "${TF_DIR}/config-seed/configuration.toml" "gs://${CONFIG_BUCKET}/pr-agent-config/configuration.toml"
+    gcloud storage cp "${TF_DIR}/config-seed/secrets.toml" "gs://${CONFIG_BUCKET}/pr-agent-config/secrets.toml"
+  else
+    echo "Warning: OVERWRITE_CONFIG_SEED=1 was set, but config_bucket output is empty."
+  fi
 fi
 
 CONFIG_BUCKET=$(terraform output -raw config_bucket 2>/dev/null || true)

@@ -29,6 +29,7 @@ PROJECT_ID=""
 REGION="us-central1"
 AUTO_APPROVE=""
 SKIP_INITIAL_DEPLOY=""
+OVERWRITE_CONFIG_SEED=""
 
 usage() {
   cat <<EOF
@@ -43,6 +44,7 @@ Options:
   --region           GCP region (default: us-central1)
   --auto-approve     Skip Terraform confirmation prompts
   --skip-deploy      Skip the initial Docker build/deploy (infra + trigger only)
+  --overwrite-config-seed  Allow Terraform to overwrite config-seed objects in GCS
   -h, --help         Show this help
 EOF
   exit 1
@@ -55,6 +57,7 @@ while [[ $# -gt 0 ]]; do
     --region)     REGION="$2"; shift 2 ;;
     --auto-approve) AUTO_APPROVE="-auto-approve"; shift ;;
     --skip-deploy)  SKIP_INITIAL_DEPLOY=1; shift ;;
+    --overwrite-config-seed) OVERWRITE_CONFIG_SEED=1; shift ;;
     -h|--help)    usage ;;
     *)            echo "Unknown option: $1"; usage ;;
   esac
@@ -182,6 +185,7 @@ REGISTRY="${REGION}-docker.pkg.dev"
 IMAGE_BASE="${REGISTRY}/${PROJECT_ID}/${REPO_ID}"
 BACKEND_IMAGE="${IMAGE_BASE}/backend:latest"
 FRONTEND_IMAGE="${IMAGE_BASE}/frontend:latest"
+PR_AGENT_IMAGE="${IMAGE_BASE}/pr-agent:latest"
 CONN_NAME="${PREFIX}-github"
 TRIGGER_NAME="${PREFIX}-deploy"
 
@@ -325,11 +329,15 @@ echo ""
 # On re-run: pass existing Cloud Run images so Terraform does not destroy live services
 EXISTING_BACKEND_IMAGE=""
 EXISTING_FRONTEND_IMAGE=""
+EXISTING_PR_AGENT_IMAGE=""
 EXISTING_BACKEND_IMAGE=$(gcloud run services describe "${PREFIX}-backend" --region="$REGION" --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || true)
 EXISTING_FRONTEND_IMAGE=$(gcloud run services describe "${PREFIX}-frontend" --region="$REGION" --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || true)
+EXISTING_PR_AGENT_IMAGE=$(terraform output -raw pr_agent_runner_image 2>/dev/null || true)
+[ "$EXISTING_PR_AGENT_IMAGE" = "null" ] && EXISTING_PR_AGENT_IMAGE=""
 TF_APPLY_EXTRA=""
 if [[ -n "$EXISTING_BACKEND_IMAGE" ]]; then TF_APPLY_EXTRA="${TF_APPLY_EXTRA} -var=backend_image=${EXISTING_BACKEND_IMAGE}"; fi
 if [[ -n "$EXISTING_FRONTEND_IMAGE" ]]; then TF_APPLY_EXTRA="${TF_APPLY_EXTRA} -var=frontend_image=${EXISTING_FRONTEND_IMAGE}"; fi
+if [[ -n "$EXISTING_PR_AGENT_IMAGE" ]]; then TF_APPLY_EXTRA="${TF_APPLY_EXTRA} -var=pr_agent_runner_image=${EXISTING_PR_AGENT_IMAGE}"; fi
 if [[ -n "$EXISTING_BACKEND_IMAGE" || -n "$EXISTING_FRONTEND_IMAGE" ]]; then
   echo "  Terraform apply (using existing Cloud Run images to avoid destroying live services)"
 else
@@ -343,6 +351,7 @@ if [[ -n "$EXISTING_BACKEND_IMAGE" || -n "$EXISTING_FRONTEND_IMAGE" ]]; then
     echo "# Written by setup-cicd-gcp.sh so Terraform has current images (avoids destructive plan)."
     [[ -n "$EXISTING_BACKEND_IMAGE" ]]  && echo "backend_image  = \"${EXISTING_BACKEND_IMAGE}\""
     [[ -n "$EXISTING_FRONTEND_IMAGE" ]] && echo "frontend_image = \"${EXISTING_FRONTEND_IMAGE}\""
+    [[ -n "$EXISTING_PR_AGENT_IMAGE" ]] && echo "pr_agent_runner_image = \"${EXISTING_PR_AGENT_IMAGE}\""
   } > "${TF_DIR}/terraform.auto.tfvars"
   echo "  Wrote terraform.auto.tfvars (current Cloud Run images)"
 fi
@@ -359,6 +368,22 @@ else
   gcloud auth configure-docker "${REGISTRY}" --quiet
 
   echo ""
+  echo "=== Building and pushing PR-Agent image ==="
+  cd "$REPO_ROOT"
+  if [ ! -f .dockerignore.pr-agent ]; then
+    echo "Error: .dockerignore.pr-agent not found. PR-Agent image would be missing pr_agent/ code."
+    exit 1
+  fi
+  _restore_dockerignore() { [ -f .dockerignore.bak ] && mv .dockerignore.bak .dockerignore || true; }
+  [ -f .dockerignore ] && cp .dockerignore .dockerignore.bak
+  cp .dockerignore.pr-agent .dockerignore
+  trap '_restore_dockerignore' EXIT
+  docker build -f Dockerfile.github_action -t "$PR_AGENT_IMAGE" .
+  docker push "$PR_AGENT_IMAGE"
+  _restore_dockerignore
+  trap - EXIT
+
+  echo ""
   echo "=== Building and pushing backend ==="
   cd "$REPO_ROOT"
   docker build -f dashboard/backend/Dockerfile -t "$BACKEND_IMAGE" .
@@ -367,7 +392,10 @@ else
   echo ""
   echo "=== Deploying backend via Terraform ==="
   cd "$TF_DIR"
-  terraform apply -input=false -var="backend_image=${BACKEND_IMAGE}" $AUTO_APPROVE
+  terraform apply -input=false \
+    -var="backend_image=${BACKEND_IMAGE}" \
+    -var="pr_agent_runner_image=${PR_AGENT_IMAGE}" \
+    $AUTO_APPROVE
 
   BACKEND_URL=$(terraform output -raw backend_url 2>/dev/null || true)
   if [[ -z "$BACKEND_URL" || "$BACKEND_URL" == "null" ]]; then
@@ -392,6 +420,7 @@ else
   terraform apply -input=false \
     -var="backend_image=${BACKEND_IMAGE}" \
     -var="frontend_image=${FRONTEND_IMAGE}" \
+    -var="pr_agent_runner_image=${PR_AGENT_IMAGE}" \
     -var="backend_base_url=${BACKEND_URL}" \
     -var="frontend_base_url=" \
     $AUTO_APPROVE
@@ -402,6 +431,7 @@ else
     terraform apply -input=false \
       -var="backend_image=${BACKEND_IMAGE}" \
       -var="frontend_image=${FRONTEND_IMAGE}" \
+      -var="pr_agent_runner_image=${PR_AGENT_IMAGE}" \
       -var="backend_base_url=${BACKEND_URL}" \
       -var="frontend_base_url=${FRONTEND_URL}" \
       $AUTO_APPROVE
@@ -412,6 +442,7 @@ else
     echo "# Written by setup-cicd-gcp.sh so Terraform has current images (avoids destructive plan)."
     echo "backend_image  = \"${BACKEND_IMAGE}\""
     echo "frontend_image = \"${FRONTEND_IMAGE}\""
+    echo "pr_agent_runner_image = \"${PR_AGENT_IMAGE}\""
   } > "${TF_DIR}/terraform.auto.tfvars"
   echo "  Wrote terraform.auto.tfvars (current Cloud Run images)"
 
@@ -429,6 +460,18 @@ else
   done
   if [[ -z "$HEALTHY" ]]; then
     echo "  Warning: health check did not succeed; deployment may still be rolling out."
+  fi
+fi
+
+if [[ -n "$OVERWRITE_CONFIG_SEED" ]]; then
+  CONFIG_BUCKET=$(cd "$TF_DIR" && terraform output -raw config_bucket 2>/dev/null || true)
+  if [[ -n "$CONFIG_BUCKET" && "$CONFIG_BUCKET" != "null" ]]; then
+    echo ""
+    echo "=== Overwriting GCS config seed files (--overwrite-config-seed) ==="
+    gcloud storage cp "${TF_DIR}/config-seed/configuration.toml" "gs://${CONFIG_BUCKET}/pr-agent-config/configuration.toml"
+    gcloud storage cp "${TF_DIR}/config-seed/secrets.toml" "gs://${CONFIG_BUCKET}/pr-agent-config/secrets.toml"
+  else
+    echo "Warning: --overwrite-config-seed was set, but config_bucket output is empty."
   fi
 fi
 

@@ -2625,7 +2625,7 @@ class DashboardApplication:
                 config_bucket = getattr(settings, 'pr_agent_config_gcs_bucket', '') or ''
                 config_prefix = getattr(settings, 'pr_agent_config_gcs_prefix', 'pr-agent-config/') or 'pr-agent-config/'
                 pr_agent_repo_url = getattr(settings, 'gcp_runner_pr_agent_repo_url', 'https://github.com/Codium-ai/pr-agent.git') or 'https://github.com/Codium-ai/pr-agent.git'
-                pr_agent_runner_image = getattr(settings, 'gcp_runner_pr_agent_image', '') or ''
+                pr_agent_runner_image = (getattr(settings, 'gcp_runner_pr_agent_image', '') or '').strip()
                 dashboard_api_key = getattr(settings, 'dashboard_api_key', '') or ''
                 ado_pat = (body.ado_pat if body and body.ado_pat else '') or ''
                 agent_pool = (body.agent_pool if body and body.agent_pool else '') or conn.agent_pool or ''
@@ -2664,6 +2664,14 @@ class DashboardApplication:
                     ado_org_url = self._resolve_azure_org_url(conn.organization, getattr(repo_with_pat, 'url', None) if repo_with_pat else None)
 
                 if conn.provider == 'azure_devops':
+                    if not pr_agent_runner_image:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                "Azure DevOps cloud runners require GCP_RUNNER_PR_AGENT_IMAGE on the backend. "
+                                "Set it to your deployed Artifact Registry image and provision again."
+                            ),
+                        )
                     if not ado_pat:
                         raise HTTPException(
                             status_code=400,
