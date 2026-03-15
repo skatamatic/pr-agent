@@ -5,10 +5,16 @@ RUN apt-get update && apt-get install --no-install-recommends -y git curl && apt
 WORKDIR /app
 ADD pyproject.toml .
 ADD requirements.txt .
-RUN pip install --no-cache-dir . && rm pyproject.toml requirements.txt
+# Copy source before packaging install so pip install . has full project metadata/code.
+ADD pr_agent pr_agent
+# Ensure Azure DevOps runtime dependencies exist in the PR-Agent container.
+RUN pip install --no-cache-dir "setuptools<81" \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir . \
+    && python -c "import pkg_resources, azure.devops, msrest"
+RUN rm pyproject.toml requirements.txt
 ENV PYTHONPATH=/app
 ADD docs docs
-ADD pr_agent pr_agent
 ADD github_action/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]

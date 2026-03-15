@@ -717,9 +717,23 @@ steps:
     #  Template selection & sync status
     # ──────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _normalize_pipeline_image_tag(pr_agent_image: str) -> str:
+        """Normalize configured image to :latest for pipeline YAML usage."""
+        image = (pr_agent_image or "").strip()
+        if not image:
+            return ""
+        if "@sha256:" in image:
+            return image
+        last_slash = image.rfind("/")
+        last_colon = image.rfind(":")
+        if last_colon > last_slash:
+            return f"{image[:last_colon]}:latest"
+        return f"{image}:latest"
+
     def get_docker_pipeline_template(self, pool_name: str = "PRAgent_Cloud", pr_agent_image: str = "") -> str:
         """Return the Docker-based pipeline YAML with pool name filled in."""
-        configured_image = (pr_agent_image or "").strip()
+        configured_image = self._normalize_pipeline_image_tag(pr_agent_image)
         escaped_image = configured_image.replace("'", "''")
         image_var_block = f"- name: PR_AGENT_IMAGE\n  value: '{escaped_image}'\n" if escaped_image else ""
         return f"""# PR-Agent on a self-hosted runner using Docker

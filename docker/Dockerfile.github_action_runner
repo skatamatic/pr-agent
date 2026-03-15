@@ -15,7 +15,8 @@ COPY requirements.txt ./
 # 2. Install Python dependencies.
 # This expensive step will now only re-run if the 'requirements.txt' (and pyproject.toml if copied above)
 # layer changes.
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir "setuptools<81" && pip install --no-cache-dir -r requirements.txt
+RUN python -c "import pkg_resources, azure.devops, msrest"
 
 # 3. Now, copy the rest of your application code.
 # This layer will change more frequently (whenever your source code changes),
