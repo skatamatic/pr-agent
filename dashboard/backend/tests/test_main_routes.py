@@ -175,6 +175,24 @@ class TestConfigAndDeveloperRoutes:
         assert data.get("backend_url") == "https://dash.example.com"
         assert data.get("api_key") == "test-dashboard-key"
 
+    def test_get_dashboard_auto_setup_cloud_run_fallback_when_localhost(self, client_app, auth_headers, monkeypatch):
+        monkeypatch.setattr(backend_main.settings, "backend_base_url", "http://localhost:8000", raising=False)
+        monkeypatch.setattr(backend_main.settings, "dashboard_api_key", "test-dashboard-key", raising=False)
+        monkeypatch.setenv("K_SERVICE", "pr-agent-dash-dev-backend")
+        monkeypatch.setenv("GCP_RUNNER_REGION", "us-central1")
+        monkeypatch.delenv("GOOGLE_CLOUD_PROJECT_NUMBER", raising=False)
+        monkeypatch.setattr(
+            backend_main.dashboard_app,
+            "_fetch_gcp_project_number_from_metadata",
+            lambda: "123456789012",
+            raising=True,
+        )
+        r = client_app.get("/api/config/dashboard-auto-setup", headers=auth_headers)
+        assert r.status_code == 200
+        data = r.json().get("data", {})
+        assert data.get("backend_url") == "https://pr-agent-dash-dev-backend-123456789012.us-central1.run.app"
+        assert data.get("api_key") == "test-dashboard-key"
+
     def test_post_config_200(self, client_app, auth_headers):
         r = client_app.post(
             "/api/config",

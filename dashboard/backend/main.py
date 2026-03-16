@@ -13,6 +13,7 @@ import sys
 import logging
 import threading
 import ssl
+import urllib.request
 from datetime import datetime, timedelta
 from uuid import uuid4
 import aiohttp
@@ -222,6 +223,53 @@ class DashboardApplication:
         return check_maintenance_mode
 
     _azure_settings_lock = threading.Lock()
+
+    @staticmethod
+    def _is_local_url(url: str) -> bool:
+        value = (url or "").strip().lower()
+        if not value:
+            return True
+        return (
+            "localhost" in value
+            or "127.0.0.1" in value
+            or value.startswith("http://0.0.0.0")
+        )
+
+    @staticmethod
+    def _fetch_gcp_project_number_from_metadata() -> str:
+        try:
+            req = urllib.request.Request(
+                "http://metadata.google.internal/computeMetadata/v1/project/numeric-project-id",
+                headers={"Metadata-Flavor": "Google"},
+            )
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                return resp.read().decode("utf-8").strip()
+        except Exception:
+            return ""
+
+    def _resolve_dashboard_backend_url_for_auto_setup(self) -> str:
+        """Resolve a non-local backend URL for dashboard auto-setup."""
+        backend_url = (getattr(settings, "backend_base_url", "") or "").strip()
+        env_override = os.getenv("DASHBOARD_BACKEND_BASE_URL", "").strip()
+        if env_override:
+            backend_url = env_override
+
+        if backend_url and not self._is_local_url(backend_url):
+            return backend_url
+
+        service = os.getenv("K_SERVICE", "").strip()
+        region = (
+            os.getenv("GCP_RUNNER_REGION", "").strip()
+            or os.getenv("GOOGLE_CLOUD_REGION", "").strip()
+            or (getattr(settings, "gcp_runner_region", "") or "").strip()
+        )
+        project_number = os.getenv("GOOGLE_CLOUD_PROJECT_NUMBER", "").strip()
+        if not project_number:
+            project_number = self._fetch_gcp_project_number_from_metadata()
+
+        if service and region and project_number:
+            return f"https://{service}-{project_number}.{region}.run.app"
+        return backend_url or "http://localhost:8000"
 
     def _new_repo_action_operation(
         self,
@@ -2020,7 +2068,7 @@ class DashboardApplication:
         async def get_dashboard_auto_setup(current_user: UserDB = Depends(require_auth)):
             """Return runtime dashboard backend URL and API key for one-click PR-Agent dashboard setup."""
             try:
-                backend_url = (getattr(settings, "backend_base_url", "") or "").strip() or "http://localhost:8000"
+                backend_url = self._resolve_dashboard_backend_url_for_auto_setup()
                 dashboard_api_key = (getattr(settings, "dashboard_api_key", "") or "").strip()
                 return APIResponse(
                     data={

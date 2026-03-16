@@ -203,6 +203,21 @@ const ConfigEditor = ({ navigationTarget = null }) => {
       
       // Extract the actual config data from the API response
       let configData = response.data?.data || response.data || response;
+
+      const isLocalhostUrl = (value) => {
+        const url = (value || '').trim().toLowerCase();
+        return url.includes('localhost') || url.includes('127.0.0.1') || url.startsWith('http://0.0.0.0');
+      };
+      const dashboardUrlCandidates = [
+        configData.dashboard?.url,
+        configData.dashboard?.URL,
+        configData.DASHBOARD?.url,
+        configData.DASHBOARD?.URL,
+      ].filter(Boolean);
+      const dashboardUrl =
+        dashboardUrlCandidates.find((u) => !isLocalhostUrl(u)) ||
+        dashboardUrlCandidates[0] ||
+        'http://localhost:8000/';
       
       // Transform the PR-Agent config structure to match our UI expectations
       const transformedConfig = {
@@ -287,9 +302,19 @@ const ConfigEditor = ({ navigationTarget = null }) => {
         
         // Dashboard settings
         dashboard: {
-          URL: configData.dashboard?.URL || configData.DASHBOARD?.URL || 'http://localhost:8000/',
-          ENABLED: configData.dashboard?.ENABLED !== false && configData.DASHBOARD?.ENABLED !== false,
-          API_KEY: configData.dashboard?.API_KEY || configData.DASHBOARD?.API_KEY || ''
+          url: dashboardUrl,
+          enabled:
+            configData.dashboard?.enabled ??
+            configData.dashboard?.ENABLED ??
+            configData.DASHBOARD?.enabled ??
+            configData.DASHBOARD?.ENABLED ??
+            true,
+          api_key:
+            configData.dashboard?.api_key ||
+            configData.dashboard?.API_KEY ||
+            configData.DASHBOARD?.api_key ||
+            configData.DASHBOARD?.API_KEY ||
+            ''
         },
         
         // Developer Time Estimation settings
@@ -379,9 +404,9 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           max_patterns: 5
         },
         dashboard: {
-          URL: 'http://localhost:8000/',
-          ENABLED: true,
-          API_KEY: ''
+          url: 'http://localhost:8000/',
+          enabled: true,
+          api_key: ''
         },
         pr_dev_time_estimation: {
           enabled: false,
@@ -607,13 +632,13 @@ const ConfigEditor = ({ navigationTarget = null }) => {
     }
 
     // Validate dashboard settings
-    if (config.dashboard?.ENABLED && config.dashboard?.URL) {
-      const url = config.dashboard.URL.trim();
+    if (config.dashboard?.enabled && config.dashboard?.url) {
+      const url = config.dashboard.url.trim();
       if (url && url !== '') {
         try {
           new URL(url);
         } catch {
-          errors['dashboard.URL'] = 'Please enter a valid URL (e.g., http://localhost:8000/)';
+          errors['dashboard.url'] = 'Please enter a valid URL (e.g., http://localhost:8000/)';
         }
       }
     }
@@ -664,14 +689,14 @@ const ConfigEditor = ({ navigationTarget = null }) => {
         ...prev,
         dashboard: {
           ...(prev?.dashboard || {}),
-          ENABLED: true,
-          URL: backendUrl,
-          API_KEY: apiKey,
+          enabled: true,
+          url: backendUrl,
+          api_key: apiKey,
         },
       }));
       setErrors((prev) => {
         const next = { ...prev };
-        delete next['dashboard.URL'];
+        delete next['dashboard.url'];
         return next;
       });
       showSuccess('Dashboard settings injected', 'Dashboard URL and API key were populated from the current dashboard. Save changes to apply.');
@@ -2368,10 +2393,10 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   <input
                     type="checkbox"
                     id="dashboard-enabled"
-                    checked={config.dashboard?.ENABLED !== false}
-                    onChange={(e) => updateConfig('dashboard.ENABLED', e.target.checked)}
+                    checked={config.dashboard?.enabled !== false}
+                    onChange={(e) => updateConfig('dashboard.enabled', e.target.checked)}
                     disabled={!editing}
-                    className={getCheckboxClasses(config.dashboard?.ENABLED !== false, !editing)}
+                    className={getCheckboxClasses(config.dashboard?.enabled !== false, !editing)}
                   />
                   <label htmlFor="dashboard-enabled" className="text-sm font-medium text-gray-700 dark:text-gray-300">
                     Enable Dashboard Integration
@@ -2390,8 +2415,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   </label>
                   <input
                     type="url"
-                    value={config.dashboard?.URL || 'http://localhost:8000/'}
-                    onChange={(e) => updateConfig('dashboard.URL', e.target.value)}
+                    value={config.dashboard?.url || 'http://localhost:8000/'}
+                    onChange={(e) => updateConfig('dashboard.url', e.target.value)}
                     disabled={!editing}
                     placeholder="http://localhost:8000/"
                     className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -2410,8 +2435,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   </label>
                   <input
                     type="password"
-                    value={config.dashboard?.API_KEY || ''}
-                    onChange={(e) => updateConfig('dashboard.API_KEY', e.target.value)}
+                    value={config.dashboard?.api_key || ''}
+                    onChange={(e) => updateConfig('dashboard.api_key', e.target.value)}
                     disabled={!editing}
                     placeholder="Enter API key (optional)"
                     className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"

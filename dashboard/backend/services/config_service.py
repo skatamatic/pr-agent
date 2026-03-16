@@ -441,6 +441,7 @@ class ConfigService:
         Rotated backup is already created by _create_rotated_backup() before this is called."""
         existing = self._load_toml_from_backend(key)
         if key == CONFIG_KEY and isinstance(existing, dict):
+            existing = self._normalize_dashboard_section(existing)
             cfg_section = existing.get("config")
             if isinstance(cfg_section, dict):
                 # Migrate legacy nested sections accidentally written under [config.*]
@@ -467,11 +468,55 @@ class ConfigService:
             existing.pop("csharp_code_context_service", None)
         merged = self._deep_merge(existing, config_data)
         if key == CONFIG_KEY and isinstance(merged, dict):
+            merged = self._normalize_dashboard_section(merged)
             cfg_section = merged.get("config")
             if isinstance(cfg_section, dict):
                 cfg_section.pop("csharp_code_context_service", None)
             merged.pop("csharp_code_context_service", None)
         self.backend.put(key, toml.dumps(merged))
+
+    def _normalize_dashboard_section(self, config_obj: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize dashboard section keys to native lowercase form."""
+        normalized = dict(config_obj or {})
+        dashboard_section = normalized.get("dashboard")
+        dashboard_upper = normalized.pop("DASHBOARD", None)
+
+        if not isinstance(dashboard_section, dict):
+            dashboard_section = {}
+        if isinstance(dashboard_upper, dict):
+            # Lower priority than explicit lowercase section.
+            merged_dashboard = dict(dashboard_upper)
+            merged_dashboard.update(dashboard_section)
+            dashboard_section = merged_dashboard
+
+        if not dashboard_section:
+            if "dashboard" in normalized:
+                normalized["dashboard"] = {}
+            return normalized
+
+        legacy_url = dashboard_section.get("URL")
+        normalized_url = dashboard_section.get("url")
+        if (not normalized_url and legacy_url):
+            dashboard_section["url"] = legacy_url
+        elif (
+            isinstance(normalized_url, str)
+            and isinstance(legacy_url, str)
+            and normalized_url.strip().lower().startswith("http://localhost")
+            and not legacy_url.strip().lower().startswith("http://localhost")
+        ):
+            # Prefer migrated non-local URL when lowercase entry is stale localhost.
+            dashboard_section["url"] = legacy_url
+        if "enabled" not in dashboard_section and "ENABLED" in dashboard_section:
+            dashboard_section["enabled"] = dashboard_section.get("ENABLED")
+        if "api_key" not in dashboard_section and "API_KEY" in dashboard_section:
+            dashboard_section["api_key"] = dashboard_section.get("API_KEY")
+
+        dashboard_section.pop("URL", None)
+        dashboard_section.pop("ENABLED", None)
+        dashboard_section.pop("API_KEY", None)
+
+        normalized["dashboard"] = dashboard_section
+        return normalized
     
     def _find_config_changes(self, existing: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
         """Find what has actually changed between existing and new config"""

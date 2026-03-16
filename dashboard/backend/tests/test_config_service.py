@@ -379,6 +379,34 @@ class TestConfigServiceApiKeyMasking:
         assert "csharp_code_context_service" not in updated_main
         assert "csharp_code_context_service" not in updated_main.get("config", {})
 
+    async def test_update_config_normalizes_dashboard_uppercase_keys(self, config_service):
+        """Dashboard keys should be normalized to dashboard.url/enabled/api_key."""
+        from services.config_backend import CONFIG_KEY
+        import toml
+
+        backend = MagicMock()
+        backend.exists.return_value = True
+        backend.get.side_effect = lambda key: (
+            toml.dumps({
+                "dashboard": {"url": "http://localhost:8000"},
+                "DASHBOARD": {"URL": "https://dash.example.com", "ENABLED": True, "API_KEY": "abc"},
+            })
+            if key == CONFIG_KEY else None
+        )
+        config_service.backend = backend
+        config_service._create_rotated_backup = MagicMock()
+
+        await config_service.update_config({"config": {"verbosity_level": 2}})
+
+        put_calls = {c[0][0]: c[0][1] for c in backend.put.call_args_list}
+        updated_main = toml.loads(put_calls[CONFIG_KEY])
+        dash = updated_main.get("dashboard", {})
+        assert dash.get("url") == "https://dash.example.com"
+        assert dash.get("enabled") is True
+        assert dash.get("api_key") == "abc"
+        assert "URL" not in dash and "ENABLED" not in dash and "API_KEY" not in dash
+        assert "DASHBOARD" not in updated_main
+
 @pytest.mark.asyncio
 class TestConfigServiceBackupRotation:
     """_create_rotated_backup honours MAX_BACKUPS limit."""
