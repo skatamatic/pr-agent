@@ -22,15 +22,53 @@ except ImportError:
 from pr_agent.config_loader import get_settings
 
 
+def _is_local_dashboard_url(url: Optional[str]) -> bool:
+    value = (url or "").strip().lower()
+    if not value:
+        return True
+    return "localhost" in value or "127.0.0.1" in value or value.startswith("http://0.0.0.0")
+
+
+def _resolve_dashboard_url(override_url: Optional[str] = None) -> Optional[str]:
+    candidates: List[str] = []
+    if override_url:
+        candidates.append(str(override_url).strip())
+    env_url = (os.getenv("DASHBOARD_URL", "") or "").strip()
+    if env_url:
+        candidates.append(env_url)
+    env_nested = (os.getenv("DASHBOARD__URL", "") or "").strip()
+    if env_nested:
+        candidates.append(env_nested)
+
+    try:
+        settings = get_settings()
+        dash_obj = settings.get("DASHBOARD", {}) if settings else {}
+        if isinstance(dash_obj, dict):
+            for key in ("url", "URL"):
+                val = (dash_obj.get(key) or "").strip()
+                if val:
+                    candidates.append(val)
+        direct = (settings.get("DASHBOARD.URL") or "").strip() if settings else ""
+        if direct:
+            candidates.append(direct)
+    except Exception:
+        pass
+
+    # Prefer first non-localhost candidate when available.
+    for candidate in candidates:
+        if candidate and not _is_local_dashboard_url(candidate):
+            return candidate
+    for candidate in candidates:
+        if candidate:
+            return candidate
+    return None
+
+
 class DashboardClient:
     """Client for communicating with the PR-Agent Dashboard API"""
     
     def __init__(self, dashboard_url: Optional[str] = None, api_key: Optional[str] = None):
-        self.dashboard_url = (
-            dashboard_url
-            or os.getenv("DASHBOARD_URL")
-            or get_settings().get("DASHBOARD.URL")
-        )
+        self.dashboard_url = _resolve_dashboard_url(dashboard_url)
         self.api_key = (
             api_key
             or os.getenv("DASHBOARD_API_KEY")

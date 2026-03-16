@@ -845,9 +845,9 @@ stages:
         set -e
         # Save pipeline-level variables (baked by dashboard) before sourcing VM env.
         _PIPELINE_IMAGE="${{PR_AGENT_IMAGE_OVERRIDE:-}}"
-        _PIPELINE_GCS_BUCKET="${{PR_AGENT_CONFIG_GCS_BUCKET:-}}"
-        _PIPELINE_GCS_PREFIX="${{PR_AGENT_CONFIG_GCS_PREFIX:-}}"
-        _PIPELINE_DASHBOARD_URL="${{DASHBOARD_URL:-}}"
+        _PIPELINE_GCS_BUCKET="${{PR_AGENT_CONFIG_GCS_BUCKET_PIPELINE:-${{PR_AGENT_CONFIG_GCS_BUCKET:-}}}}"
+        _PIPELINE_GCS_PREFIX="${{PR_AGENT_CONFIG_GCS_PREFIX_PIPELINE:-${{PR_AGENT_CONFIG_GCS_PREFIX:-}}}}"
+        _PIPELINE_DASHBOARD_URL="${{DASHBOARD_URL_PIPELINE:-${{DASHBOARD_URL:-}}}}"
 
         # Source VM env (best-effort, may not be readable by agent user).
         source /opt/pr-agent-runner/env 2>/dev/null || true
@@ -883,6 +883,9 @@ stages:
       displayName: 'Pull image & load VM config'
       env:
         PR_AGENT_IMAGE_OVERRIDE: $(PR_AGENT_IMAGE)
+        DASHBOARD_URL_PIPELINE: $(DASHBOARD_URL)
+        PR_AGENT_CONFIG_GCS_BUCKET_PIPELINE: $(PR_AGENT_CONFIG_GCS_BUCKET)
+        PR_AGENT_CONFIG_GCS_PREFIX_PIPELINE: $(PR_AGENT_CONFIG_GCS_PREFIX)
 
     - bash: |
         docker run --rm \\

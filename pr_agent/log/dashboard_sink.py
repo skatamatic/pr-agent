@@ -21,6 +21,48 @@ except ImportError:
     get_settings = None
 
 
+def _is_local_dashboard_url(url: Optional[str]) -> bool:
+    value = (url or "").strip().lower()
+    if not value:
+        return True
+    return "localhost" in value or "127.0.0.1" in value or value.startswith("http://0.0.0.0")
+
+
+def _resolve_dashboard_url(override_url: Optional[str] = None) -> Optional[str]:
+    candidates = []
+    if override_url:
+        candidates.append(str(override_url).strip())
+    env_url = (os.getenv("DASHBOARD_URL", "") or "").strip()
+    if env_url:
+        candidates.append(env_url)
+    env_nested = (os.getenv("DASHBOARD__URL", "") or "").strip()
+    if env_nested:
+        candidates.append(env_nested)
+
+    try:
+        if get_settings:
+            settings = get_settings()
+            dash_obj = settings.get("DASHBOARD", {})
+            if isinstance(dash_obj, dict):
+                for key in ("url", "URL"):
+                    val = (dash_obj.get(key) or "").strip()
+                    if val:
+                        candidates.append(val)
+            direct = (settings.get("DASHBOARD.URL") or "").strip()
+            if direct:
+                candidates.append(direct)
+    except Exception:
+        pass
+
+    for candidate in candidates:
+        if candidate and not _is_local_dashboard_url(candidate):
+            return candidate
+    for candidate in candidates:
+        if candidate:
+            return candidate
+    return None
+
+
 class DashboardSink:
     """
     Custom Loguru sink for sending logs to an AI dashboard system.
@@ -33,9 +75,7 @@ class DashboardSink:
                  batch_size: int = 10,
                  flush_interval: float = 5.0):
         self.dashboard_url = (
-            dashboard_url
-            or os.getenv("DASHBOARD_URL")
-            or (get_settings().get("DASHBOARD.URL") if get_settings else None)
+            _resolve_dashboard_url(dashboard_url)
         )
         self.api_key = (
             api_key
