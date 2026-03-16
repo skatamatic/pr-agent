@@ -39,23 +39,21 @@ def test_docker_pipeline_template_normalizes_configured_image_tag_to_latest():
     assert "value: 'us-central1-docker.pkg.dev/test-project/test-repo/pr-agent:latest'" in template
 
 
-def test_docker_pipeline_template_bakes_gcs_and_dashboard_config():
-    """Verify GCS bucket, prefix, and dashboard URL are embedded, not secrets."""
+def test_docker_pipeline_template_bakes_only_gcs_config_not_dashboard_url():
+    """Verify GCS values are embedded while DASHBOARD_URL stays out of YAML."""
     svc = AzurePipelineConfigService()
     template = svc.get_docker_pipeline_template(
         pool_name="TestPool",
         pr_agent_image="us-central1-docker.pkg.dev/proj/repo/pr-agent:latest",
         gcs_bucket="my-config-bucket",
         gcs_prefix="pr-agent-config/",
-        dashboard_url="https://dash.example.com",
     )
 
     assert "- name: PR_AGENT_CONFIG_GCS_BUCKET" in template
     assert "value: 'my-config-bucket'" in template
     assert "- name: PR_AGENT_CONFIG_GCS_PREFIX" in template
     assert "value: 'pr-agent-config/'" in template
-    assert "- name: DASHBOARD_URL" in template
-    assert "value: 'https://dash.example.com'" in template
+    assert "- name: DASHBOARD_URL" not in template
     assert "- name: DASHBOARD_API_KEY" not in template
     assert "secret-key-123" not in template
     assert "_PIPELINE_GCS_BUCKET" in template

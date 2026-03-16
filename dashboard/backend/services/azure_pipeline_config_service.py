@@ -788,13 +788,14 @@ steps:
         return f"{image}:latest"
 
     def get_docker_pipeline_template(self, pool_name: str = "PRAgent_Cloud", pr_agent_image: str = "",
-                                      gcs_bucket: str = "", gcs_prefix: str = "",
-                                      dashboard_url: str = "") -> str:
+                                      gcs_bucket: str = "", gcs_prefix: str = "") -> str:
         """Return the Docker-based pipeline YAML with pool name filled in.
 
-        Non-secret backend config (image, GCS bucket, dashboard URL) is baked
-        into the YAML variables so the pipeline does not depend on the VM env
-        file being readable by the agent process.
+        Non-secret backend config (image, GCS bucket, GCS prefix) is baked into
+        YAML variables so the pipeline does not depend on the VM env file being
+        readable by the agent process. DASHBOARD_URL is managed as a pipeline
+        definition variable and intentionally not baked into YAML to avoid stale
+        fallback values.
         """
         configured_image = self._normalize_pipeline_image_tag(pr_agent_image)
         escaped_image = configured_image.replace("'", "''")
@@ -806,8 +807,6 @@ steps:
             extra_vars += f"- name: PR_AGENT_CONFIG_GCS_BUCKET\n  value: '{gcs_bucket}'\n"
         if gcs_prefix:
             extra_vars += f"- name: PR_AGENT_CONFIG_GCS_PREFIX\n  value: '{gcs_prefix}'\n"
-        if dashboard_url:
-            extra_vars += f"- name: DASHBOARD_URL\n  value: '{dashboard_url}'\n"
         return f"""# PR-Agent on a self-hosted runner using Docker
 # Auto-managed by PR-Agent Dashboard - do not edit manually
 trigger: none
@@ -961,23 +960,19 @@ stages:
 
         gcs_bucket = ""
         gcs_prefix = ""
-        dashboard_url = ""
         try:
             from config import settings as _s
             gcs_bucket = (getattr(_s, 'pr_agent_config_gcs_bucket', '') or '').strip()
             gcs_prefix = (getattr(_s, 'pr_agent_config_gcs_prefix', '') or '').strip()
-            dashboard_url = (getattr(_s, 'backend_base_url', '') or '').strip()
         except Exception:
             pass
 
         if uses_docker and pool_name:
             return self.get_docker_pipeline_template(pool_name, configured_image,
-                                                     gcs_bucket, gcs_prefix,
-                                                     dashboard_url)
+                                                     gcs_bucket, gcs_prefix)
         elif uses_docker:
             return self.get_docker_pipeline_template(pr_agent_image=configured_image,
-                                                     gcs_bucket=gcs_bucket, gcs_prefix=gcs_prefix,
-                                                     dashboard_url=dashboard_url)
+                                                     gcs_bucket=gcs_bucket, gcs_prefix=gcs_prefix)
         else:
             return self.generate_yaml_config(self.get_default_env_vars())
 
