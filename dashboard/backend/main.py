@@ -2775,10 +2775,10 @@ class DashboardApplication:
                 region = getattr(settings, 'gcp_runner_region', 'us-central1') or 'us-central1'
                 zone = getattr(settings, 'gcp_runner_zone', '') or ''
                 machine_type = getattr(settings, 'gcp_runner_machine_type', 'e2-medium') or 'e2-medium'
-                subnet = getattr(settings, 'gcp_runner_subnet', '') or ''
-                network = getattr(settings, 'gcp_runner_network', '') or ''
+                subnet = (getattr(settings, 'gcp_runner_subnet', '') or '').strip()
+                network = (getattr(settings, 'gcp_runner_network', '') or '').strip()
                 prefix = getattr(settings, 'gcp_runner_prefix', 'pr-agent-runner') or 'pr-agent-runner'
-                dashboard_url = getattr(settings, 'backend_base_url', '') or ''
+                dashboard_url = self._resolve_dashboard_backend_url_for_auto_setup()
                 config_bucket = getattr(settings, 'pr_agent_config_gcs_bucket', '') or ''
                 config_prefix = getattr(settings, 'pr_agent_config_gcs_prefix', 'pr-agent-config/') or 'pr-agent-config/'
                 pr_agent_repo_url = getattr(settings, 'gcp_runner_pr_agent_repo_url', 'https://github.com/Codium-ai/pr-agent.git') or 'https://github.com/Codium-ai/pr-agent.git'

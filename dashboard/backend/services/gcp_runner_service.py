@@ -321,8 +321,8 @@ class GCPRunnerService:
         self.region = region
         self.zone = zone or f"{region}-a"
         self.machine_type = machine_type
-        self.subnet = subnet
-        self.network = network
+        self.subnet = (subnet or "").strip() or None
+        self.network = (network or "").strip() or None
         self.name_prefix = name_prefix
         self.dashboard_url = dashboard_url
         self.dashboard_api_key = dashboard_api_key
@@ -332,6 +332,52 @@ class GCPRunnerService:
         self.pr_agent_runner_image = pr_agent_runner_image or ""
         self.ado_pat = ado_pat
         self._client: Optional[Any] = None
+
+    @staticmethod
+    def _extract_name_from_self_link(self_link: str, resource_segment: str) -> Optional[str]:
+        token = f"/{resource_segment}/"
+        if token not in self_link:
+            return None
+        return self_link.rsplit(token, 1)[-1].strip("/") or None
+
+    def _normalize_network_self_link(self, network_value: str) -> str:
+        network = (network_value or "").strip()
+        if network.startswith("http") or "/networks/" in network:
+            return network
+        return f"projects/{self.project_id}/global/networks/{network}"
+
+    def _normalize_subnetwork_self_link(self, subnet_value: str) -> str:
+        subnet = (subnet_value or "").strip()
+        if subnet.startswith("http") or "/subnetworks/" in subnet:
+            return subnet
+        return f"projects/{self.project_id}/regions/{self.region}/subnetworks/{subnet}"
+
+    def _get_network_mode(self, network_self_link: str) -> Optional[str]:
+        """Best-effort network mode lookup: returns AUTO, CUSTOM, or None on unknown."""
+        try:
+            network_name = self._extract_name_from_self_link(network_self_link, "networks")
+            if not network_name:
+                return None
+            net_client = compute_v1.NetworksClient()
+            net = net_client.get(project=self.project_id, network=network_name)
+            return "AUTO" if bool(getattr(net, "auto_create_subnetworks", False)) else "CUSTOM"
+        except Exception as e:
+            logger.debug("Could not determine network mode for %s: %s", network_self_link, e)
+            return None
+
+    def _find_first_subnetwork_for_network(self, network_self_link: str) -> Optional[str]:
+        """Return a region subnetwork for the given network, preferring 'default'."""
+        try:
+            sub_client = compute_v1.SubnetworksClient()
+            subs = list(sub_client.list(project=self.project_id, region=self.region))
+            candidates = [s.self_link for s in subs if getattr(s, "network", "") == network_self_link and getattr(s, "self_link", "")]
+            if not candidates:
+                return None
+            default_candidate = next((s for s in candidates if s.endswith("/subnetworks/default")), None)
+            return default_candidate or candidates[0]
+        except Exception as e:
+            logger.debug("Could not list subnetworks for network %s in region %s: %s", network_self_link, self.region, e)
+            return None
 
     @property
     def client(self):
@@ -424,15 +470,20 @@ class GCPRunnerService:
             )
             network_interface = compute_v1.NetworkInterface()
             if self.subnet:
-                if self.subnet.startswith("http") or "/subnetworks/" in self.subnet:
-                    network_interface.subnetwork = self.subnet
-                else:
-                    network_interface.subnetwork = f"projects/{self.project_id}/regions/{self.region}/subnetworks/{self.subnet}"
+                network_interface.subnetwork = self._normalize_subnetwork_self_link(self.subnet)
             elif self.network:
-                if self.network.startswith("http") or "/networks/" in self.network:
-                    network_interface.network = self.network
-                else:
-                    network_interface.network = f"projects/{self.project_id}/global/networks/{self.network}"
+                network_self_link = self._normalize_network_self_link(self.network)
+                network_interface.network = network_self_link
+                mode = self._get_network_mode(network_self_link)
+                if mode == "CUSTOM":
+                    inferred_subnet = self._find_first_subnetwork_for_network(network_self_link)
+                    if inferred_subnet:
+                        network_interface.subnetwork = inferred_subnet
+                    else:
+                        raise RuntimeError(
+                            "Selected VPC network is in custom subnet mode but no subnetwork is configured. "
+                            "Set GCP_RUNNER_SUBNET (or dashboard backend gcp_runner_subnet) to a valid subnetwork."
+                        )
             else:
                 # Avoid sending an empty network field to Compute API.
                 network_interface.network = f"projects/{self.project_id}/global/networks/default"

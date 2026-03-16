@@ -9,6 +9,7 @@ Config location from env only (no DB):
 import logging
 import os
 import toml
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -49,6 +50,51 @@ class ConfigService:
         self.system_settings = SystemSettingsService(database_manager)
         self.backend = get_config_backend()
         self._initialize_paths()
+
+    @staticmethod
+    def _is_local_url(url: str) -> bool:
+        value = (url or "").strip().lower()
+        if not value:
+            return True
+        return (
+            "localhost" in value
+            or "127.0.0.1" in value
+            or value.startswith("http://0.0.0.0")
+        )
+
+    @staticmethod
+    def _fetch_gcp_project_number_from_metadata() -> str:
+        try:
+            req = urllib.request.Request(
+                "http://metadata.google.internal/computeMetadata/v1/project/numeric-project-id",
+                headers={"Metadata-Flavor": "Google"},
+            )
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                return resp.read().decode("utf-8").strip()
+        except Exception:
+            return ""
+
+    def _resolve_dashboard_url_for_seed(self) -> str:
+        """Resolve a non-local dashboard URL for config auto-seeding."""
+        dashboard_url = (os.getenv("DASHBOARD_BACKEND_BASE_URL", "").strip() or "").strip()
+        if not dashboard_url:
+            dashboard_url = (getattr(settings, "backend_base_url", "") or "").strip()
+
+        if dashboard_url and not self._is_local_url(dashboard_url):
+            return dashboard_url
+
+        service = os.getenv("K_SERVICE", "").strip()
+        region = (
+            os.getenv("GCP_RUNNER_REGION", "").strip()
+            or os.getenv("GOOGLE_CLOUD_REGION", "").strip()
+            or (getattr(settings, "gcp_runner_region", "") or "").strip()
+        )
+        project_number = os.getenv("GOOGLE_CLOUD_PROJECT_NUMBER", "").strip()
+        if not project_number:
+            project_number = self._fetch_gcp_project_number_from_metadata()
+        if service and region and project_number:
+            return f"https://{service}-{project_number}.{region}.run.app"
+        return ""
     
     def _initialize_paths(self):
         """Set path attributes for display/compat; actual I/O uses self.backend."""
@@ -115,8 +161,9 @@ class ConfigService:
             if cfg is not None:
                 changed = False
                 dashboard_section = cfg.setdefault("dashboard", {})
-                if not dashboard_section.get("url") and getattr(settings, "backend_base_url", ""):
-                    dashboard_section["url"] = settings.backend_base_url
+                resolved_dashboard_url = self._resolve_dashboard_url_for_seed()
+                if not dashboard_section.get("url") and resolved_dashboard_url:
+                    dashboard_section["url"] = resolved_dashboard_url
                     changed = True
                     seeded.append("dashboard.url")
 
