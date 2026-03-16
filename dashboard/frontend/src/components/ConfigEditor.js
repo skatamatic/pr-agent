@@ -114,12 +114,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
       if (path.startsWith('pr_filters.')) return 'pr-filters';
       if (path.startsWith('best_practices.') || path.startsWith('auto_best_practices.')) return 'advanced';
       if (
-        path === 'model' ||
-        path === 'model_reasoning' ||
-        path === 'model_weak' ||
-        path === 'max_model_tokens' ||
-        path === 'temperature' ||
-        path === 'reasoning_effort' ||
+        path.startsWith('config.') ||
         path.startsWith('api_keys.')
       ) {
         return 'models';
@@ -211,14 +206,16 @@ const ConfigEditor = ({ navigationTarget = null }) => {
       
       // Transform the PR-Agent config structure to match our UI expectations
       const transformedConfig = {
-        // Main config section
-        model: configData.config?.model || 'anthropic/claude-sonnet-4-6-20260205',
-        model_reasoning: configData.config?.model_reasoning || configData.config?.model || 'anthropic/claude-opus-4-6-20260205',
-        model_weak: configData.config?.model_weak || 'gpt-5.3-codex-spark',
-        fallback_models: configData.config?.fallback_models || ['gpt-5.3-codex-spark'],
-        reasoning_effort: configData.config?.reasoning_effort || 'high',
-        max_model_tokens: configData.config?.max_model_tokens || 94000,
-        temperature: configData.config?.temperature || 0.2,
+        // Main config section (native PR-Agent shape)
+        config: {
+          model: configData.config?.model || 'anthropic/claude-sonnet-4-6-20260205',
+          model_reasoning: configData.config?.model_reasoning || configData.config?.model || 'anthropic/claude-opus-4-6-20260205',
+          model_weak: configData.config?.model_weak || 'gpt-5.3-codex-spark',
+          fallback_models: configData.config?.fallback_models || ['gpt-5.3-codex-spark'],
+          reasoning_effort: configData.config?.reasoning_effort || 'high',
+          max_model_tokens: configData.config?.max_model_tokens || 94000,
+          temperature: configData.config?.temperature || 0.2,
+        },
         
         // Context service
         csharp_code_context_service: {
@@ -325,13 +322,15 @@ const ConfigEditor = ({ navigationTarget = null }) => {
     } catch (error) {
       // Default configuration on error
       const defaultConfig = {
-        model: 'anthropic/claude-sonnet-4-6-20260205',
-        model_reasoning: 'anthropic/claude-opus-4-6-20260205',
-        model_weak: 'gpt-5.3-codex-spark',
-        fallback_models: ['gpt-5.3-codex-spark'],
-        reasoning_effort: 'high',
-        max_model_tokens: 94000,
-        temperature: 0.2,
+        config: {
+          model: 'anthropic/claude-sonnet-4-6-20260205',
+          model_reasoning: 'anthropic/claude-opus-4-6-20260205',
+          model_weak: 'gpt-5.3-codex-spark',
+          fallback_models: ['gpt-5.3-codex-spark'],
+          reasoning_effort: 'high',
+          max_model_tokens: 94000,
+          temperature: 0.2,
+        },
         csharp_code_context_service: {
           enabled: true,
           default_depth: 1,
@@ -518,16 +517,16 @@ const ConfigEditor = ({ navigationTarget = null }) => {
   const validateConfig = (config) => {
     const errors = {};
     
-    if (!config.model) {
-      errors.model = 'Default model is required';
+    if (!config.config?.model) {
+      errors['config.model'] = 'Default model is required';
     }
     
-    if (config.max_model_tokens && (config.max_model_tokens < 1000 || config.max_model_tokens > 2000000)) {
-      errors.max_model_tokens = 'Max tokens must be between 1,000 and 2,000,000';
+    if (config.config?.max_model_tokens && (config.config.max_model_tokens < 1000 || config.config.max_model_tokens > 2000000)) {
+      errors['config.max_model_tokens'] = 'Max tokens must be between 1,000 and 2,000,000';
     }
     
-    if (config.temperature !== undefined && (config.temperature < 0 || config.temperature > 2)) {
-      errors.temperature = 'Temperature must be between 0 and 2';
+    if (config.config?.temperature !== undefined && (config.config.temperature < 0 || config.config.temperature > 2)) {
+      errors['config.temperature'] = 'Temperature must be between 0 and 2';
     }
 
     // Validate context service URL if service is enabled
@@ -1161,8 +1160,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <ModelSelector
                 label="Default Model"
-                value={config?.model}
-                onChange={(value) => updateConfig('model', value)}
+                value={config?.config?.model}
+                onChange={(value) => updateConfig('config.model', value)}
                 models={allAvailableModels}
                 description="Primary model for most operations"
                     editing={editing}
@@ -1170,8 +1169,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
               
               <ModelSelector
                 label="Reasoning Model"
-                value={config?.model_reasoning}
-                onChange={(value) => updateConfig('model_reasoning', value)}
+                value={config?.config?.model_reasoning}
+                onChange={(value) => updateConfig('config.model_reasoning', value)}
                 models={allAvailableModels}
                 description="Dedicated model for complex reasoning tasks"
                     editing={editing}
@@ -1179,8 +1178,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
               
               <ModelSelector
                 label="Simple/Budget Model"
-                value={config?.model_weak}
-                onChange={(value) => updateConfig('model_weak', value)}
+                value={config?.config?.model_weak}
+                onChange={(value) => updateConfig('config.model_weak', value)}
                 models={allAvailableModels}
                 description="Lightweight model for simple tasks (used for PR descriptions)"
                     editing={editing}
@@ -1242,8 +1241,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal">Higher effort = better quality, slower response</span>
                 </label>
                 <select
-                  value={config.reasoning_effort || 'high'}
-                  onChange={(e) => updateConfig('reasoning_effort', e.target.value)}
+                  value={config.config?.reasoning_effort || 'high'}
+                  onChange={(e) => updateConfig('config.reasoning_effort', e.target.value)}
                       disabled={!editing}
                       className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
@@ -1260,15 +1259,15 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 </label>
                 <input
                   type="number"
-                  value={config.max_model_tokens || 94000}
-                  onChange={(e) => updateConfig('max_model_tokens', parseInt(e.target.value))}
+                  value={config.config?.max_model_tokens || 94000}
+                  onChange={(e) => updateConfig('config.max_model_tokens', parseInt(e.target.value))}
                   min="1000"
                   max="2000000"
                       disabled={!editing}
                       className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
-                {errors.max_model_tokens && (
-                  <p className="text-sm text-red-600 dark:text-red-400 mt-1">{errors.max_model_tokens}</p>
+                {errors['config.max_model_tokens'] && (
+                  <p className="text-sm text-red-600 dark:text-red-400 mt-1">{errors['config.max_model_tokens']}</p>
                 )}
               </div>
 
@@ -1279,16 +1278,16 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 </label>
                 <input
                   type="number"
-                  value={config.temperature || 0.2}
-                  onChange={(e) => updateConfig('temperature', parseFloat(e.target.value))}
+                  value={config.config?.temperature || 0.2}
+                  onChange={(e) => updateConfig('config.temperature', parseFloat(e.target.value))}
                   min="0"
                   max="2"
                   step="0.1"
                       disabled={!editing}
                       className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
-                {errors.temperature && (
-                  <p className="text-sm text-red-600 dark:text-red-400 mt-1">{errors.temperature}</p>
+                {errors['config.temperature'] && (
+                  <p className="text-sm text-red-600 dark:text-red-400 mt-1">{errors['config.temperature']}</p>
                 )}
               </div>
             </div>

@@ -135,8 +135,8 @@ const PrAgentConfigEditor = ({
       icon: Gauge,
       fields: [
         { key: 'dashboard.enabled', label: 'Enable Dashboard Integration', type: 'boolean', description: 'Enable integration with PR-Agent dashboard' },
-        { key: 'dashboard.webhook_url', label: 'Webhook URL', type: 'text', description: 'Dashboard webhook URL for notifications' },
-        { key: 'dashboard.api_key_encrypted', label: 'Dashboard API Key', type: 'password', description: 'API key for dashboard authentication' }
+        { key: 'dashboard.url', label: 'Dashboard URL', type: 'text', description: 'Dashboard URL used by PR-Agent dashboard integration' },
+        { key: 'dashboard.api_key', label: 'Dashboard API Key', type: 'password', description: 'API key for dashboard authentication' }
       ]
     },
     pr_filters: {

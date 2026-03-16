@@ -379,7 +379,6 @@ class TestConfigServiceApiKeyMasking:
         assert "csharp_code_context_service" not in updated_main
         assert "csharp_code_context_service" not in updated_main.get("config", {})
 
-
 @pytest.mark.asyncio
 class TestConfigServiceBackupRotation:
     """_create_rotated_backup honours MAX_BACKUPS limit."""
