@@ -15,12 +15,12 @@ output "region" {
 
 output "cloud_sql_connection_name" {
   description = "Cloud SQL instance connection name (for DATABASE_URL and Cloud Run)"
-  value       = google_sql_database_instance.main.connection_name
+  value       = local.connection_name
 }
 
 output "vpc_network_name" {
   description = "VPC network name (private Cloud SQL and connector)"
-  value       = google_compute_network.vpc.name
+  value       = local.use_existing_vpc ? var.existing_vpc_name : google_compute_network.vpc[0].name
 }
 
 output "artifact_registry_repository" {

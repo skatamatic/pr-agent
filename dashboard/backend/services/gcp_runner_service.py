@@ -307,6 +307,7 @@ class GCPRunnerService:
         zone: Optional[str] = None,
         machine_type: str = "e2-medium",
         subnet: Optional[str] = None,
+        network: Optional[str] = None,
         name_prefix: str = "pr-agent-runner",
         dashboard_url: str = "",
         dashboard_api_key: str = "",
@@ -321,6 +322,7 @@ class GCPRunnerService:
         self.zone = zone or f"{region}-a"
         self.machine_type = machine_type
         self.subnet = subnet
+        self.network = network
         self.name_prefix = name_prefix
         self.dashboard_url = dashboard_url
         self.dashboard_api_key = dashboard_api_key
@@ -426,6 +428,14 @@ class GCPRunnerService:
                     network_interface.subnetwork = self.subnet
                 else:
                     network_interface.subnetwork = f"projects/{self.project_id}/regions/{self.region}/subnetworks/{self.subnet}"
+            elif self.network:
+                if self.network.startswith("http") or "/networks/" in self.network:
+                    network_interface.network = self.network
+                else:
+                    network_interface.network = f"projects/{self.project_id}/global/networks/{self.network}"
+            else:
+                # Avoid sending an empty network field to Compute API.
+                network_interface.network = f"projects/{self.project_id}/global/networks/default"
             network_interface.access_configs = [
                 compute_v1.AccessConfig(name="External NAT", type_="ONE_TO_ONE_NAT")
             ]

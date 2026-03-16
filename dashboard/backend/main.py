@@ -2728,6 +2728,7 @@ class DashboardApplication:
                 zone = getattr(settings, 'gcp_runner_zone', '') or ''
                 machine_type = getattr(settings, 'gcp_runner_machine_type', 'e2-medium') or 'e2-medium'
                 subnet = getattr(settings, 'gcp_runner_subnet', '') or ''
+                network = getattr(settings, 'gcp_runner_network', '') or ''
                 prefix = getattr(settings, 'gcp_runner_prefix', 'pr-agent-runner') or 'pr-agent-runner'
                 dashboard_url = getattr(settings, 'backend_base_url', '') or ''
                 config_bucket = getattr(settings, 'pr_agent_config_gcs_bucket', '') or ''
@@ -2812,6 +2813,7 @@ class DashboardApplication:
                     zone=zone or None,
                     machine_type=machine_type,
                     subnet=subnet or None,
+                    network=network or None,
                     name_prefix=prefix,
                     dashboard_url=dashboard_url,
                     dashboard_api_key=dashboard_api_key,

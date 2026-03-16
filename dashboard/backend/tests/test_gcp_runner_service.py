@@ -83,6 +83,32 @@ class TestGCPRunnerService:
         assert result["install_instructions"].get("ssh_command")
         assert "github" in result["install_instructions"].get("docs_url", "").lower() or "runner" in str(result["install_instructions"])
 
+    def test_provision_sets_network_when_subnet_missing(self):
+        from services.gcp_runner_service import GCPRunnerService, GCP_COMPUTE_AVAILABLE
+        if not GCP_COMPUTE_AVAILABLE:
+            pytest.skip("google-cloud-compute not installed")
+
+        mock_op = Mock()
+        mock_op.name = "op-123"
+        mock_instances_client = Mock()
+        mock_instances_client.insert.return_value = mock_op
+
+        with patch("services.gcp_runner_service.compute_v1.InstancesClient", return_value=mock_instances_client):
+            svc = GCPRunnerService(
+                project_id="test-project",
+                region="us-central1",
+                zone="us-central1-a",
+                subnet=None,
+                network="fracgpt-vpc-dev",
+                dashboard_url="https://dashboard.example.com",
+            )
+            result = svc.provision(1, "github", "test-org", None)
+
+        assert result["success"] is True
+        request = mock_instances_client.insert.call_args.kwargs["request"]
+        nic = request.instance_resource.network_interfaces[0]
+        assert nic.network.endswith("/global/networks/fracgpt-vpc-dev")
+
     def test_startup_script_adjusts_env_permissions_for_ado_agent(self):
         from services.gcp_runner_service import _get_startup_script
 

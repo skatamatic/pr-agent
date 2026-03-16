@@ -220,3 +220,24 @@ class TestResolveSourceControlType:
         with patch.object(csharp_context_client, "get_settings", return_value=settings):
             with patch.dict("os.environ", {}, clear=True):
                 assert csharp_context_client._resolve_source_control_type() == "github"
+
+
+class TestNormalizeAzureOrgAndCollection:
+    def test_visualstudio_collection_uri_parsing(self):
+        org, uri = csharp_context_client._normalize_azure_org_and_collection(
+            "https://mdt-software.visualstudio.com/"
+        )
+        assert org == "mdt-software"
+        assert uri == "https://mdt-software.visualstudio.com"
+
+    def test_dev_azure_collection_uri_parsing(self):
+        org, uri = csharp_context_client._normalize_azure_org_and_collection(
+            "https://dev.azure.com/mdt-software/"
+        )
+        assert org == "mdt-software"
+        assert uri == "https://dev.azure.com/mdt-software"
+
+    def test_plain_org_name_parsing(self):
+        org, uri = csharp_context_client._normalize_azure_org_and_collection("mdt-software")
+        assert org == "mdt-software"
+        assert uri == "https://dev.azure.com/mdt-software"

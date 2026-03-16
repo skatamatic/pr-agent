@@ -1,6 +1,6 @@
 terraform {
   backend "gcs" {
-    bucket = "pr-agent-test-deploy-tfstate"
-    prefix = "pr-agent-dash/dev/state"
+    bucket = "nex-ai-fracgpt-dev-tfstate"
+    prefix = "pr-agent-dash/dev-restricted/state"
   }
 }

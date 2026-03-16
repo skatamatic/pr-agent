@@ -19,6 +19,12 @@ variable "prefix" {
   default     = "pr-agent-dash"
 }
 
+variable "restricted_permissions_mode" {
+  description = "When true, skip IAM/policy management operations that often require elevated admin roles; intended for constrained deployers."
+  type        = bool
+  default     = false
+}
+
 # ------------------------------------------------------------------------------
 # Cloud SQL
 # ------------------------------------------------------------------------------
@@ -46,6 +52,24 @@ variable "db_user_password" {
   type        = string
   default     = ""
   sensitive   = true
+}
+
+variable "manage_sql_instance" {
+  description = "Create/manage Cloud SQL instance via Terraform. Set false to reuse an existing instance."
+  type        = bool
+  default     = true
+}
+
+variable "existing_sql_instance_name" {
+  description = "Existing Cloud SQL instance name to reuse when manage_sql_instance=false."
+  type        = string
+  default     = ""
+}
+
+variable "existing_sql_connection_name" {
+  description = "Existing Cloud SQL connection name (PROJECT:REGION:INSTANCE) used when reusing an external SQL instance."
+  type        = string
+  default     = ""
 }
 
 # ------------------------------------------------------------------------------
@@ -80,6 +104,12 @@ variable "dashboard_api_key" {
   type        = string
   default     = ""
   sensitive   = true
+}
+
+variable "manage_secret_manager_resources" {
+  description = "Create Secret Manager secrets/versions and wire Cloud Run to read them."
+  type        = bool
+  default     = true
 }
 
 # ------------------------------------------------------------------------------
@@ -122,6 +152,18 @@ variable "vpc_connector_cidr" {
   description = "CIDR for Serverless VPC Access connector (/28); must not overlap with vpc_peering_cidr"
   type        = string
   default     = "10.8.0.0/28"
+}
+
+variable "existing_vpc_name" {
+  description = "Existing VPC network name to reuse. When set with restricted_permissions_mode=true, Terraform skips creating network/peering."
+  type        = string
+  default     = ""
+}
+
+variable "existing_vpc_connector_id" {
+  description = "Existing Serverless VPC Access connector full resource ID (projects/PROJECT/locations/REGION/connectors/NAME)."
+  type        = string
+  default     = ""
 }
 
 variable "vpc_peering_cidr_prefix" {
@@ -220,4 +262,10 @@ variable "ado_agent_name" {
   description = "Optional agent name. Defaults to the VM hostname if empty."
   type        = string
   default     = ""
+}
+
+variable "manage_runtime_iam_bindings" {
+  description = "Manage runtime IAM bindings (project compute admin + Artifact Registry reader for runtime SA)."
+  type        = bool
+  default     = true
 }

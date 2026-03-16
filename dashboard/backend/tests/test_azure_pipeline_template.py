@@ -300,6 +300,54 @@ async def test_collect_pipeline_variables_status_detects_empty_plain_values():
     assert "DASHBOARD_API_KEY" in pipeline["missing_secret_keys"]
 
 
+@pytest.mark.asyncio
+async def test_collect_pipeline_variables_status_flags_localhost_dashboard_url():
+    svc = AzurePipelineConfigService()
+    state = {}
+    get_resp = _FakeResponse(
+        200,
+        json_data={
+            "id": 101,
+            "variables": {
+                "PR_AGENT_IMAGE": {"value": "repo/pr-agent:latest"},
+                "DASHBOARD_URL": {"value": "http://localhost:8000"},
+                "AZURE_DEVOPS_PAT": {"isSecret": True},
+                "DASHBOARD_API_KEY": {"isSecret": True},
+            },
+        },
+    )
+    session = _FakeClientSession(state=state, get_resp=get_resp, put_resp=_FakeResponse(200, json_data={}))
+    result = await svc._collect_pipeline_variables_status(
+        session=session,
+        headers={"Authorization": "Basic fake"},
+        organization="org",
+        project="proj",
+        pipeline_defs=[{"id": 101, "name": "PR-Agent"}],
+        required_plain_keys=["PR_AGENT_IMAGE", "DASHBOARD_URL"],
+        required_secret_keys=["AZURE_DEVOPS_PAT", "DASHBOARD_API_KEY"],
+    )
+
+    assert result["missing_any"] is True
+    pipeline = result["pipelines"][0]
+    assert "DASHBOARD_URL" in pipeline["invalid_plain_keys"]
+
+
+def test_resolve_dashboard_url_for_pipeline_uses_cloud_run_fallback(monkeypatch):
+    svc = AzurePipelineConfigService()
+    monkeypatch.delenv("DASHBOARD_BACKEND_BASE_URL", raising=False)
+    monkeypatch.setenv("K_SERVICE", "pr-agent-dash-dev-backend")
+    monkeypatch.setenv("GCP_RUNNER_REGION", "us-central1")
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT_NUMBER", raising=False)
+    monkeypatch.setattr(
+        svc,
+        "_fetch_gcp_project_number_from_metadata",
+        lambda: "123456789012",
+    )
+
+    url = svc._resolve_dashboard_url_for_pipeline()
+    assert url == "https://pr-agent-dash-dev-backend-123456789012.us-central1.run.app"
+
+
 def test_select_shared_pipeline_definitions_accepts_yaml_path_variants():
     svc = AzurePipelineConfigService()
     defs = [

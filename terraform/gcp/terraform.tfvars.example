@@ -27,6 +27,16 @@ prefix     = "pr-agent-dash"
 # vpc_connector_cidr     = "10.8.0.0/28"
 # vpc_peering_cidr_prefix = 16
 
+# Constrained IAM mode (reuse existing networking / connector / optional existing SQL)
+# restricted_permissions_mode   = true
+# existing_vpc_name             = "fracgpt-vpc-dev"
+# existing_vpc_connector_id     = "projects/my-gcp-project/locations/us-central1/connectors/fracgpt-connector"
+# manage_secret_manager_resources = false
+# manage_runtime_iam_bindings   = false
+# manage_sql_instance           = true
+# existing_sql_instance_name    = ""  # set when manage_sql_instance=false
+# existing_sql_connection_name  = ""  # set when manage_sql_instance=false
+
 # Optional: one Terraform-managed runner VM (legacy). Prefer false and use dashboard "Provision runner VM" for on-demand VMs.
 # enable_runner_vm   = false
 # runner_machine_type = "e2-medium"

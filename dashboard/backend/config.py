@@ -102,6 +102,9 @@ if not hasattr(settings, 'gcp_runner_machine_type'):
 if not hasattr(settings, 'gcp_runner_subnet'):
     # Optional: full URL or short name (e.g. "default" or "projects/PROJECT/regions/REGION/subnetworks/NAME")
     settings.gcp_runner_subnet = os.getenv("GCP_RUNNER_SUBNET", "").strip() or ""
+if not hasattr(settings, 'gcp_runner_network'):
+    # Optional: full URL or short name (e.g. "default" or "projects/PROJECT/global/networks/NAME")
+    settings.gcp_runner_network = os.getenv("GCP_RUNNER_NETWORK", "").strip() or ""
 if not hasattr(settings, 'gcp_runner_prefix'):
     settings.gcp_runner_prefix = os.getenv("GCP_RUNNER_PREFIX", "pr-agent-runner").strip()
 if not hasattr(settings, 'gcp_runner_pr_agent_repo_url'):

@@ -3,6 +3,7 @@ import httpx
 import json
 import os
 import ssl
+from urllib.parse import urlparse
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -89,6 +90,38 @@ def _resolve_source_control_type() -> str:
     return "github"
 
 
+def _normalize_azure_org_and_collection(azure_org_setting: str) -> tuple[str, str]:
+    """
+    Normalize Azure org and collection URI from either:
+    - full collection URI (https://dev.azure.com/{org}/ or https://{org}.visualstudio.com/)
+    - plain org string ({org})
+    """
+    raw = (azure_org_setting or "").strip()
+    if not raw:
+        return "", ""
+
+    if raw.startswith("https://") or raw.startswith("http://"):
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").lower()
+        path_parts = [p for p in (parsed.path or "").split("/") if p]
+        org = ""
+        if host.endswith(".visualstudio.com"):
+            org = host.split(".")[0]
+            collection_uri = f"{parsed.scheme}://{host}"
+        elif host == "dev.azure.com":
+            org = path_parts[0] if path_parts else ""
+            collection_uri = f"{parsed.scheme}://{host}/{org}" if org else f"{parsed.scheme}://{host}"
+        else:
+            # Fallback for uncommon host styles
+            org = path_parts[0] if path_parts else (host.split(".")[0] if host else "")
+            collection_uri = f"{parsed.scheme}://{host}"
+        return org, collection_uri.rstrip("/")
+
+    # Plain org name provided
+    org = raw.strip("/")
+    return org, f"https://dev.azure.com/{org}"
+
+
 async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int, access_token: str) -> dict | None:
     service_settings = get_settings().csharp_code_context_service
     if not service_settings.get("enabled", False):
@@ -138,13 +171,12 @@ async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int,
             }
         else:
             # Azure DevOps format
-            # Get the organization from Azure DevOps settings (set by pipeline runner)
-            azure_org_setting = get_settings().azure_devops.get("org", "")
-            if azure_org_setting and azure_org_setting.startswith("https://"):
-                # Extract organization name from URL like "https://mdt-software.visualstudio.com"
-                org = azure_org_setting.rstrip('/').split('/')[-1]
-            else:
-                org = azure_org_setting if azure_org_setting else ""
+            # Get organization/collection from Azure settings or pipeline runtime.
+            azure_org_setting = (
+                get_settings().azure_devops.get("org", "")
+                or os.getenv("SYSTEM_COLLECTIONURI", "")
+            )
+            org, collection_uri = _normalize_azure_org_and_collection(azure_org_setting)
             
             # For Azure DevOps, owner is the workspace/project from the PR URL parsing
             project = owner if owner else ""
@@ -155,7 +187,10 @@ async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int,
                 "org": org,  # Organization name (e.g., "mdt-software")
                 "owner": org,  # In Azure DevOps, owner is typically the same as org
                 "project": project,  # Project name (e.g., "Product")
-                "repo": repo_name
+                "repo": repo_name,
+                # Extra explicit fields for service variants that need the collection URL.
+                "collectionUri": collection_uri,
+                "organizationUrl": collection_uri,
             }
         
         depth = service_settings.get("default_depth", 1) if hasattr(service_settings, "get") else getattr(service_settings, "default_depth", 1)

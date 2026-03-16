@@ -81,10 +81,10 @@ resource "google_project_service" "cloudbuild" {
 # ------------------------------------------------------------------------------
 
 resource "google_storage_bucket" "config" {
-  name     = var.config_bucket_name != "" ? var.config_bucket_name : "${var.project_id}-${var.prefix}-config"
-  location = var.region
+  name                        = var.config_bucket_name != "" ? var.config_bucket_name : "${var.project_id}-${var.prefix}-config"
+  location                    = var.region
   uniform_bucket_level_access = true
-  force_destroy               = true  # Allow terraform destroy to delete bucket and contents (teardown)
+  force_destroy               = true # Allow terraform destroy to delete bucket and contents (teardown)
 
   depends_on = [google_project_service.storage]
 }
@@ -105,7 +105,11 @@ resource "google_storage_bucket_iam_member" "config_runner" {
 }
 
 locals {
-  config_prefix = "pr-agent-config/"
+  config_prefix          = "pr-agent-config/"
+  use_existing_vpc       = var.restricted_permissions_mode && var.existing_vpc_name != ""
+  use_existing_connector = var.restricted_permissions_mode && var.existing_vpc_connector_id != ""
+  use_secret_manager     = var.manage_secret_manager_resources && !var.restricted_permissions_mode
+  manage_runtime_iam     = var.manage_runtime_iam_bindings && !var.restricted_permissions_mode
 }
 
 resource "google_storage_bucket_object" "config_seed_configuration" {
@@ -133,6 +137,7 @@ resource "google_storage_bucket_object" "config_seed_secrets" {
 # ------------------------------------------------------------------------------
 
 resource "google_compute_network" "vpc" {
+  count                   = local.use_existing_vpc ? 0 : 1
   name                    = "${var.prefix}-vpc"
   auto_create_subnetworks = false
   routing_mode            = "GLOBAL"
@@ -141,33 +146,36 @@ resource "google_compute_network" "vpc" {
 
 # Subnet for Serverless VPC Access connector (required when auto_create_subnetworks = false)
 resource "google_compute_subnetwork" "connector" {
+  count         = local.use_existing_vpc ? 0 : 1
   name          = "${var.prefix}-connector-subnet"
   ip_cidr_range = var.vpc_connector_cidr
   region        = var.region
-  network       = google_compute_network.vpc.id
+  network       = google_compute_network.vpc[0].id
 }
 
 # Subnet for runner VM (and other compute in VPC)
 resource "google_compute_subnetwork" "runner" {
-  count         = var.enable_runner_vm ? 1 : 0
+  count         = var.enable_runner_vm && !local.use_existing_vpc ? 1 : 0
   name          = "${var.prefix}-runner-subnet"
   ip_cidr_range = var.runner_subnet_cidr
   region        = var.region
-  network       = google_compute_network.vpc.id
+  network       = google_compute_network.vpc[0].id
 }
 
 resource "google_compute_global_address" "private_ip_range" {
+  count         = local.use_existing_vpc ? 0 : 1
   name          = "${var.prefix}-private-ip-range"
   purpose       = "VPC_PEERING"
   address_type  = "INTERNAL"
   prefix_length = var.vpc_peering_cidr_prefix
-  network       = google_compute_network.vpc.id
+  network       = google_compute_network.vpc[0].id
 }
 
 resource "google_service_networking_connection" "private_vpc" {
-  network                 = google_compute_network.vpc.id
+  count                   = local.use_existing_vpc ? 0 : 1
+  network                 = google_compute_network.vpc[0].id
   service                 = "servicenetworking.googleapis.com"
-  reserved_peering_ranges  = [google_compute_global_address.private_ip_range.name]
+  reserved_peering_ranges = [google_compute_global_address.private_ip_range[0].name]
   deletion_policy         = "ABANDON"
   depends_on              = [google_project_service.servicenetworking]
 }
@@ -175,10 +183,11 @@ resource "google_service_networking_connection" "private_vpc" {
 # Use existing connector subnet (do not use ip_cidr_range here - that would create a second
 # allocation and conflict with google_compute_subnetwork.connector).
 resource "google_vpc_access_connector" "connector" {
-  name       = "${var.prefix}-conn"
-  region     = var.region
+  count  = local.use_existing_connector ? 0 : 1
+  name   = "${var.prefix}-conn"
+  region = var.region
   subnet {
-    name = google_compute_subnetwork.connector.name
+    name = google_compute_subnetwork.connector[0].name
   }
   depends_on = [google_project_service.vpcaccess, google_compute_subnetwork.connector]
 }
@@ -203,12 +212,15 @@ resource "random_password" "dashboard_api_key" {
 }
 
 locals {
-  db_password        = coalesce(var.db_user_password, random_password.db_password.result)
-  cron_secret        = coalesce(var.cron_secret, random_password.cron_secret.result)
-  dashboard_api_key  = coalesce(var.dashboard_api_key, random_password.dashboard_api_key.result)
-  instance_name = "${var.prefix}-sql"
-  connection_name = "${var.project_id}:${var.region}:${local.instance_name}"
-  database_url   = "postgresql://${var.db_user_name}:${local.db_password}@/${var.db_name}?host=/cloudsql/${local.connection_name}"
+  db_password       = coalesce(var.db_user_password, random_password.db_password.result)
+  cron_secret       = coalesce(var.cron_secret, random_password.cron_secret.result)
+  dashboard_api_key = coalesce(var.dashboard_api_key, random_password.dashboard_api_key.result)
+  instance_name     = var.manage_sql_instance ? "${var.prefix}-sql" : var.existing_sql_instance_name
+  connection_name   = var.existing_sql_connection_name != "" ? var.existing_sql_connection_name : "${var.project_id}:${var.region}:${local.instance_name}"
+  sql_instance_name = var.manage_sql_instance ? google_sql_database_instance.main[0].name : var.existing_sql_instance_name
+  network_self_link = local.use_existing_vpc ? "projects/${var.project_id}/global/networks/${var.existing_vpc_name}" : google_compute_network.vpc[0].id
+  vpc_connector_id  = local.use_existing_connector ? var.existing_vpc_connector_id : google_vpc_access_connector.connector[0].id
+  database_url      = "postgresql://${var.db_user_name}:${local.db_password}@/${var.db_name}?host=/cloudsql/${local.connection_name}"
 }
 
 # ------------------------------------------------------------------------------
@@ -216,6 +228,7 @@ locals {
 # ------------------------------------------------------------------------------
 
 resource "google_sql_database_instance" "main" {
+  count            = var.manage_sql_instance ? 1 : 0
   name             = local.instance_name
   database_version = "POSTGRES_15"
   region           = var.region
@@ -224,7 +237,7 @@ resource "google_sql_database_instance" "main" {
     tier = var.db_tier
     ip_configuration {
       ipv4_enabled    = false
-      private_network = google_compute_network.vpc.id
+      private_network = local.network_self_link
     }
   }
 
@@ -238,12 +251,12 @@ resource "google_sql_database_instance" "main" {
 
 resource "google_sql_database" "db" {
   name     = var.db_name
-  instance = google_sql_database_instance.main.name
+  instance = local.sql_instance_name
 }
 
 resource "google_sql_user" "user" {
   name     = var.db_user_name
-  instance = google_sql_database_instance.main.name
+  instance = local.sql_instance_name
   password = local.db_password
 }
 
@@ -252,6 +265,7 @@ resource "google_sql_user" "user" {
 # ------------------------------------------------------------------------------
 
 resource "google_secret_manager_secret" "database_url" {
+  count     = local.use_secret_manager ? 1 : 0
   secret_id = "${var.prefix}-database-url"
 
   replication {
@@ -261,11 +275,13 @@ resource "google_secret_manager_secret" "database_url" {
 }
 
 resource "google_secret_manager_secret_version" "database_url" {
-  secret      = google_secret_manager_secret.database_url.id
+  count       = local.use_secret_manager ? 1 : 0
+  secret      = google_secret_manager_secret.database_url[0].id
   secret_data = local.database_url
 }
 
 resource "google_secret_manager_secret" "cron_secret" {
+  count     = local.use_secret_manager ? 1 : 0
   secret_id = "${var.prefix}-cron-secret"
 
   replication {
@@ -275,28 +291,29 @@ resource "google_secret_manager_secret" "cron_secret" {
 }
 
 resource "google_secret_manager_secret_version" "cron_secret" {
-  secret      = google_secret_manager_secret.cron_secret.id
+  count       = local.use_secret_manager ? 1 : 0
+  secret      = google_secret_manager_secret.cron_secret[0].id
   secret_data = local.cron_secret
 }
 
 # DASHBOARD_API_KEY for PR-Agent / programmatic access (auto-generated if not provided)
 resource "google_secret_manager_secret" "dashboard_api_key" {
-  count       = local.backend_image_set ? 1 : 0
-  secret_id   = "${var.prefix}-api-key"
+  count     = local.backend_image_set && local.use_secret_manager ? 1 : 0
+  secret_id = "${var.prefix}-api-key"
   replication {
     auto {}
   }
-  depends_on  = [google_project_service.secretmanager]
+  depends_on = [google_project_service.secretmanager]
 }
 
 resource "google_secret_manager_secret_version" "dashboard_api_key" {
-  count       = local.backend_image_set ? 1 : 0
+  count       = local.backend_image_set && local.use_secret_manager ? 1 : 0
   secret      = google_secret_manager_secret.dashboard_api_key[0].id
   secret_data = local.dashboard_api_key
 }
 
 resource "google_secret_manager_secret_iam_member" "dashboard_api_key_access" {
-  count     = local.backend_image_set ? 1 : 0
+  count     = local.backend_image_set && local.use_secret_manager ? 1 : 0
   secret_id = google_secret_manager_secret.dashboard_api_key[0].secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = local.cloud_run_sa
@@ -324,24 +341,24 @@ data "google_project" "project" {}
 locals {
   backend_image_set  = var.backend_image != ""
   frontend_image_set = var.frontend_image != ""
-  cloud_run_sa      = "serviceAccount:${data.google_project.project.number}-compute@developer.gserviceaccount.com"
+  cloud_run_sa       = "serviceAccount:${data.google_project.project.number}-compute@developer.gserviceaccount.com"
   # Cloud Run can be reached via hash-style URL (.uri) or project-number URL; allow both for CORS.
-  frontend_alt_url  = "https://${var.prefix}-frontend-${data.google_project.project.number}.${var.region}.run.app"
+  frontend_alt_url = "https://${var.prefix}-frontend-${data.google_project.project.number}.${var.region}.run.app"
   # Always include the known Cloud Run frontend URL(s) so CORS works even when frontend_base_url is not set.
   cors_origins_list = join(",", distinct(concat([local.frontend_alt_url], var.frontend_base_url != "" ? [var.frontend_base_url] : [])))
 }
 
 # IAM: allow Cloud Run to read secrets
 resource "google_secret_manager_secret_iam_member" "database_url_access" {
-  count     = local.backend_image_set ? 1 : 0
-  secret_id = google_secret_manager_secret.database_url.secret_id
+  count     = local.backend_image_set && local.use_secret_manager ? 1 : 0
+  secret_id = google_secret_manager_secret.database_url[0].secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = local.cloud_run_sa
 }
 
 resource "google_secret_manager_secret_iam_member" "cron_secret_access" {
-  count     = local.backend_image_set ? 1 : 0
-  secret_id = google_secret_manager_secret.cron_secret.secret_id
+  count     = local.backend_image_set && local.use_secret_manager ? 1 : 0
+  secret_id = google_secret_manager_secret.cron_secret[0].secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = local.cloud_run_sa
 }
@@ -358,7 +375,7 @@ resource "google_cloud_run_v2_service" "backend" {
       max_instance_count = var.backend_max_instances
     }
     vpc_access {
-      connector = google_vpc_access_connector.connector.id
+      connector = local.vpc_connector_id
       egress    = "PRIVATE_RANGES_ONLY"
     }
     containers {
@@ -394,22 +411,42 @@ resource "google_cloud_run_v2_service" "backend" {
         name  = "DASHBOARD_DEVELOPER_MODE"
         value = "false"
       }
-      env {
-        name = "DATABASE_URL"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.database_url.secret_id
-            version = "latest"
+      dynamic "env" {
+        for_each = local.use_secret_manager ? [1] : []
+        content {
+          name = "DATABASE_URL"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.database_url[0].secret_id
+              version = "latest"
+            }
           }
         }
       }
-      env {
-        name = "DASHBOARD_CRON_SECRET"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.cron_secret.secret_id
-            version = "latest"
+      dynamic "env" {
+        for_each = local.use_secret_manager ? [] : [1]
+        content {
+          name  = "DATABASE_URL"
+          value = local.database_url
+        }
+      }
+      dynamic "env" {
+        for_each = local.use_secret_manager ? [1] : []
+        content {
+          name = "DASHBOARD_CRON_SECRET"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.cron_secret[0].secret_id
+              version = "latest"
+            }
           }
+        }
+      }
+      dynamic "env" {
+        for_each = local.use_secret_manager ? [] : [1]
+        content {
+          name  = "DASHBOARD_CRON_SECRET"
+          value = local.cron_secret
         }
       }
       env {
@@ -421,7 +458,7 @@ resource "google_cloud_run_v2_service" "backend" {
         value = local.config_prefix
       }
       dynamic "env" {
-        for_each = local.backend_image_set ? [1] : []
+        for_each = local.backend_image_set && local.use_secret_manager ? [1] : []
         content {
           name = "DASHBOARD_API_KEY"
           value_source {
@@ -430,6 +467,13 @@ resource "google_cloud_run_v2_service" "backend" {
               version = "latest"
             }
           }
+        }
+      }
+      dynamic "env" {
+        for_each = local.backend_image_set && !local.use_secret_manager ? [1] : []
+        content {
+          name  = "DASHBOARD_API_KEY"
+          value = local.dashboard_api_key
         }
       }
       env {
@@ -449,6 +493,10 @@ resource "google_cloud_run_v2_service" "backend" {
         value = var.runner_machine_type
       }
       env {
+        name  = "GCP_RUNNER_NETWORK"
+        value = local.network_self_link
+      }
+      env {
         name  = "GCP_RUNNER_PREFIX"
         value = "${var.prefix}-runner"
       }
@@ -465,7 +513,7 @@ resource "google_cloud_run_v2_service" "backend" {
     volumes {
       name = "cloudsql"
       cloud_sql_instance {
-        instances = [google_sql_database_instance.main.connection_name]
+        instances = [local.connection_name]
       }
     }
   }
@@ -500,7 +548,7 @@ resource "google_cloud_run_v2_service" "backend" {
 
 # IAM: allow Cloud Run backend to create/delete Compute instances (for on-demand runner VM provisioning)
 resource "google_project_iam_member" "backend_compute_admin" {
-  count   = local.backend_image_set ? 1 : 0
+  count   = local.backend_image_set && local.manage_runtime_iam ? 1 : 0
   project = var.project_id
   role    = "roles/compute.instanceAdmin.v1"
   member  = local.cloud_run_sa
@@ -508,7 +556,7 @@ resource "google_project_iam_member" "backend_compute_admin" {
 
 # IAM: allow default compute SA to pull images from Artifact Registry (runner VMs use this SA)
 resource "google_artifact_registry_repository_iam_member" "runner_ar_reader" {
-  count      = local.backend_image_set ? 1 : 0
+  count      = local.backend_image_set && local.manage_runtime_iam ? 1 : 0
   project    = var.project_id
   location   = var.region
   repository = google_artifact_registry_repository.repo.name
@@ -591,9 +639,9 @@ resource "google_cloud_scheduler_job" "job_timeout" {
 # ------------------------------------------------------------------------------
 
 data "google_compute_image" "runner_ubuntu" {
-  count       = var.enable_runner_vm ? 1 : 0
-  family      = "ubuntu-2204-lts"
-  project     = "ubuntu-os-cloud"
+  count   = var.enable_runner_vm && !local.use_existing_vpc ? 1 : 0
+  family  = "ubuntu-2204-lts"
+  project = "ubuntu-os-cloud"
 }
 
 locals {
@@ -601,7 +649,7 @@ locals {
 }
 
 resource "google_compute_instance" "runner" {
-  count        = var.enable_runner_vm ? 1 : 0
+  count        = var.enable_runner_vm && !local.use_existing_vpc ? 1 : 0
   name         = "${var.prefix}-runner"
   machine_type = var.runner_machine_type
   zone         = local.runner_zone

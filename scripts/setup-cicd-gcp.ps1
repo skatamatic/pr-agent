@@ -24,7 +24,17 @@ param(
     [Parameter(Mandatory)][string]$Project,
     [string]$Region = "us-central1",
     [switch]$AutoApprove,
-    [switch]$SkipDeploy
+    [switch]$SkipDeploy,
+    [switch]$RestrictedPermissionsMode,
+    [string]$StatePrefixOverride = "",
+    [string]$ExistingVpcName = "",
+    [string]$ExistingVpcConnectorId = "",
+    [string]$ExistingSqlInstanceName = "",
+    [string]$ExistingSqlConnectionName = "",
+    [string]$DbUserPassword = "",
+    [string]$PrAgentRunnerImage = "",
+    [switch]$SkipProjectIamBindings,
+    [string]$CloudBuildServiceAccountEmail = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -81,6 +91,16 @@ if ($Env -eq 'all') {
     $ExtraArgs = @()
     if ($AutoApprove) { $ExtraArgs += '-AutoApprove' }
     if ($SkipDeploy)  { $ExtraArgs += '-SkipDeploy' }
+    if ($RestrictedPermissionsMode) { $ExtraArgs += '-RestrictedPermissionsMode' }
+    if ($StatePrefixOverride) { $ExtraArgs += @('-StatePrefixOverride', $StatePrefixOverride) }
+    if ($ExistingVpcName) { $ExtraArgs += @('-ExistingVpcName', $ExistingVpcName) }
+    if ($ExistingVpcConnectorId) { $ExtraArgs += @('-ExistingVpcConnectorId', $ExistingVpcConnectorId) }
+    if ($ExistingSqlInstanceName) { $ExtraArgs += @('-ExistingSqlInstanceName', $ExistingSqlInstanceName) }
+    if ($ExistingSqlConnectionName) { $ExtraArgs += @('-ExistingSqlConnectionName', $ExistingSqlConnectionName) }
+    if ($DbUserPassword) { $ExtraArgs += @('-DbUserPassword', $DbUserPassword) }
+    if ($PrAgentRunnerImage) { $ExtraArgs += @('-PrAgentRunnerImage', $PrAgentRunnerImage) }
+    if ($SkipProjectIamBindings) { $ExtraArgs += '-SkipProjectIamBindings' }
+    if ($CloudBuildServiceAccountEmail) { $ExtraArgs += @('-CloudBuildServiceAccountEmail', $CloudBuildServiceAccountEmail) }
 
     foreach ($DeployEnv in @('dev','stage','prod')) {
         Write-Host ""
@@ -121,7 +141,7 @@ switch ($Env) {
 }
 
 $RepoId        = "$Prefix-repo"
-$StatePrefix   = "pr-agent-dash/$Env/state"
+$StatePrefix   = if ($StatePrefixOverride) { $StatePrefixOverride } else { "pr-agent-dash/$Env/state" }
 $TfStateBucket = "$Project-tfstate"
 $Registry      = "$Region-docker.pkg.dev"
 $ImageBase     = "$Registry/$Project/$RepoId"
@@ -142,6 +162,12 @@ Write-Host "  Region      : $Region"
 Write-Host "  Prefix      : $Prefix"
 Write-Host "  Repo ID     : $RepoId"
 Write-Host "  TF state    : gs://$TfStateBucket/$StatePrefix"
+Write-Host "  Restricted  : $RestrictedPermissionsMode"
+if ($RestrictedPermissionsMode) {
+    Write-Host "  Existing VPC: $ExistingVpcName"
+    Write-Host "  Existing VPC connector: $ExistingVpcConnectorId"
+    Write-Host "  Existing SQL instance:  $ExistingSqlInstanceName"
+}
 Write-Host "============================================================"
 Write-Host ""
 
@@ -267,6 +293,28 @@ Write-Host ""
 Write-Host "=== Terraform init ==="
 Push-Location $TfDir
 try {
+    $tfCommonArgs = @()
+    if ($RestrictedPermissionsMode) {
+        if (-not $ExistingVpcName) { throw "Restricted mode requires -ExistingVpcName." }
+        if (-not $ExistingVpcConnectorId) { throw "Restricted mode requires -ExistingVpcConnectorId." }
+        if (-not $ExistingSqlInstanceName) { throw "Restricted mode requires -ExistingSqlInstanceName." }
+        if (-not $ExistingSqlConnectionName) { throw "Restricted mode requires -ExistingSqlConnectionName." }
+        if (-not $DbUserPassword) { throw "Restricted mode requires -DbUserPassword (Cloud SQL password policy rejects weak/generated defaults)." }
+
+        $tfCommonArgs += @(
+            "-var=restricted_permissions_mode=true",
+            "-var=existing_vpc_name=$ExistingVpcName",
+            "-var=existing_vpc_connector_id=$ExistingVpcConnectorId",
+            "-var=manage_secret_manager_resources=false",
+            "-var=manage_runtime_iam_bindings=false",
+            "-var=manage_sql_instance=false",
+            "-var=existing_sql_instance_name=$ExistingSqlInstanceName",
+            "-var=existing_sql_connection_name=$ExistingSqlConnectionName",
+            "-var=db_user_password=$DbUserPassword",
+            "-var=allow_unauthenticated=false"
+        )
+    }
+
     terraform init -input=false -reconfigure
     if ($LASTEXITCODE -ne 0) { throw "terraform init failed" }
 
@@ -274,13 +322,21 @@ try {
     # On re-run: pass existing Cloud Run images so Terraform does not destroy live services
     $ExistingBackendImage  = ""
     $ExistingFrontendImage = ""
+    $ExistingPrAgentRunnerImage = $PrAgentRunnerImage
     try {
         $ExistingBackendImage = gcloud run services describe "${Prefix}-backend" --region=$Region --format='value(spec.template.spec.containers[0].image)' 2>$null
         $ExistingFrontendImage = gcloud run services describe "${Prefix}-frontend" --region=$Region --format='value(spec.template.spec.containers[0].image)' 2>$null
     } catch {}
-    $tfApplyArgs = @("-input=false")
+    if (-not $ExistingPrAgentRunnerImage) {
+        try {
+            $ExistingPrAgentRunnerImage = terraform output -raw pr_agent_runner_image 2>$null
+            if ($ExistingPrAgentRunnerImage -eq "null") { $ExistingPrAgentRunnerImage = "" }
+        } catch {}
+    }
+    $tfApplyArgs = @("-input=false") + $tfCommonArgs
     if ($ExistingBackendImage) { $tfApplyArgs += "-var=backend_image=$ExistingBackendImage" }
     if ($ExistingFrontendImage) { $tfApplyArgs += "-var=frontend_image=$ExistingFrontendImage" }
+    if ($ExistingPrAgentRunnerImage) { $tfApplyArgs += "-var=pr_agent_runner_image=$ExistingPrAgentRunnerImage" }
     if ($AutoApprove) { $tfApplyArgs += "-auto-approve" }
     if ($ExistingBackendImage -or $ExistingFrontendImage) {
         Write-Host "  Terraform apply (using existing Cloud Run images to avoid destroying live services)"
@@ -322,7 +378,7 @@ try {
 
         Write-Host ""
         Write-Host "=== Deploying backend via Terraform ==="
-        $tfApplyArgs = @("-input=false", "-var=backend_image=$BackendImage")
+        $tfApplyArgs = @("-input=false", "-var=backend_image=$BackendImage") + $tfCommonArgs
         if ($AutoApprove) { $tfApplyArgs += "-auto-approve" }
         terraform apply @tfApplyArgs
         if ($LASTEXITCODE -ne 0) { throw "terraform apply (backend) failed" }
@@ -354,7 +410,7 @@ try {
             "-var=frontend_image=$FrontendImage",
             "-var=backend_base_url=$BackendUrl",
             "-var=frontend_base_url="
-        )
+        ) + $tfCommonArgs
         if ($AutoApprove) { $tfApplyArgs += "-auto-approve" }
         terraform apply @tfApplyArgs
         if ($LASTEXITCODE -ne 0) { throw "terraform apply (frontend) failed" }
@@ -368,7 +424,7 @@ try {
                 "-var=frontend_image=$FrontendImage",
                 "-var=backend_base_url=$BackendUrl",
                 "-var=frontend_base_url=$FrontendUrl"
-            )
+            ) + $tfCommonArgs
             if ($AutoApprove) { $tfApplyArgs += "-auto-approve" }
             terraform apply @tfApplyArgs
             if ($LASTEXITCODE -ne 0) { throw "terraform apply (CORS) failed" }
@@ -385,9 +441,16 @@ try {
         Write-Host ""
         Write-Host "=== Waiting for backend health (up to 120s) ==="
         $healthy = $false
+        $healthHeaders = @{}
+        if ($RestrictedPermissionsMode) {
+            try {
+                $idToken = gcloud auth print-identity-token 2>$null
+                if ($idToken) { $healthHeaders["Authorization"] = "Bearer $idToken" }
+            } catch {}
+        }
         for ($i = 1; $i -le 24; $i++) {
             try {
-                $r = Invoke-WebRequest -Uri "$BackendUrl/api/health" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+                $r = Invoke-WebRequest -Uri "$BackendUrl/api/health" -Headers $healthHeaders -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
                 if ($r.StatusCode -eq 200) { Write-Host "  Backend healthy."; $healthy = $true; break }
             } catch {}
             Write-Host "  Attempt $i/24 ..."
@@ -399,153 +462,183 @@ try {
     # ========================== Cloud Build SA permissions ======================
 
     Write-Host ""
-    Write-Host "=== Creating user-managed service account for Cloud Build triggers ==="
+    Write-Host "=== Preparing Cloud Build trigger service account ==="
 
     $ProjectNumber = gcloud projects describe $Project --format='value(projectNumber)'
     $CbSa = "$ProjectNumber@cloudbuild.gserviceaccount.com"
     $CbTriggerSaName = "pr-agent-cb-trigger"
     $CbTriggerSa = "${CbTriggerSaName}@${Project}.iam.gserviceaccount.com"
-    $CbTriggerSaResource = "projects/$Project/serviceAccounts/$CbTriggerSa"
+    $CbTriggerSaResource = ""
 
-    $SaExists = gcloud iam service-accounts describe $CbTriggerSa --format='value(email)' 2>$null
-    if (-not $SaExists) {
-        Write-Host "  Creating service account $CbTriggerSaName ..."
-        gcloud iam service-accounts create $CbTriggerSaName `
-            --display-name="Cloud Build trigger (PR-Agent dashboard)" `
-            --project=$Project
-        if ($LASTEXITCODE -ne 0) { throw "Failed to create service account $CbTriggerSaName." }
+    if ($CloudBuildServiceAccountEmail) {
+        $CbTriggerSa = $CloudBuildServiceAccountEmail
+        $CbTriggerSaResource = "projects/$Project/serviceAccounts/$CbTriggerSa"
+        Write-Host "  Using provided service account: $CbTriggerSa"
+    } elseif ($RestrictedPermissionsMode -or $SkipProjectIamBindings) {
+        # In constrained mode, avoid SA/IAM writes and reuse an existing SA if present.
+        $SaExists = gcloud iam service-accounts describe $CbTriggerSa --format='value(email)' 2>$null
+        if ($SaExists) {
+            $CbTriggerSaResource = "projects/$Project/serviceAccounts/$CbTriggerSa"
+            Write-Host "  Reusing existing service account: $CbTriggerSa"
+        } else {
+            $CbTriggerSa = $CbSa
+            $CbTriggerSaResource = "projects/$Project/serviceAccounts/$CbTriggerSa"
+            Write-Host "  Reusing default Cloud Build service account: $CbTriggerSa"
+        }
+        Write-Host "  Skipping project IAM bindings in constrained mode."
     } else {
-        Write-Host "  Service account $CbTriggerSaName already exists."
-    }
+        $SaExists = gcloud iam service-accounts describe $CbTriggerSa --format='value(email)' 2>$null
+        if (-not $SaExists) {
+            Write-Host "  Creating service account $CbTriggerSaName ..."
+            gcloud iam service-accounts create $CbTriggerSaName `
+                --display-name="Cloud Build trigger (PR-Agent dashboard)" `
+                --project=$Project
+            if ($LASTEXITCODE -ne 0) { throw "Failed to create service account $CbTriggerSaName." }
+        } else {
+            Write-Host "  Service account $CbTriggerSaName already exists."
+        }
+        $CbTriggerSaResource = "projects/$Project/serviceAccounts/$CbTriggerSa"
 
-    $CbRoles = @(
-        "roles/run.admin",
-        "roles/iam.serviceAccountUser",
-        "roles/artifactregistry.writer",
-        "roles/secretmanager.secretAccessor",
-        "roles/storage.objectViewer",
-        "roles/logging.logWriter"
-    )
+        $CbRoles = @(
+            "roles/run.admin",
+            "roles/iam.serviceAccountUser",
+            "roles/artifactregistry.writer",
+            "roles/secretmanager.secretAccessor",
+            "roles/storage.objectViewer",
+            "roles/logging.logWriter"
+        )
 
-    Write-Host "  Granting roles to $CbTriggerSaName ..."
-    foreach ($role in $CbRoles) {
+        Write-Host "  Granting roles to $CbTriggerSaName ..."
+        foreach ($role in $CbRoles) {
+            gcloud projects add-iam-policy-binding $Project `
+                --member="serviceAccount:$CbTriggerSa" `
+                --role=$role `
+                --condition=None `
+                --quiet 2>$null | Out-Null
+        }
+
+        $CbP4sa = "service-$ProjectNumber@gcp-sa-cloudbuild.iam.gserviceaccount.com"
+        Write-Host "  Granting roles/secretmanager.admin to Cloud Build P4SA (for GitHub connection) ..."
         gcloud projects add-iam-policy-binding $Project `
-            --member="serviceAccount:$CbTriggerSa" `
-            --role=$role `
+            --member="serviceAccount:$CbP4sa" `
+            --role="roles/secretmanager.admin" `
             --condition=None `
             --quiet 2>$null | Out-Null
+        Write-Host "  Cloud Build SA permissions configured."
     }
 
-    $CbP4sa = "service-$ProjectNumber@gcp-sa-cloudbuild.iam.gserviceaccount.com"
-    Write-Host "  Granting roles/secretmanager.admin to Cloud Build P4SA (for GitHub connection) ..."
-    gcloud projects add-iam-policy-binding $Project `
-        --member="serviceAccount:$CbP4sa" `
-        --role="roles/secretmanager.admin" `
-        --condition=None `
-        --quiet 2>$null | Out-Null
-    Write-Host "  Cloud Build SA permissions configured."
+    $UseLegacyGitHubTriggers = $RestrictedPermissionsMode -or $SkipProjectIamBindings
 
     # ========================== Cloud Build GitHub connection ===================
 
     Write-Host ""
-    Write-Host "=== Setting up Cloud Build GitHub connection ==="
-    Write-Host "  (This may open a browser for one-time GitHub OAuth authorization.)"
-    Write-Host ""
-
-    $ExistingConn = ""
-    try {
-        $ExistingConn = gcloud builds connections describe $ConnName `
-            --region=$Region --format='value(name)' 2>$null
-    } catch {}
-
-    if ($ExistingConn) {
-        Write-Host "  Connection '$ConnName' already exists."
+    if ($UseLegacyGitHubTriggers) {
+        Write-Host "=== Skipping Cloud Build connection (legacy GitHub trigger mode) ==="
+        Write-Host "  Constrained mode uses direct GitHub triggers and does not require connections/repositories."
+        $RepoResource = ""
     } else {
-        Write-Host "  Creating connection '$ConnName' ..."
-        gcloud builds connections create github $ConnName --region=$Region
-        Write-Host "  Connection created."
-    }
-
-    Write-Host "  Verifying connection installation state ..."
-    $ConnReady = $false
-    $BrowserOpened = $false
-
-    # Helper: show URL and open browser once
-    function Show-AndOpenAuthUrl {
-        param([string]$Url)
-        if (-not $Url) { return $false }
-        Write-Host "  >>> Authorize Cloud Build (one-time). Opening in your default browser:"
-        Write-Host "  >>> $Url"
+        Write-Host "=== Setting up Cloud Build GitHub connection ==="
+        Write-Host "  (This may open a browser for one-time GitHub OAuth authorization.)"
         Write-Host ""
-        try {
-            Start-Process $Url
-            Write-Host "  Browser launched. Complete the authorization, then this script will continue."
-            return $true
-        } catch {
-            Write-Host "  (Could not launch browser — please open the URL above manually.)"
-            return $true
-        }
-    }
 
-    for ($i = 1; $i -le 24; $i++) {
-        $State = ""
+        $ExistingConn = ""
         try {
-            $State = gcloud builds connections describe $ConnName `
-                --region=$Region --format='value(installationState.stage)' 2>$null
+            $ExistingConn = gcloud builds connections describe $ConnName `
+                --region=$Region --format='value(name)' 2>$null
         } catch {}
-        if ($State -eq "COMPLETE") {
-            Write-Host "  Connection installation: COMPLETE"
-            $ConnReady = $true
-            break
+
+        if ($ExistingConn) {
+            Write-Host "  Connection '$ConnName' already exists."
+        } else {
+            Write-Host "  Creating connection '$ConnName' ..."
+            gcloud builds connections create github $ConnName --region=$Region
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to create Cloud Build GitHub connection '$ConnName'. In constrained mode, ask DevOps to grant Cloud Build P4SA (service-$ProjectNumber@gcp-sa-cloudbuild.iam.gserviceaccount.com) Secret Manager permissions (secretmanager.secrets.create + secretmanager.secrets.setIamPolicy), then re-run."
+            }
+            Write-Host "  Connection created."
         }
-        if ($State -eq "PENDING_INSTALL_APP" -or $State -eq "PENDING_USER_OAUTH") {
-            if (-not $BrowserOpened) {
-                try {
-                    $AuthUrl = gcloud builds connections describe $ConnName `
-                        --region=$Region --format='value(installationState.actionUri)' 2>$null
-                    if ($AuthUrl) {
-                        $BrowserOpened = Show-AndOpenAuthUrl -Url $AuthUrl
-                    }
-                } catch {}
+
+        Write-Host "  Verifying connection installation state ..."
+        $ConnReady = $false
+        $BrowserOpened = $false
+
+        # Helper: show URL and open browser once
+        function Show-AndOpenAuthUrl {
+            param([string]$Url)
+            if (-not $Url) { return $false }
+            Write-Host "  >>> Authorize Cloud Build (one-time). Opening in your default browser:"
+            Write-Host "  >>> $Url"
+            Write-Host ""
+            try {
+                Start-Process $Url
+                Write-Host "  Browser launched. Complete the authorization, then this script will continue."
+                return $true
+            } catch {
+                Write-Host "  (Could not launch browser - please open the URL above manually.)"
+                return $true
             }
         }
-        $StateDisplay = if ($State) { $State } else { 'pending' }
-        Write-Host "  Installation state: $StateDisplay (attempt $i/24, waiting 10s) ..."
-        Start-Sleep -Seconds 10
-    }
 
-    if (-not $ConnReady) {
+        for ($i = 1; $i -le 24; $i++) {
+            $State = ""
+            try {
+                $State = gcloud builds connections describe $ConnName `
+                    --region=$Region --format='value(installationState.stage)' 2>$null
+            } catch {}
+            if ($State -eq "COMPLETE") {
+                Write-Host "  Connection installation: COMPLETE"
+                $ConnReady = $true
+                break
+            }
+            if ($State -eq "PENDING_INSTALL_APP" -or $State -eq "PENDING_USER_OAUTH") {
+                if (-not $BrowserOpened) {
+                    try {
+                        $AuthUrl = gcloud builds connections describe $ConnName `
+                            --region=$Region --format='value(installationState.actionUri)' 2>$null
+                        if ($AuthUrl) {
+                            $BrowserOpened = Show-AndOpenAuthUrl -Url $AuthUrl
+                        }
+                    } catch {}
+                }
+            }
+            $StateDisplay = if ($State) { $State } else { 'pending' }
+            Write-Host "  Installation state: $StateDisplay (attempt $i/24, waiting 10s) ..."
+            Start-Sleep -Seconds 10
+        }
+
+        if (-not $ConnReady) {
+            Write-Host ""
+            Write-Host "  To finish: open the URL shown above in your browser, complete the GitHub authorization,"
+            Write-Host "  then re-run this script. (It will skip completed steps and create the trigger.)"
+            Write-Host ""
+            throw "GitHub connection did not reach COMPLETE state within 4 minutes. Authorize in browser, then re-run."
+        }
+
+        # ========================== Link GitHub repository =========================
+
         Write-Host ""
-        Write-Host "  To finish: open the URL shown above in your browser, complete the GitHub authorization,"
-        Write-Host "  then re-run this script. (It will skip completed steps and create the trigger.)"
-        Write-Host ""
-        throw "GitHub connection did not reach COMPLETE state within 4 minutes. Authorize in browser, then re-run."
+        Write-Host "=== Linking GitHub repository ==="
+
+        $CbRepoName = "$GitHubRepoName-$Env"
+        $ExistingRepo = ""
+        try {
+            $ExistingRepo = gcloud builds repositories describe $CbRepoName `
+                --connection=$ConnName --region=$Region --format='value(name)' 2>$null
+        } catch {}
+
+        if ($ExistingRepo) {
+            Write-Host "  Repository link '$CbRepoName' already exists."
+        } else {
+            Write-Host "  Linking $GitHubRemoteUri as '$CbRepoName' ..."
+            gcloud builds repositories create $CbRepoName `
+                --connection=$ConnName `
+                --region=$Region `
+                --remote-uri=$GitHubRemoteUri
+            Write-Host "  Repository linked."
+        }
+
+        $RepoResource = "projects/$Project/locations/$Region/connections/$ConnName/repositories/$CbRepoName"
     }
-
-    # ========================== Link GitHub repository =========================
-
-    Write-Host ""
-    Write-Host "=== Linking GitHub repository ==="
-
-    $CbRepoName = "$GitHubRepoName-$Env"
-    $ExistingRepo = ""
-    try {
-        $ExistingRepo = gcloud builds repositories describe $CbRepoName `
-            --connection=$ConnName --region=$Region --format='value(name)' 2>$null
-    } catch {}
-
-    if ($ExistingRepo) {
-        Write-Host "  Repository link '$CbRepoName' already exists."
-    } else {
-        Write-Host "  Linking $GitHubRemoteUri as '$CbRepoName' ..."
-        gcloud builds repositories create $CbRepoName `
-            --connection=$ConnName `
-            --region=$Region `
-            --remote-uri=$GitHubRemoteUri
-        Write-Host "  Repository linked."
-    }
-
-    $RepoResource = "projects/$Project/locations/$Region/connections/$ConnName/repositories/$CbRepoName"
 
     # ========================== Create Cloud Build trigger =====================
 
@@ -554,29 +647,49 @@ try {
 
     $ExistingTrigger = ""
     try {
-        $ExistingTrigger = gcloud builds triggers describe $TriggerName `
-            --region=$Region --format='value(name)' 2>$null
+        if ($UseLegacyGitHubTriggers) {
+            $ExistingTrigger = gcloud builds triggers describe $TriggerName --format='value(name)' 2>$null
+        } else {
+            $ExistingTrigger = gcloud builds triggers describe $TriggerName `
+                --region=$Region --format='value(name)' 2>$null
+        }
     } catch {}
 
     if ($ExistingTrigger) {
         Write-Host "  Trigger '$TriggerName' already exists. Replacing ..."
-        gcloud builds triggers delete $TriggerName --region=$Region --quiet 2>$null
+        if ($UseLegacyGitHubTriggers) {
+            gcloud builds triggers delete $TriggerName --quiet 2>$null
+        } else {
+            gcloud builds triggers delete $TriggerName --region=$Region --quiet 2>$null
+        }
     }
 
-    gcloud builds triggers create github `
-        --name=$TriggerName `
-        --region=$Region `
-        --repository=$RepoResource `
-        --branch-pattern="^$Branch$" `
-        --build-config="cloudbuild-deploy.yaml" `
-        --included-files="dashboard/**,terraform/gcp/**,cloudbuild-deploy.yaml" `
-        --substitutions="_REGION=$Region,_REPO_ID=$RepoId,_PREFIX=$Prefix" `
-        --service-account=$CbTriggerSaResource
+    if ($UseLegacyGitHubTriggers) {
+        gcloud builds triggers create github `
+            --name=$TriggerName `
+            --repo-owner=$GitHubOwner `
+            --repo-name=$GitHubRepoName `
+            --branch-pattern="^$Branch$" `
+            --build-config="cloudbuild-deploy.yaml" `
+            --included-files="dashboard/**,cloudbuild-deploy.yaml" `
+            --substitutions="_REGION=$Region,_REPO_ID=$RepoId,_PREFIX=$Prefix" `
+            --service-account=$CbTriggerSaResource
+    } else {
+        gcloud builds triggers create repository-event `
+            --name=$TriggerName `
+            --region=$Region `
+            --repository=$RepoResource `
+            --branch-pattern="^$Branch$" `
+            --build-config="cloudbuild-deploy.yaml" `
+            --included-files="dashboard/**,cloudbuild-deploy.yaml" `
+            --substitutions="_REGION=$Region,_REPO_ID=$RepoId,_PREFIX=$Prefix" `
+            --service-account=$CbTriggerSaResource
+    }
     if ($LASTEXITCODE -ne 0) { throw "Failed to create Cloud Build trigger '$TriggerName'." }
 
     Write-Host "  Trigger '$TriggerName' created."
     Write-Host "  Branch filter: ^$Branch$"
-    Write-Host "  Watched paths: dashboard/**, terraform/gcp/**, cloudbuild-deploy.yaml"
+    Write-Host "  Watched paths: dashboard/**, cloudbuild-deploy.yaml"
 
     # ========================== Create PR-Agent image trigger ==================
 
@@ -586,24 +699,44 @@ try {
     $AgentTriggerName = "$Prefix-agent"
     $ExistingAgentTrigger = ""
     try {
-        $ExistingAgentTrigger = gcloud builds triggers describe $AgentTriggerName `
-            --region=$Region --format='value(name)' 2>$null
+        if ($UseLegacyGitHubTriggers) {
+            $ExistingAgentTrigger = gcloud builds triggers describe $AgentTriggerName --format='value(name)' 2>$null
+        } else {
+            $ExistingAgentTrigger = gcloud builds triggers describe $AgentTriggerName `
+                --region=$Region --format='value(name)' 2>$null
+        }
     } catch {}
 
     if ($ExistingAgentTrigger) {
         Write-Host "  Trigger '$AgentTriggerName' already exists. Replacing ..."
-        gcloud builds triggers delete $AgentTriggerName --region=$Region --quiet 2>$null
+        if ($UseLegacyGitHubTriggers) {
+            gcloud builds triggers delete $AgentTriggerName --quiet 2>$null
+        } else {
+            gcloud builds triggers delete $AgentTriggerName --region=$Region --quiet 2>$null
+        }
     }
 
-    gcloud builds triggers create github `
-        --name=$AgentTriggerName `
-        --region=$Region `
-        --repository=$RepoResource `
-        --branch-pattern="^$Branch$" `
-        --build-config="cloudbuild-pr-agent.yaml" `
-        --included-files="pr_agent/**,docker/Dockerfile.github_action_runner,requirements.txt,.dockerignore.pr-agent,cloudbuild-pr-agent.yaml" `
-        --substitutions="_REGION=$Region,_REPO_ID=$RepoId,_PREFIX=$Prefix" `
-        --service-account=$CbTriggerSaResource
+    if ($UseLegacyGitHubTriggers) {
+        gcloud builds triggers create github `
+            --name=$AgentTriggerName `
+            --repo-owner=$GitHubOwner `
+            --repo-name=$GitHubRepoName `
+            --branch-pattern="^$Branch$" `
+            --build-config="cloudbuild-pr-agent.yaml" `
+            --included-files="pr_agent/**,docker/Dockerfile.github_action_runner,requirements.txt,.dockerignore.pr-agent,cloudbuild-pr-agent.yaml" `
+            --substitutions="_REGION=$Region,_REPO_ID=$RepoId,_PREFIX=$Prefix" `
+            --service-account=$CbTriggerSaResource
+    } else {
+        gcloud builds triggers create repository-event `
+            --name=$AgentTriggerName `
+            --region=$Region `
+            --repository=$RepoResource `
+            --branch-pattern="^$Branch$" `
+            --build-config="cloudbuild-pr-agent.yaml" `
+            --included-files="pr_agent/**,docker/Dockerfile.github_action_runner,requirements.txt,.dockerignore.pr-agent,cloudbuild-pr-agent.yaml" `
+            --substitutions="_REGION=$Region,_REPO_ID=$RepoId,_PREFIX=$Prefix" `
+            --service-account=$CbTriggerSaResource
+    }
     if ($LASTEXITCODE -ne 0) { throw "Failed to create Cloud Build trigger '$AgentTriggerName'." }
 
     Write-Host "  Trigger '$AgentTriggerName' created."

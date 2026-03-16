@@ -4,10 +4,18 @@ from typing import Dict
 from pr_agent.config_loader import get_settings
 
 
+def _get_config_bool(key: str, default: bool) -> bool:
+    """Safely read config booleans for sparse/minimal configuration files."""
+    value = get_settings().get(f"config.{key}", default)
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return bool(value)
+
+
 def filter_bad_extensions(files):
     # Bad Extensions, source: https://github.com/EleutherAI/github-downloader/blob/345e7c4cbb9e0dc8a0615fd995a08bf9d73b3fe6/download_repo_text.py  # noqa: E501
     bad_extensions = get_settings().bad_extensions.default
-    if get_settings().config.use_extra_bad_extensions:
+    if _get_config_bool("use_extra_bad_extensions", False):
         bad_extensions += get_settings().bad_extensions.extra
     return [f for f in files if f.filename is not None and is_valid_file(f.filename, bad_extensions)]
 
@@ -17,7 +25,7 @@ def is_valid_file(filename:str, bad_extensions=None) -> bool:
         return False
     if not bad_extensions:
         bad_extensions = get_settings().bad_extensions.default
-        if get_settings().config.use_extra_bad_extensions:
+        if _get_config_bool("use_extra_bad_extensions", False):
             bad_extensions += get_settings().bad_extensions.extra
 
     auto_generated_files = ['package-lock.json', 'yarn.lock', 'composer.lock', 'Gemfile.lock', 'poetry.lock']

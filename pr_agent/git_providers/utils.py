@@ -10,10 +10,18 @@ from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 
 
+def _get_config_bool(key: str, default: bool) -> bool:
+    """Safely read config booleans even when minimal repo config is loaded."""
+    value = get_settings().get(f"config.{key}", default)
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return bool(value)
+
+
 def apply_repo_settings(pr_url):
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
     git_provider = get_git_provider_with_context(pr_url)
-    if get_settings().config.use_repo_settings_file:
+    if _get_config_bool("use_repo_settings_file", True):
         repo_settings_file = None
         try:
             try:

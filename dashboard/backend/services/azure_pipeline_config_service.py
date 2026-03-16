@@ -3,6 +3,7 @@ import base64
 import difflib
 import asyncio
 import aiohttp
+import urllib.request
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from urllib.parse import quote
@@ -20,6 +21,60 @@ class AzurePipelineConfigService:
 
     def __init__(self):
         pass
+
+    @staticmethod
+    def _is_local_dashboard_url(url: str) -> bool:
+        if not isinstance(url, str):
+            return True
+        value = url.strip().lower()
+        if not value:
+            return True
+        return (
+            "localhost" in value
+            or "127.0.0.1" in value
+            or value.startswith("http://0.0.0.0")
+        )
+
+    @staticmethod
+    def _fetch_gcp_project_number_from_metadata() -> str:
+        """Best-effort metadata lookup for numeric project id on GCP/Cloud Run."""
+        try:
+            req = urllib.request.Request(
+                "http://metadata.google.internal/computeMetadata/v1/project/numeric-project-id",
+                headers={"Metadata-Flavor": "Google"},
+            )
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                return resp.read().decode("utf-8").strip()
+        except Exception:
+            return ""
+
+    def _resolve_dashboard_url_for_pipeline(self) -> str:
+        """Resolve a non-local dashboard URL to inject into runner pipelines."""
+        dashboard_url = ""
+        try:
+            from config import settings as _s
+            dashboard_url = (getattr(_s, 'backend_base_url', '') or '').strip()
+        except Exception:
+            dashboard_url = ""
+
+        # Explicit env override (if provided) wins.
+        env_override = os.getenv("DASHBOARD_BACKEND_BASE_URL", "").strip()
+        if env_override:
+            dashboard_url = env_override
+
+        if dashboard_url and not self._is_local_dashboard_url(dashboard_url):
+            return dashboard_url
+
+        # Fallback for Cloud Run: construct deterministic project-number URL.
+        service = os.getenv("K_SERVICE", "").strip()
+        region = (os.getenv("GCP_RUNNER_REGION", "").strip()
+                  or os.getenv("GOOGLE_CLOUD_REGION", "").strip())
+        project_number = os.getenv("GOOGLE_CLOUD_PROJECT_NUMBER", "").strip()
+        if not project_number:
+            project_number = self._fetch_gcp_project_number_from_metadata()
+        if service and region and project_number:
+            return f"https://{service}-{project_number}.{region}.run.app"
+        return ""
 
     @staticmethod
     def _build_headers(token: str) -> dict:
@@ -1817,14 +1872,14 @@ stages:
             image = self._normalize_pipeline_image_tag((getattr(_s, 'gcp_runner_pr_agent_image', '') or '').strip())
             gcs_bucket = (getattr(_s, 'pr_agent_config_gcs_bucket', '') or '').strip()
             gcs_prefix = (getattr(_s, 'pr_agent_config_gcs_prefix', '') or '').strip()
-            dashboard_url = (getattr(_s, 'backend_base_url', '') or '').strip()
+            dashboard_url = self._resolve_dashboard_url_for_pipeline()
             if image:
                 values["PR_AGENT_IMAGE"] = image
             if gcs_bucket:
                 values["PR_AGENT_CONFIG_GCS_BUCKET"] = gcs_bucket
             if gcs_prefix:
                 values["PR_AGENT_CONFIG_GCS_PREFIX"] = gcs_prefix
-            if dashboard_url:
+            if dashboard_url and not self._is_local_dashboard_url(dashboard_url):
                 values["DASHBOARD_URL"] = dashboard_url
         except Exception:
             pass
@@ -1877,6 +1932,11 @@ stages:
                     continue
                 if isinstance(raw_value, str) and not raw_value.strip():
                     invalid_plain.append(k)
+                    continue
+                if k == "DASHBOARD_URL":
+                    dashboard_value = str(raw_value).strip()
+                    if self._is_local_dashboard_url(dashboard_value):
+                        invalid_plain.append(k)
             missing_secret = [k for k in required_secret_keys if k not in variables]
             has_missing = bool(missing_plain or invalid_plain or missing_secret or fetch_error)
             missing_any = missing_any or has_missing
