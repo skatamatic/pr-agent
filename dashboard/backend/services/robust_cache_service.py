@@ -170,6 +170,16 @@ class AsyncPersistenceQueue:
     async def stop(self):
         """Stop persistence workers"""
         if self.running:
+            # Best-effort flush before stopping workers so in-flight/queued writes
+            # (especially lower-priority log entries) are not lost on deploy shutdown.
+            flush_result = await self.flush(timeout_seconds=8.0)
+            logger.info(
+                "Persistence queue flush before stop: processed=%s failed=%s queue_remaining=%s retry_remaining=%s",
+                flush_result.get("processed", 0),
+                flush_result.get("failed", 0),
+                flush_result.get("queue_remaining", 0),
+                flush_result.get("retry_remaining", 0),
+            )
             self.running = False
             for task in [self.worker_task, self.retry_task]:
                 if task:
@@ -179,6 +189,55 @@ class AsyncPersistenceQueue:
                     except asyncio.CancelledError:
                         pass
             logger.info("Enhanced persistence workers stopped")
+
+    async def flush(self, timeout_seconds: float = 8.0) -> Dict[str, int]:
+        """
+        Best-effort synchronous flush of queued operations to DB.
+        Used during shutdown to minimize data loss on fast restarts/deploys.
+        """
+        deadline = datetime.utcnow() + timedelta(seconds=max(0.1, timeout_seconds))
+        processed = 0
+        failed_total = 0
+
+        # Let active workers continue; we drain any remaining items ourselves.
+        while datetime.utcnow() < deadline:
+            operations: List[Dict] = []
+
+            # Prefer retry queue first to avoid starving retries at shutdown.
+            while len(operations) < 50:
+                try:
+                    operations.append(self.retry_queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+
+            while len(operations) < 50:
+                try:
+                    operations.append(self.queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+
+            if not operations:
+                # If no items are visible now, queue is effectively drained.
+                break
+
+            successful, failed = await self._process_operations_batch(operations)
+            processed += len(successful)
+            failed_total += len(failed)
+
+            # One immediate retry pass for failed ops during shutdown.
+            if failed:
+                successful_retry, failed_retry = await self._process_operations_batch(failed)
+                processed += len(successful_retry)
+                failed_total += len(failed_retry)
+                if failed_retry:
+                    self.failed_operations.extend(failed_retry)
+
+        return {
+            "processed": processed,
+            "failed": failed_total,
+            "queue_remaining": self.queue.qsize(),
+            "retry_remaining": self.retry_queue.qsize(),
+        }
             
     async def enqueue_operation(self, operation_type: str, table: str, 
                               data: Dict[str, Any], key: str = None, priority: int = 0):
@@ -428,6 +487,11 @@ class AsyncPersistenceQueue:
             # Handle 'severity' field - not in database model
             if 'severity' in log_data:
                 log_data.pop('severity')
+            
+            # Always use database-managed IDs for logs.
+            # If an ID is present from older callers, drop it to avoid overflow/collisions.
+            if 'id' in log_data:
+                log_data.pop('id')
                 
             # Convert timestamp string to datetime if needed
             if 'timestamp' in log_data and isinstance(log_data['timestamp'], str):
@@ -439,9 +503,13 @@ class AsyncPersistenceQueue:
                     
             log_entry = LogEntryDB(**log_data)
             db.add(log_entry)
+            # Flush so the generated ID is available to the caller before commit.
+            db.flush()
+            return log_entry.id
         elif op_type == 'delete':
             if key:
                 db.query(LogEntryDB).filter(LogEntryDB.id == key).delete()
+        return None
                 
     async def _handle_metrics_operation(self, db, op_type: str, data: Dict, key: str = None):
         """Handle metrics operations"""
@@ -640,7 +708,9 @@ class RobustCacheService:
             'source': log.module or log.app_name or 'unknown',  # Use module or app_name as source
             'job_id': log.job_id,
             'operation_id': log.operation_id,
-            'repository': log.repo,  # Field is called 'repo' not 'repository'
+            # Include both keys to keep client contracts stable.
+            'repository': log.repo,
+            'repo': log.repo,
             'status': log.status,
             'module': log.module,
             'function': log.function,
@@ -1122,23 +1192,33 @@ class RobustCacheService:
     # ============= LOGS CACHING =============
     
     async def create_log(self, log_data: Dict[str, Any]) -> int:
-        """Create log entry with caching"""
-        # Generate ID if not provided
-        log_id = log_data.get('id')
-        if not log_id:
-            log_id = int(datetime.utcnow().timestamp() * 1000000)  # Microsecond timestamp
-            log_data['id'] = log_id
+        """Create log entry using DB-generated ID, then cache it"""
+        from database import SessionLocal
+        
+        db = SessionLocal()
+        try:
+            # Persist immediately so PostgreSQL assigns a safe primary key.
+            log_id = await self._handle_log_operation(db, 'insert', log_data, key=None)
+            db.commit()
             
-        # Add to cache with smaller TTL for logs
-        entry = CacheEntry(data=log_data.copy())
-        await self.logs_cache.put(str(log_id), entry)
-        await self._update_log_indexes(log_id, log_data)
-        
-        # Queue for persistence with lower priority (logs are less critical)
-        await self.persistence_queue.enqueue_operation('insert', 'log_entries', log_data, priority=3)
-        
-        logger.debug(f"Log {log_id} added to cache")
-        return log_id
+            if log_id is None:
+                raise RuntimeError("Database did not return a log ID")
+            
+            cached_log = log_data.copy()
+            cached_log['id'] = log_id
+            
+            # Add to cache with smaller TTL for logs
+            entry = CacheEntry(data=cached_log)
+            await self.logs_cache.put(str(log_id), entry)
+            await self._update_log_indexes(log_id, cached_log)
+            
+            logger.debug(f"Log {log_id} persisted and cached")
+            return log_id
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
         
     async def get_logs(self, limit: int = 1000, level: str = None, job_id: str = None,
                       operation_id: str = None, **filters) -> List[Dict[str, Any]]:

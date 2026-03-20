@@ -124,7 +124,8 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
   }, []);
 
   // Also extract unique repo names from logs as fallback
-  const uniqueRepoNames = [...new Set(logs.map(log => log.repo).filter(Boolean))];
+  const getLogRepository = (log) => log.repo || log.repository || null;
+  const uniqueRepoNames = [...new Set(logs.map(log => getLogRepository(log)).filter(Boolean))];
   const allRepoNames = [...new Set([...repositories, ...uniqueRepoNames])];
 
   // Extract unique operation types from logs
@@ -229,7 +230,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       const matchesLevel = selectedLevels.includes(log.level?.toUpperCase());
       
       // Repository filter
-      const matchesRepo = selectedRepository === 'all' || log.repo === selectedRepository;
+      const matchesRepo = selectedRepository === 'all' || getLogRepository(log) === selectedRepository;
       
       // Operation type filter - using command field for operation type
       const matchesOperationType = selectedOperationType === 'all' || log.command === selectedOperationType;
@@ -355,7 +356,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
         escapeCsvField(log.function),
         escapeCsvField(log.job_id),
         escapeCsvField(log.operation_id),
-        escapeCsvField(log.repo),
+        escapeCsvField(getLogRepository(log)),
         escapeCsvField(log.command),
         escapeCsvField(log.status),
         escapeCsvField(log.pr_url),
@@ -1137,10 +1138,10 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                                           </button>
                                         </div>
                                       )}
-                                      {log.repo && (
+                                      {getLogRepository(log) && (
                                         <div className="flex items-center text-sm">
                                           <span className="font-medium text-gray-600 dark:text-gray-400 w-20">Repo:</span>
-                                          <span className="text-gray-900 dark:text-white">{log.repo}</span>
+                                          <span className="text-gray-900 dark:text-white">{getLogRepository(log)}</span>
                                         </div>
                                       )}
                                       {log.command && (
@@ -1164,7 +1165,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                                         </div>
                                       )}
                                       {/* Show a message if no context information is available */}
-                                      {!log.job_id && !log.operation_id && !log.repo && !log.command && !log.pr_url && (
+                                      {!log.job_id && !log.operation_id && !getLogRepository(log) && !log.command && !log.pr_url && (
                                         <div className="flex items-center text-sm">
                                           {(log.source === 'notification_system' || 
                                             log.source === 'retention_system' || 

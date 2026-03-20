@@ -1803,6 +1803,7 @@ class DashboardApplication:
         @self.app.post("/logs/immediate")
         async def receive_immediate_log(log_data: dict, db: Session = Depends(get_db), _: None = Depends(require_auth_or_api_key)):
             try:
+                repo_value = log_data.get('repository') or log_data.get('repo')
                 # Use robust cached job service for logs too
                 log_id = await self.cached_job_service.create_log_entry(
                     level=log_data.get('level', 'INFO'),
@@ -1810,7 +1811,7 @@ class DashboardApplication:
                     source=log_data.get('source') or log_data.get('module', 'unknown'),
                     job_id=log_data.get('job_id'),
                     operation_id=log_data.get('operation_id'),
-                    repository=log_data.get('repository') or log_data.get('repo'),
+                    repository=repo_value,
                     status=log_data.get('status'),
                     module=log_data.get('module'),
                     function=log_data.get('function'),
@@ -1838,8 +1839,8 @@ class DashboardApplication:
                         "source": log_data.get('source'),
                         "job_id": log_data.get('job_id'),
                         "operation_id": log_data.get('operation_id'),
-                        "repository": log_data.get('repository'),
-                        "repo": log_data.get('repo'),
+                        "repository": repo_value,
+                        "repo": repo_value,
                         "command": log_data.get('command'),
                         "pr_url": log_data.get('pr_url'),
                         "module": log_data.get('module'),
@@ -1863,13 +1864,14 @@ class DashboardApplication:
                 
                 # Process each log using robust cached job service
                 for log_data in logs:
+                    repo_value = log_data.get('repository') or log_data.get('repo')
                     log_id = await self.cached_job_service.create_log_entry(
                         level=log_data.get('level', 'INFO'),
                         message=log_data.get('message', ''),
                         source=log_data.get('source') or log_data.get('module', 'unknown'),
                         job_id=log_data.get('job_id'),
                         operation_id=log_data.get('operation_id'),
-                        repository=log_data.get('repository') or log_data.get('repo'),
+                        repository=repo_value,
                         status=log_data.get('status'),
                         module=log_data.get('module'),
                         function=log_data.get('function'),
@@ -1888,8 +1890,8 @@ class DashboardApplication:
                         "source": log_data.get('source'),
                         "job_id": log_data.get('job_id'),
                         "operation_id": log_data.get('operation_id'),
-                        "repository": log_data.get('repository'),
-                        "repo": log_data.get('repo'),
+                        "repository": repo_value,
+                        "repo": repo_value,
                         "command": log_data.get('command'),
                         "pr_url": log_data.get('pr_url'),
                         "module": log_data.get('module'),
@@ -7667,12 +7669,13 @@ This file can override any setting from the global PR-Agent configuration, inclu
                             try:
                                 await self.notification_service.send_notification(
                                     event_type="job_timeout",
-                                    message=f"Automatically marked {len(stale_jobs)} stale jobs as failed",
-                                    context={
+                                    event_data={
+                                        "message": f"Automatically marked {len(stale_jobs)} stale jobs as failed",
                                         'stale_jobs_count': len(stale_jobs),
                                         'timeout_threshold_hours': 1,
                                         'jobs': [job['job_id'] for job in stale_jobs[:5]]  # First 5 job IDs
-                                    }
+                                    },
+                                    repositories=[job.get('repository') for job in stale_jobs if job.get('repository')]
                                 )
                             except Exception as e:
                                 logger.debug(f"Failed to send timeout notification: {e}")

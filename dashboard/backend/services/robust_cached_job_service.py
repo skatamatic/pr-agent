@@ -357,7 +357,9 @@ class RobustCachedJobService:
             'source': source,
             'job_id': job_id,
             'operation_id': operation_id,
+            # Keep both keys for backward compatibility across frontend/backend paths.
             'repository': repository,
+            'repo': repository,
             'status': status,
             'module': module,
             'function': function,

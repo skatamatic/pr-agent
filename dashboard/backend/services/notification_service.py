@@ -18,13 +18,30 @@ class NotificationService:
         self.enabled_services = {}
         self.load_configurations()
 
+    @staticmethod
+    def _normalize_service_type(value: Optional[str]) -> str:
+        return (value or "").strip().upper()
+
+    @staticmethod
+    def _normalize_event_type(value: Optional[str]) -> str:
+        return (value or "").strip().upper()
+
     def load_configurations(self):
         """Load notification configurations from database"""
         try:
             configs = self.database.get_notification_configs()
-            self.enabled_services = {
-                config['service_type']: config for config in configs if config.get('enabled', False)
-            }
+            normalized: Dict[str, Dict[str, Any]] = {}
+            for config in configs:
+                if not config.get('enabled', False):
+                    continue
+                service_type = self._normalize_service_type(config.get('service_type'))
+                if not service_type:
+                    continue
+                cfg = dict(config)
+                cfg['service_type'] = service_type
+                cfg['event_types'] = [self._normalize_event_type(t) for t in (cfg.get('event_types') or [])]
+                normalized[service_type] = cfg
+            self.enabled_services = normalized
         except Exception as e:
             logger.error(f"Failed to load notification configurations: {e}")
             self.enabled_services = {}
@@ -137,14 +154,16 @@ class NotificationService:
 
     def _should_send_notification(self, config: dict, event_type: str, repositories: List[str]) -> bool:
         """Check if notification should be sent based on configuration"""
+        normalized_event_type = self._normalize_event_type(event_type)
         # Special case: always send TEST notifications for testing purposes
-        if event_type == 'TEST':
+        if normalized_event_type == 'TEST':
             logger.info(f"Allowing TEST event type for testing")
             return True
             
         # Check if event type is enabled
-        if event_type not in config.get('event_types', []):
-            logger.info(f"Event type {event_type} not in configured types: {config.get('event_types', [])}")
+        configured_types = [self._normalize_event_type(t) for t in (config.get('event_types', []) or [])]
+        if normalized_event_type not in configured_types:
+            logger.info(f"Event type {normalized_event_type} not in configured types: {configured_types}")
             return False
         
         # Check repository filter
@@ -172,14 +191,16 @@ class NotificationService:
                 logger.info(f"Skipping Teams notification for event {event['event_type']} - not significant")
                 return True  # Return True to indicate "handled" even though we skipped
             
-            async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(webhook_url, json=message) as response:
-                    if response.status == 200:
+                    if 200 <= response.status < 300:
                         logger.info(f"Teams notification sent successfully for event {event['event_type']}")
                         self._log_to_system("INFO", f"Teams notification sent successfully for {event['event_type']} event")
                         return True
                     else:
-                        logger.error(f"Failed to send Teams notification: {response.status}")
+                        body = await response.text()
+                        logger.error(f"Failed to send Teams notification: {response.status} body={body[:300]}")
                         self._log_to_system("ERROR", f"Teams notification failed with status {response.status}")
                         return False
 
@@ -230,14 +251,16 @@ class NotificationService:
                 logger.info(f"Skipping Slack notification for event {event['event_type']} - not significant")
                 return True  # Return True to indicate "handled" even though we skipped
             
-            async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(webhook_url, json=message) as response:
-                    if response.status == 200:
+                    if 200 <= response.status < 300:
                         logger.info(f"Slack notification sent successfully for event {event['event_type']}")
                         self._log_to_system("INFO", f"Slack notification sent successfully for {event['event_type']} event")
                         return True
                     else:
-                        logger.error(f"Failed to send Slack notification: {response.status}")
+                        body = await response.text()
+                        logger.error(f"Failed to send Slack notification: {response.status} body={body[:300]}")
                         self._log_to_system("ERROR", f"Slack notification failed with status {response.status}")
                         return False
 
@@ -274,10 +297,19 @@ class NotificationService:
     def _send_smtp_email(self, config: dict, message: MIMEMultipart, event_type: str):
         """Send email via SMTP (synchronous)"""
         try:
-            with smtplib.SMTP(config['smtp_server'], config['smtp_port']) as server:
-                if config['smtp_port'] in [587, 25]:  # TLS ports
+            smtp_port = int(config['smtp_port'])
+            if smtp_port == 465:
+                server_ctx = smtplib.SMTP_SSL(config['smtp_server'], smtp_port, timeout=15)
+            else:
+                server_ctx = smtplib.SMTP(config['smtp_server'], smtp_port, timeout=15)
+
+            with server_ctx as server:
+                if smtp_port in [587, 25]:
+                    server.ehlo()
                     server.starttls()
-                server.login(config['email_username'], config['email_password'])
+                    server.ehlo()
+                if config.get('email_username') and config.get('email_password'):
+                    server.login(config['email_username'], config['email_password'])
                 server.send_message(message)
                 logger.info(f"Email notification sent successfully")
                 self._log_to_system("INFO", f"Email notification sent successfully for {event_type} event")
@@ -632,11 +664,11 @@ class NotificationService:
         try:
             # Log test start
             self._log_to_system("INFO", f"Testing {config['service_type']} notification configuration")
-            
-            # Use the full send_notification flow to properly create and track the event
-            result = await self.send_notification(
-                event_type="TEST",
-                event_data={
+
+            # Test ONLY the provided config (even if disabled), not all enabled services.
+            event = {
+                'event_type': 'TEST',
+                'event_data': {
                     "title": "Test Notification",
                     "message": "This is a test notification from PR-Agent Dashboard",
                     "service_type": config['service_type'],
@@ -644,10 +676,23 @@ class NotificationService:
                     "repository": "test/repository",
                     "status": "success"
                 },
-                repositories=["test/repository"]
-            )
-            
-            return result
+                'repositories': ["test/repository"],
+                'timestamp': datetime.utcnow().isoformat()
+            }
+
+            service_type = self._normalize_service_type(config.get('service_type'))
+            cfg = dict(config)
+            cfg['service_type'] = service_type
+
+            if service_type == 'TEAMS':
+                return await self._send_teams_notification(cfg, event)
+            if service_type == 'SLACK':
+                return await self._send_slack_notification(cfg, event)
+            if service_type == 'EMAIL':
+                return await self._send_email_notification(cfg, event)
+
+            logger.error(f"Unsupported notification service type for test: {service_type}")
+            return False
         except Exception as e:
             logger.error(f"Test notification failed: {e}")
             self._log_to_system("ERROR", f"Test notification failed: {str(e)}")

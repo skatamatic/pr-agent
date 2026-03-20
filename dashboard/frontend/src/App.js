@@ -136,7 +136,8 @@ function Dashboard() {
       window.dispatchEvent(new CustomEvent('operationUpdate', { detail: operationData }));
       
       setOperations(prevOperations => {
-        const existingIndex = prevOperations.findIndex(op => op.id === operationData.id);
+        const incomingId = operationData.operation_id || operationData.id;
+        const existingIndex = prevOperations.findIndex(op => (op.operation_id || op.id) === incomingId);
         if (existingIndex >= 0) {
           // Update existing operation
           const newOperations = [...prevOperations];

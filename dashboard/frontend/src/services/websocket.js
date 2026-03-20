@@ -133,11 +133,10 @@ class WebSocketService {
         this.emit('log', data);
         break;
       case 'logs_batch':
-        // Handle batch logs - emit individual log events for each log
+        // Handle batch logs - emit full log payload for each entry
         if (data && Array.isArray(data)) {
           data.forEach(logInfo => {
-            // Emit a log event for each log in the batch
-            this.emit('log', { id: logInfo.id, message: logInfo.message });
+            this.emit('log', logInfo);
           });
         }
         break;

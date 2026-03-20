@@ -224,6 +224,7 @@ const RepositoryManager = () => {
     error: null,
   });
   const repoActionPollTimeoutRef = useRef(null);
+  const lastRepoTabAutoLoadKeyRef = useRef('');
 
   const fetchRepositories = useCallback(async () => {
     try {
@@ -1264,6 +1265,42 @@ const RepositoryManager = () => {
     }));
   };
 
+  // Ensure tab panels auto-load their data when shown.
+  useEffect(() => {
+    if (!expandedRepo) return;
+    const repo = repositories.find(r => r.id === expandedRepo);
+    if (!repo) return;
+
+    const activeTab = getRepoActiveTab(expandedRepo);
+    const autoLoadKey = `${expandedRepo}:${activeTab}`;
+    if (lastRepoTabAutoLoadKeyRef.current === autoLoadKey) return;
+    lastRepoTabAutoLoadKeyRef.current = autoLoadKey;
+
+    if (activeTab === 'authentication') return;
+    if (getTokenStatus(repo) !== 'configured') return;
+
+    if (activeTab === 'best-practices') {
+      loadBestPractices(expandedRepo, true);
+      return;
+    }
+
+    if (activeTab === 'pr-agent-config') {
+      loadPrAgentConfig(expandedRepo, true);
+      return;
+    }
+
+    if (activeTab === 'github-action-config' && repo.provider === 'github') {
+      loadGithubActionConfig(expandedRepo, true);
+      return;
+    }
+
+    if (activeTab === 'azure-pipeline-config' && repo.provider === 'azure_devops') {
+      loadAzurePipelineConfig(expandedRepo, true);
+      loadSyncStatus(expandedRepo);
+      loadPolicies(expandedRepo);
+    }
+  }, [expandedRepo, repoActiveTabs, repositories]);
+
   const toggleRepositoryActive = async (repoId, currentIsActive) => {
     try {
       const repo = repositories.find((item) => item.id === repoId);
@@ -2132,7 +2169,7 @@ const RepositoryManager = () => {
 
   // Load sync status for Azure DevOps repos when repo list changes
   useEffect(() => {
-    repositories.filter(r => r.provider === 'azure_devops' && r.azure_pat).forEach(r => {
+    repositories.filter(r => r.provider === 'azure_devops' && (r.has_azure_pat || r.azure_pat)).forEach(r => {
       if (!syncStatusData[r.id] && !loadingSyncStatus.has(r.id)) {
         loadSyncStatus(r.id);
       }

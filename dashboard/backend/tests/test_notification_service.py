@@ -153,6 +153,17 @@ class TestSendNotification:
             result = await svc.send_notification("TEST", {"message": "hi"})
         assert result is True
 
+    @pytest.mark.asyncio
+    async def test_send_normalizes_lowercase_service_type(self, mock_db):
+        mock_db.get_notification_configs.return_value = [
+            {"service_type": "teams", "enabled": True, "webhook_url": "https://x", "event_types": ["new_job"]},
+        ]
+        svc = NotificationService(mock_db)
+        with patch.object(svc, "_send_teams_notification", new_callable=AsyncMock, return_value=True) as send_mock:
+            result = await svc.send_notification("NEW_JOB", {"repository": "r"})
+        assert result is True
+        send_mock.assert_awaited_once()
+
 
 class TestNotificationConfigMethods:
     def test_get_notification_configs(self, mock_db):
@@ -171,3 +182,16 @@ class TestNotificationConfigMethods:
         out = svc.save_notification_config({"service_type": "TEAMS", "webhook_url": "https://x"})
         assert out is True
         mock_db.save_notification_config.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_test_notification_config_uses_only_target_config(self, mock_db):
+        svc = NotificationService(mock_db)
+        cfg = {"service_type": "EMAIL", "smtp_server": "smtp.example.com", "smtp_port": 587}
+        with patch.object(svc, "_send_email_notification", new_callable=AsyncMock, return_value=True) as email_mock, \
+             patch.object(svc, "_send_slack_notification", new_callable=AsyncMock, return_value=True) as slack_mock, \
+             patch.object(svc, "_send_teams_notification", new_callable=AsyncMock, return_value=True) as teams_mock:
+            result = await svc.test_notification_config(cfg)
+        assert result is True
+        email_mock.assert_awaited_once()
+        slack_mock.assert_not_called()
+        teams_mock.assert_not_called()

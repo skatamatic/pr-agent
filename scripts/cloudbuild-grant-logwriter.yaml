@@ -1,0 +1,12 @@
+steps:
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        gcloud projects add-iam-policy-binding "nex-ai-fracgpt-dev" \
+          --member="serviceAccount:fracgpt-cicd-sa@nex-ai-fracgpt-dev.iam.gserviceaccount.com" \
+          --role="roles/logging.logWriter"
+options:
+  logging: NONE
