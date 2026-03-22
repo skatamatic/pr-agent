@@ -8,7 +8,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Dict, List, Optional, Any
 from models import NotificationConfig, NotificationEvent
-from config import settings
+from config import settings, internal_log_ingest_headers
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +230,12 @@ class NotificationService:
             # Send directly to dashboard backend - this will also broadcast via WebSocket
             try:
                 backend_url = getattr(settings, 'backend_base_url', 'http://localhost:8000')
-                requests.post(f'{backend_url.rstrip("/")}/logs/immediate', json=log_data, timeout=1)
+                requests.post(
+                    f'{backend_url.rstrip("/")}/logs/immediate',
+                    json=log_data,
+                    headers=internal_log_ingest_headers(),
+                    timeout=1,
+                )
             except:
                 pass  # Don't fail if dashboard is not available
             

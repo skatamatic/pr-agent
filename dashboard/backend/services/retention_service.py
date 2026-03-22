@@ -305,9 +305,14 @@ class RetentionService:
             
             # Send directly to dashboard backend
             try:
-                from config import settings
+                from config import settings, internal_log_ingest_headers
                 backend_url = getattr(settings, 'backend_base_url', 'http://localhost:8000')
-                requests.post(f'{backend_url.rstrip("/")}/logs/immediate', json=log_data, timeout=2)
+                requests.post(
+                    f'{backend_url.rstrip("/")}/logs/immediate',
+                    json=log_data,
+                    headers=internal_log_ingest_headers(),
+                    timeout=2,
+                )
             except Exception:
                 # If dashboard is not available, log normally - but don't fail
                 try:

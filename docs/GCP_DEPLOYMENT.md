@@ -328,3 +328,40 @@ Pushes to the environment's branch that modify `dashboard/**`, `terraform/gcp/**
 ```
 https://console.cloud.google.com/cloud-build/builds?project=YOUR_PROJECT_ID
 ```
+
+## 11. Troubleshooting: dashboard logs not appearing
+
+PR-Agent sends logs to the dashboard with `POST /logs/immediate` and `POST /logs/batch` using:
+
+- **`DASHBOARD_URL`** – backend base URL (no trailing slash issues; client normalizes).
+- **`DASHBOARD_API_KEY`** – sent as `Authorization: Bearer <key>` (must match the backend’s `DASHBOARD_API_KEY`).
+
+### What to check in Cloud Logging (backend)
+
+Run (replace project and service name; backend is often `*-backend`):
+
+```bash
+gcloud logging read \
+  'resource.type="cloud_run_revision" AND resource.labels.service_name="YOUR_PREFIX-backend" AND (textPayload:"/logs/" OR jsonPayload.message:"/logs/" OR httpRequest.requestUrl:"logs")' \
+  --project=YOUR_PROJECT_ID --limit=50 --format=json
+```
+
+Look for:
+
+| Symptom | Likely cause |
+|--------|----------------|
+| **401** on `/logs/immediate` or `/logs/batch` | Runner `DASHBOARD_API_KEY` missing or does not match Cloud Run env / Secret |
+| **500** with `Failed to process immediate log` or `_handle_log_operation` | Fixed in code: log insert must use the persistence queue helper (deploy latest backend) |
+| **No POST /logs at all** | PR-Agent not configured: `DASHBOARD_URL` unset on runner, or dashboard sink disabled |
+
+### Runner / pipeline
+
+On the VM or in pipeline variables, confirm:
+
+```bash
+echo "$DASHBOARD_URL"
+# Optional: do not print the key in shared logs; only verify it is set
+test -n "$DASHBOARD_API_KEY" && echo "DASHBOARD_API_KEY is set"
+```
+
+See also [RUNNER_VM_AND_PR_AGENT_FLOW.md](RUNNER_VM_AND_PR_AGENT_FLOW.md) for where `DASHBOARD_URL` is written for cloud runners.

@@ -12,12 +12,33 @@ class WebSocketService {
     this.lastPingTime = null;
   }
 
+  buildAuthenticatedWebSocketUrl(rawUrl) {
+    if (typeof localStorage === 'undefined') return rawUrl;
+    const token = localStorage.getItem('auth_token');
+    if (!token) return rawUrl;
+
+    try {
+      const parsed = new URL(rawUrl);
+      if (!parsed.searchParams.get('token') && !parsed.searchParams.get('access_token')) {
+        parsed.searchParams.set('token', token);
+      }
+      return parsed.toString();
+    } catch (_) {
+      // Fallback for any unexpected URL parsing edge-case.
+      const hasQuery = rawUrl.includes('?');
+      const hasToken = rawUrl.includes('token=');
+      if (hasToken) return rawUrl;
+      return `${rawUrl}${hasQuery ? '&' : '?'}token=${encodeURIComponent(token)}`;
+    }
+  }
+
   connect(url) {
     // REACT_APP_WS_URL or derive from REACT_APP_API_URL (http->ws, https->wss, then append /ws)
-    const base = url || process.env.REACT_APP_WS_URL || (() => {
+    const baseUrl = url || process.env.REACT_APP_WS_URL || (() => {
       const api = process.env.REACT_APP_API_URL || 'http://localhost:8000';
       return api.replace(/^http/, 'ws').replace(/\/?$/, '') + '/ws';
     })();
+    const base = this.buildAuthenticatedWebSocketUrl(baseUrl);
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       return Promise.resolve();
     }

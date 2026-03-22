@@ -19,7 +19,7 @@ from uuid import uuid4
 import aiohttp
 
 # Import configuration and database
-from config import settings
+from config import settings, internal_log_ingest_headers
 from models import get_db, APIResponse, ConfigUpdate, Repository, RepositoryCreate, RepositoryUpdate, RepositoryDB, OperationDB, UserDB, User, UserLogin, ChangePassword, ProvisionRunnerRequest
 from websocket_manager import WebSocketManager
 
@@ -44,6 +44,18 @@ logging.basicConfig(
     format=settings.log_format
 )
 logger = logging.getLogger(__name__)
+
+# Log payload keys that may carry AI metrics; POST /logs/* uses this to call MetricsService.
+# Align with metrics_service.update_metrics_from_operation (incl. multi-model fields).
+LOG_INGEST_METRICS_KEYS = frozenset({
+    "model_used",
+    "input_tokens",
+    "output_tokens",
+    "estimated_dev_hours_saved",
+    "total_input_tokens",
+    "total_output_tokens",
+    "ai_models_used",
+})
 
 # Ensure repository root is importable when backend is launched from dashboard/backend
 # and when packaged in a container at /app.
@@ -185,12 +197,59 @@ class DashboardApplication:
                 return
             if current_user:
                 return
+            if not api_key:
+                detail = "Authentication required (user JWT). Set DASHBOARD_API_KEY for machine ingest."
+            else:
+                detail = "Authentication required (Bearer token or API key)"
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required (Bearer token or API key)",
+                detail=detail,
                 headers={"WWW-Authenticate": "Bearer"},
             )
         return require_auth_or_api_key
+
+    def _extract_bearer_token(self, authorization_value: str) -> str:
+        """Extract bearer token from Authorization header value."""
+        value = (authorization_value or "").strip()
+        if not value:
+            return ""
+        if value.lower().startswith("bearer "):
+            return value[7:].strip()
+        return value
+
+    def _authenticate_websocket(self, websocket: WebSocket) -> bool:
+        """
+        Authenticate websocket using either:
+        - dashboard API key (Bearer token or query parameter)
+        - user JWT (Bearer token or query parameter)
+        """
+        auth_header = websocket.headers.get("authorization", "")
+        header_token = self._extract_bearer_token(auth_header)
+        query_token = (
+            websocket.query_params.get("token")
+            or websocket.query_params.get("access_token")
+            or websocket.query_params.get("api_key")
+            or ""
+        ).strip()
+        auth_token = header_token or query_token
+        if not auth_token:
+            return False
+
+        api_key = (getattr(settings, "dashboard_api_key", "") or "").strip()
+        if api_key and auth_token == api_key:
+            return True
+
+        payload = self.auth_service.verify_token(auth_token)
+        if not payload:
+            return False
+
+        user_id = payload.get("user_id")
+        if not user_id:
+            return False
+
+        with SessionLocal() as db:
+            user = self.auth_service.get_user_by_id(db, user_id)
+            return bool(user and user.is_active)
     
     def check_maintenance_mode_dependency(self):
         """Create a dependency that checks for maintenance mode"""
@@ -1824,7 +1883,7 @@ class DashboardApplication:
                     await self.operation_service.update_operation_status(db, log_data)
                 
                 # Extract and update metrics if present
-                if any(key in log_data for key in ['model_used', 'input_tokens', 'output_tokens', 'estimated_dev_hours_saved']):
+                if any(key in log_data for key in LOG_INGEST_METRICS_KEYS):
                     await self.metrics_service.update_metrics_from_operation(db, log_data)
                 
                 # Broadcast to WebSocket clients
@@ -1905,7 +1964,7 @@ class DashboardApplication:
                         await self.operation_service.update_operation_status(db, log_data)
                 
                     # Extract and update metrics if present
-                    if any(key in log_data for key in ['model_used', 'input_tokens', 'output_tokens', 'estimated_dev_hours_saved']):
+                    if any(key in log_data for key in LOG_INGEST_METRICS_KEYS):
                         await self.metrics_service.update_metrics_from_operation(db, log_data)
                 
                 # Broadcast FULL log data to WebSocket clients
@@ -5860,7 +5919,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.post("/api/admin/database/export")
-        async def export_data(request_data: dict):
+        async def export_data(request_data: dict, current_user: UserDB = Depends(require_auth)):
             """Export database data for download"""
             try:
                 format_type = request_data.get("format", "json")
@@ -5884,7 +5943,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.delete("/api/admin/database/backups/{filename}")
-        async def delete_backup(filename: str):
+        async def delete_backup(filename: str, current_user: UserDB = Depends(require_auth)):
             """Delete a specific backup file"""
             try:
                 result = self.retention_service.delete_backup(filename)
@@ -5897,7 +5956,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
         
         @self.app.delete("/api/admin/database/backups")
-        async def delete_all_backups():
+        async def delete_all_backups(current_user: UserDB = Depends(require_auth)):
             """Delete all backup files"""
             try:
                 result = self.retention_service.delete_all_backups()
@@ -5910,7 +5969,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.post("/api/admin/database/backups/{filename}/restore")
-        async def restore_backup(filename: str):
+        async def restore_backup(filename: str, current_user: UserDB = Depends(require_auth)):
             """Restore database from a backup file with progress updates"""
             import asyncio
             import concurrent.futures
@@ -5968,7 +6027,10 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.get("/api/admin/timezone/validate")
-        async def validate_timezone_storage(db: Session = Depends(get_db)):
+        async def validate_timezone_storage(
+            db: Session = Depends(get_db),
+            current_user: UserDB = Depends(require_auth)
+        ):
             """Validate that database timestamps are properly stored in UTC"""
             try:
                 from models import JobDB, OperationDB, LogEntryDB
@@ -6181,6 +6243,10 @@ This file can override any setting from the global PR-Agent configuration, inclu
             logger.debug(f"WebSocket headers: {dict(websocket.headers)}")
             
             try:
+                if not self._authenticate_websocket(websocket):
+                    logger.warning(f"WebSocket authentication failed: {client_info}")
+                    await websocket.close(code=1008, reason="Authentication required")
+                    return
                 await self.websocket_manager.connect(websocket)
                 logger.info(f"WebSocket connected successfully: {client_info}")
                 
@@ -6210,9 +6276,10 @@ This file can override any setting from the global PR-Agent configuration, inclu
     
     def _setup_developer_routes(self):
         """Setup developer-only routes (Interface Segregation Principle)"""
+        require_auth = self.require_auth_dependency()
         
         @self.app.post("/api/dev/generate-test-data")
-        async def generate_test_data(db: Session = Depends(get_db)):
+        async def generate_test_data(db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             from test_data import generate_test_data
             result = await generate_test_data()
             
@@ -6228,7 +6295,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=result["message"])
         
         @self.app.post("/api/dev/simulate-activity")
-        async def simulate_activity():
+        async def simulate_activity(current_user: UserDB = Depends(require_auth)):
             from test_data import simulate_live_activity
             result = await simulate_live_activity()
             
@@ -6238,7 +6305,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=result["message"])
         
         @self.app.post("/api/dev/fail-activity")
-        async def fail_activity(request_data: dict):
+        async def fail_activity(request_data: dict, current_user: UserDB = Depends(require_auth)):
             from test_data import fail_live_activity
             operation_id = request_data.get("operation_id")
             if not operation_id:
@@ -6252,7 +6319,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=result["message"])
         
         @self.app.post("/api/dev/succeed-activity")
-        async def succeed_activity(request_data: dict):
+        async def succeed_activity(request_data: dict, current_user: UserDB = Depends(require_auth)):
             from test_data import succeed_live_activity
             operation_id = request_data.get("operation_id")
             if not operation_id:
@@ -6266,7 +6333,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=result["message"])
         
         @self.app.post("/api/dev/trigger-error")
-        async def trigger_error():
+        async def trigger_error(current_user: UserDB = Depends(require_auth)):
             from test_data import trigger_test_error
             result = await trigger_test_error()
             
@@ -6276,7 +6343,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 raise HTTPException(status_code=500, detail=result["message"])
         
         @self.app.post("/api/dev/clear-data")
-        async def clear_data():
+        async def clear_data(current_user: UserDB = Depends(require_auth)):
             # Clear cache data first
             await self.cached_job_service.clear_all_data()
             
@@ -6291,7 +6358,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
         
 
         @self.app.post("/api/dev/test-system-logs")
-        async def test_system_logs():
+        async def test_system_logs(current_user: UserDB = Depends(require_auth)):
             """Test system logging functionality for debugging"""
             try:
                 # Test retention system logging
@@ -6318,7 +6385,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 return APIResponse(data={"success": False, "error": str(e)}, message="System log tests failed")
         
         @self.app.post("/api/dev/generate-ai-metrics")
-        async def generate_ai_metrics():
+        async def generate_ai_metrics(current_user: UserDB = Depends(require_auth)):
             """Generate sample AI metrics data for testing"""
             try:
                 from test_data import generate_ai_metrics_data
@@ -6337,7 +6404,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 return APIResponse(data={"status": "error", "error": str(e)}, message="AI metrics generation failed")
 
         @self.app.get("/api/dev/stale-jobs")
-        async def check_stale_jobs():
+        async def check_stale_jobs(current_user: UserDB = Depends(require_auth)):
             """Check for jobs that would be considered stale by the timeout monitor"""
             try:
                 from datetime import datetime, timedelta
@@ -6387,7 +6454,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 return APIResponse(data={"error": str(e)}, message="Failed to check stale jobs")
 
         @self.app.post("/api/dev/force-timeout-check")
-        async def force_timeout_check():
+        async def force_timeout_check(current_user: UserDB = Depends(require_auth)):
             """Manually trigger the job timeout check for testing"""
             try:
                 from datetime import datetime, timedelta
@@ -6460,7 +6527,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 return APIResponse(data={"error": str(e)}, message="Failed to force timeout check")
 
         @self.app.get("/api/dev/scheduled-jobs/status")
-        async def get_scheduled_jobs_status():
+        async def get_scheduled_jobs_status(current_user: UserDB = Depends(require_auth)):
             """Get the status of all background scheduled jobs"""
             try:
                 from datetime import datetime
@@ -6612,7 +6679,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 return APIResponse(data={"error": str(e), "services": {}, "timestamp": utcnow_aware().isoformat()}, message="Failed to get scheduled jobs status")
 
         @self.app.get("/api/dev/scheduled-jobs/simple-status")
-        async def get_simple_scheduled_jobs_status():
+        async def get_simple_scheduled_jobs_status(current_user: UserDB = Depends(require_auth)):
             """Get a simple status of scheduled jobs for debugging"""
             try:
                 from datetime import datetime
@@ -6667,7 +6734,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 return APIResponse(data={"error": str(e)}, message="Failed to get simple scheduled jobs status")
 
         @self.app.post("/api/dev/scheduled-jobs/trigger/{service_name}")
-        async def trigger_scheduled_job(service_name: str):
+        async def trigger_scheduled_job(service_name: str, current_user: UserDB = Depends(require_auth)):
             """Manually trigger a specific scheduled job"""
             try:
                 result = {"service": service_name, "triggered": False, "message": ""}
@@ -7408,7 +7475,12 @@ This file can override any setting from the global PR-Agent configuration, inclu
             # Send directly to dashboard backend (self-logging)
             try:
                 backend_url = getattr(settings, 'backend_base_url', 'http://localhost:8000')
-                requests.post(f'{backend_url.rstrip("/")}/logs/immediate', json=log_data, timeout=1)
+                requests.post(
+                    f'{backend_url.rstrip("/")}/logs/immediate',
+                    json=log_data,
+                    headers=internal_log_ingest_headers(),
+                    timeout=1,
+                )
             except Exception:
                 # If dashboard is not available yet, just use standard logging
                 try:

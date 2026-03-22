@@ -7,7 +7,7 @@ import toml
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Any, Optional
-from config import settings
+from config import settings, internal_log_ingest_headers
 import asyncio
 import logging
 import json
@@ -125,7 +125,12 @@ class HealthService:
             # Send directly to dashboard backend
             try:
                 backend_url = getattr(settings, 'backend_base_url', 'http://localhost:8000')
-                requests.post(f'{backend_url.rstrip("/")}/logs/immediate', json=log_data, timeout=2)
+                requests.post(
+                    f'{backend_url.rstrip("/")}/logs/immediate',
+                    json=log_data,
+                    headers=internal_log_ingest_headers(),
+                    timeout=2,
+                )
             except Exception:
                 # If dashboard is not available, log normally - but don't fail
                 try:

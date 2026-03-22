@@ -1198,7 +1198,8 @@ class RobustCacheService:
         db = SessionLocal()
         try:
             # Persist immediately so PostgreSQL assigns a safe primary key.
-            log_id = await self._handle_log_operation(db, 'insert', log_data, key=None)
+            # Log insert helpers live on AsyncPersistenceQueue (shared with queued writes).
+            log_id = await self.persistence_queue._handle_log_operation(db, 'insert', log_data, key=None)
             db.commit()
             
             if log_id is None:
@@ -1287,7 +1288,12 @@ class RobustCacheService:
                     matches = False
                     
                 for key, value in filters.items():
-                    if key in log_data and log_data[key] != value:
+                    if key == "repository" and value is not None:
+                        lr = log_data.get("repository") or log_data.get("repo")
+                        if lr != value:
+                            matches = False
+                            break
+                    elif key in log_data and log_data[key] != value:
                         matches = False
                         break
                         
@@ -1315,7 +1321,10 @@ class RobustCacheService:
                     query = query.filter(LogEntryDB.operation_id == operation_id)
                     
                 for key, value in filters.items():
-                    if hasattr(LogEntryDB, key):
+                    # Model column is `repo`; API / filters use `repository`.
+                    if key == "repository" and value is not None:
+                        query = query.filter(LogEntryDB.repo == value)
+                    elif hasattr(LogEntryDB, key):
                         query = query.filter(getattr(LogEntryDB, key) == value)
                         
                 logs = query.order_by(LogEntryDB.timestamp.desc()).limit(limit * 2).all()

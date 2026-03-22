@@ -27,6 +27,7 @@ Tests use **in-memory SQLite** (`DATABASE_URL=sqlite:///:memory:` set in `confte
 | **Cron (GCP)** | test_cron_api | `/api/cron/run-cleanup`, `/api/cron/run-job-timeout` – 401 without/wrong secret, 200 with X-Cron-Secret or Bearer |
 | **Operations & jobs** | test_operations_jobs_api | List jobs, get job 404, list operations (auth), get operation 404, job operations, POST jobs/create, job status, operations create, operation status, deletion preview, delete job |
 | **Logs** | test_logs_api | GET logs (list, by job, by operation), POST `/logs/immediate`, POST `/logs/batch` |
+| **Internal log ingest auth** | test_internal_log_ingest_headers | `internal_log_ingest_headers()` (Bearer when `DASHBOARD_API_KEY` set); POST `/logs/immediate` & `/logs/batch` with those headers |
 | **Metrics** | test_metrics_api | Summary, config, recalculate, operations/repositories breakdown |
 | **Config** | test_config_api, test_config | GET/POST config, pr-agent-path, validate path; CORS/port/database_url from env |
 | **Repositories** | test_repositories_api | List, names, create (minimal), get 404, health |

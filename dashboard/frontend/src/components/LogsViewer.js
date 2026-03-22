@@ -218,8 +218,8 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     return localDate.toISOString();
   };
 
-  // Sort logs in reverse chronological order and filter
-  const filteredLogs = logs
+  // Sort logs in reverse chronological order and filter (copy first — sort() mutates arrays)
+  const filteredLogs = [...logs]
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
     .filter(log => {
       const matchesSearch = !searchTerm || 
@@ -323,7 +323,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
 
   // Export logs as CSV
   const exportLogsToCSV = (useFilteredLogs = true) => {
-    const logsToExport = useFilteredLogs ? filteredLogs : logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    const logsToExport = useFilteredLogs ? filteredLogs : [...logs].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     
     // CSV headers
     const headers = [

@@ -1,5 +1,7 @@
 import os
 from pathlib import Path
+from typing import Dict
+
 from dynaconf import Dynaconf
 
 # Initialize Dynaconf with settings.toml
@@ -58,6 +60,27 @@ if _cors_env:
 # Optional API key for PR-Agent / programmatic access (env: DASHBOARD_API_KEY). If set, Bearer token can be this key instead of user JWT.
 if not hasattr(settings, 'dashboard_api_key'):
     settings.dashboard_api_key = os.getenv("DASHBOARD_API_KEY", "").strip() or ""
+
+
+def internal_log_ingest_headers() -> Dict[str, str]:
+    """
+    Authorization header dict for same-process HTTP calls to POST /logs/immediate|/logs/batch.
+
+    When DASHBOARD_API_KEY is set, those routes require Bearer auth; without this, server-side
+    self-logging would get 401 and silently skip persisting (requests does not raise on 4xx).
+
+    Returns a new dict each call (safe to pass to requests / httpx). Empty key or whitespace-only
+    yields {} so callers rely on JWT-only behavior when no machine key is configured.
+    """
+    raw = getattr(settings, "dashboard_api_key", None)
+    if raw is None:
+        key = ""
+    else:
+        key = str(raw).strip()
+    if key:
+        return {"Authorization": f"Bearer {key}"}
+    return {}
+
 
 # Base URLs for internal callbacks and frontend links (env: DASHBOARD_BACKEND_BASE_URL, DASHBOARD_FRONTEND_BASE_URL)
 if not hasattr(settings, 'backend_base_url'):
