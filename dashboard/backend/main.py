@@ -1,5 +1,7 @@
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -45,8 +47,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Log payload keys that may carry AI metrics; POST /logs/* uses this to call MetricsService.
-# Align with metrics_service.update_metrics_from_operation (incl. multi-model fields).
+# Log payload keys that may carry AI metrics; when present we recalculate aggregates from OperationDB
+# (no incremental aggregate bumps from log lines — keeps MetricsAggregateDB consistent with operations).
 LOG_INGEST_METRICS_KEYS = frozenset({
     "model_used",
     "input_tokens",
@@ -131,6 +133,30 @@ class DashboardApplication:
     
     def _setup_middleware(self):
         """Configure CORS and other middleware"""
+        max_body = int(getattr(settings, "max_log_ingest_body_bytes", 5 * 1024 * 1024) or 5 * 1024 * 1024)
+
+        class LogIngestBodyLimitMiddleware(BaseHTTPMiddleware):
+            """
+            Reject oversized bodies when Content-Length is set (typical for PR-Agent clients).
+            Chunked requests without Content-Length are not pre-checked; rely on batch entry
+            limits and reverse-proxy max body settings in production.
+            """
+            async def dispatch(self, request, call_next):
+                if request.method == "POST" and request.url.path in ("/logs/batch", "/logs/immediate"):
+                    cl = request.headers.get("content-length")
+                    if cl:
+                        try:
+                            n = int(cl)
+                        except ValueError:
+                            n = 0
+                        if n > max_body:
+                            return JSONResponse(
+                                status_code=413,
+                                content={"detail": f"Request body exceeds maximum of {max_body} bytes"},
+                            )
+                return await call_next(request)
+
+        self.app.add_middleware(LogIngestBodyLimitMiddleware)
         self.app.add_middleware(
             CORSMiddleware,
             allow_origins=settings.cors_origins,
@@ -1834,6 +1860,7 @@ class DashboardApplication:
             repo: Optional[str] = None,
             job_id: Optional[str] = None,
             operation_id: Optional[str] = None,
+            offset: int = 0,
             db: Session = Depends(get_db),
             request: Request = None,
             current_user: UserDB = Depends(require_auth),
@@ -1844,7 +1871,9 @@ class DashboardApplication:
                 level=level,
                 job_id=job_id,
                 operation_id=operation_id,
-                repository=repo
+                repository=repo,
+                search=search,
+                offset=offset,
             )
             return APIResponse(data={"logs": logs}, message=f"Retrieved {len(logs)} logs")
         
@@ -1882,9 +1911,12 @@ class DashboardApplication:
                 if log_data.get('status'):
                     await self.operation_service.update_operation_status(db, log_data)
                 
-                # Extract and update metrics if present
+                # Keep MetricsAggregateDB aligned with OperationDB (no per-line aggregate bumps)
                 if any(key in log_data for key in LOG_INGEST_METRICS_KEYS):
-                    await self.metrics_service.update_metrics_from_operation(db, log_data)
+                    try:
+                        await self.metrics_service.recalculate_metrics_from_operations(db)
+                    except Exception as me:
+                        logger.error(f"Metrics recalculation after immediate log ingest failed: {me}")
                 
                 # Broadcast to WebSocket clients
                 await self.websocket_manager.broadcast({
@@ -1910,6 +1942,8 @@ class DashboardApplication:
                 
                 return {"status": "received", "id": log_id}
                 
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.error(f"Failed to process immediate log: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to process log: {str(e)}")
@@ -1918,28 +1952,23 @@ class DashboardApplication:
         async def receive_batch_logs(batch_data: dict, db: Session = Depends(get_db), _: None = Depends(require_auth_or_api_key)):
             try:
                 logs = batch_data.get('logs', [])
+                if not isinstance(logs, list):
+                    raise HTTPException(status_code=400, detail="logs must be a JSON array")
+                max_entries = int(getattr(settings, "max_log_batch_entries", 1000) or 1000)
+                if len(logs) > max_entries:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Batch exceeds maximum of {max_entries} log entries",
+                    )
                 received_log_ids = []
                 broadcast_logs = []
-                
-                # Process each log using robust cached job service
-                for log_data in logs:
+
+                # Single transaction: all logs persist or none (see create_log_entries_batch)
+                log_ids = await self.cached_job_service.create_log_entries_batch(logs)
+                for i, log_data in enumerate(logs):
+                    log_id = log_ids[i]
                     repo_value = log_data.get('repository') or log_data.get('repo')
-                    log_id = await self.cached_job_service.create_log_entry(
-                        level=log_data.get('level', 'INFO'),
-                        message=log_data.get('message', ''),
-                        source=log_data.get('source') or log_data.get('module', 'unknown'),
-                        job_id=log_data.get('job_id'),
-                        operation_id=log_data.get('operation_id'),
-                        repository=repo_value,
-                        status=log_data.get('status'),
-                        module=log_data.get('module'),
-                        function=log_data.get('function'),
-                        severity="high" if log_data.get('level') in ["ERROR", "CRITICAL"] else "normal",
-                        artifacts=log_data.get('artifacts')  # Add artifacts support
-                    )
                     received_log_ids.append({'id': log_id, 'message': log_data.get('message', '')})
-                    
-                    # Build full log data for broadcast
                     broadcast_logs.append({
                         "id": log_id,
                         "timestamp": log_data.get('timestamp'),
@@ -1963,19 +1992,26 @@ class DashboardApplication:
                     if log_data.get('status'):
                         await self.operation_service.update_operation_status(db, log_data)
                 
-                    # Extract and update metrics if present
-                    if any(key in log_data for key in LOG_INGEST_METRICS_KEYS):
-                        await self.metrics_service.update_metrics_from_operation(db, log_data)
+                any_metrics = any(
+                    any(key in (ld or {}) for key in LOG_INGEST_METRICS_KEYS) for ld in logs
+                )
+                if any_metrics:
+                    try:
+                        await self.metrics_service.recalculate_metrics_from_operations(db)
+                    except Exception as me:
+                        logger.error(f"Metrics recalculation after batch log ingest failed: {me}")
                 
-                # Broadcast FULL log data to WebSocket clients
-                for log_broadcast in broadcast_logs:
+                # Single WebSocket message for the whole batch (client fans out to per-log handlers)
+                if broadcast_logs:
                     await self.websocket_manager.broadcast({
-                            "type": "log",
-                            "data": log_broadcast
+                        "type": "logs_batch",
+                        "data": broadcast_logs,
                     })
                 
                 return {"status": "received", "count": len(received_log_ids)}
                 
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.error(f"Failed to process batch logs: {e}")
                 raise HTTPException(status_code=500, detail="Failed to process logs")

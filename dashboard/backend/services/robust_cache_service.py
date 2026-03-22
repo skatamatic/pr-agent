@@ -1220,32 +1220,83 @@ class RobustCacheService:
             raise
         finally:
             db.close()
+
+    async def create_logs_batch(self, log_entries: List[Dict[str, Any]]) -> List[int]:
+        """
+        Insert multiple logs in a single DB transaction (all-or-nothing), then update cache/indexes.
+
+        Used by POST /logs/batch so partial persistence + 500 cannot occur mid-batch.
+        """
+        if not log_entries:
+            return []
+        from database import SessionLocal
+
+        db = SessionLocal()
+        ids: List[int] = []
+        try:
+            for log_data in log_entries:
+                log_id = await self.persistence_queue._handle_log_operation(
+                    db, "insert", log_data, key=None
+                )
+                if log_id is None:
+                    raise RuntimeError("Database did not return a log ID")
+                ids.append(log_id)
+            db.commit()
+
+            for i, log_id in enumerate(ids):
+                cached_log = log_entries[i].copy()
+                cached_log["id"] = log_id
+                entry = CacheEntry(data=cached_log)
+                await self.logs_cache.put(str(log_id), entry)
+                await self._update_log_indexes(log_id, cached_log)
+                logger.debug(f"Log {log_id} persisted (batch) and cached")
+
+            return ids
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
         
     async def get_logs(self, limit: int = 1000, level: str = None, job_id: str = None,
-                      operation_id: str = None, **filters) -> List[Dict[str, Any]]:
-        """Get logs with cache-through pattern"""
-        # Get cache results
-        cache_results = await self._get_logs_from_cache(limit, level, job_id, operation_id, **filters)
-        
-        # Get database results to ensure completeness
-        db_results = await self._get_logs_from_db(limit, level, job_id, operation_id, **filters)
-        
-        # Merge and deduplicate by log ID
+                      operation_id: str = None, search: str = None, offset: int = 0, **filters) -> List[Dict[str, Any]]:
+        """Get logs with cache-through pattern. Optional search (substring) and offset for pagination."""
+        off = max(0, int(offset or 0))
+        lim = max(1, min(50000, int(limit or 1000)))
+        # Fetch enough rows to apply offset after merge/sort/search
+        internal_limit = min(50000, off + lim)
+
+        cache_results = await self._get_logs_from_cache(
+            internal_limit, level, job_id, operation_id, search=search, **filters
+        )
+
+        db_results = await self._get_logs_from_db(
+            internal_limit, level, job_id, operation_id, search=search, **filters
+        )
+
         cache_log_ids = {log['id'] for log in cache_results}
         merged_results = cache_results.copy()
-        
+
         for db_log in db_results:
             if db_log['id'] not in cache_log_ids:
                 merged_results.append(db_log)
-                # Only cache recent logs to avoid memory bloat
                 if self._is_recent_log(db_log):
                     entry = CacheEntry(data=db_log, dirty=False)
                     await self.logs_cache.put(str(db_log['id']), entry)
                     await self._update_log_indexes(db_log['id'], db_log)
-                    
-        # Sort by timestamp (newest first) and limit
+
         merged_results.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
-        return merged_results[:limit]
+
+        if search and str(search).strip():
+            s = str(search).strip().lower()
+            merged_results = [
+                x for x in merged_results
+                if s in (x.get('message') or '').lower()
+                or s in (x.get('module') or '').lower()
+                or s in (x.get('source') or '').lower()
+            ]
+
+        return merged_results[off : off + lim]
         
     def _is_recent_log(self, log_data: Dict[str, Any]) -> bool:
         """Check if log is recent enough to cache"""
@@ -1259,7 +1310,7 @@ class RobustCacheService:
         return False
         
     async def _get_logs_from_cache(self, limit: int, level: str = None, job_id: str = None,
-                                 operation_id: str = None, **filters) -> List[Dict[str, Any]]:
+                                 operation_id: str = None, search: str = None, **filters) -> List[Dict[str, Any]]:
         """Get logs from cache only"""
         candidate_ids = set()
         
@@ -1286,6 +1337,11 @@ class RobustCacheService:
                     matches = False
                 if operation_id and log_data.get('operation_id') != operation_id:
                     matches = False
+                if search and str(search).strip():
+                    s = str(search).strip().lower()
+                    hay = f"{log_data.get('message') or ''} {log_data.get('module') or ''} {log_data.get('source') or ''}".lower()
+                    if s not in hay:
+                        matches = False
                     
                 for key, value in filters.items():
                     if key == "repository" and value is not None:
@@ -1300,14 +1356,16 @@ class RobustCacheService:
                 if matches:
                     results.append(log_data.copy())
                     
-        return results
+        results.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        return results[:limit]
         
     async def _get_logs_from_db(self, limit: int, level: str = None, job_id: str = None,
-                              operation_id: str = None, **filters) -> List[Dict[str, Any]]:
+                              operation_id: str = None, search: str = None, **filters) -> List[Dict[str, Any]]:
         """Get logs from database only"""
         try:
             from database import SessionLocal
             from models import LogEntryDB
+            from sqlalchemy import or_
             
             db = SessionLocal()
             try:
@@ -1319,6 +1377,12 @@ class RobustCacheService:
                     query = query.filter(LogEntryDB.job_id == job_id)
                 if operation_id:
                     query = query.filter(LogEntryDB.operation_id == operation_id)
+                if search and str(search).strip():
+                    term = f"%{str(search).strip()}%"
+                    query = query.filter(or_(
+                        LogEntryDB.message.ilike(term),
+                        LogEntryDB.module.ilike(term),
+                    ))
                     
                 for key, value in filters.items():
                     # Model column is `repo`; API / filters use `repository`.

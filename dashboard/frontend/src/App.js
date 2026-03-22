@@ -53,6 +53,15 @@ function Dashboard() {
   const [manualRefreshTrigger, setManualRefreshTrigger] = useState(null);
   const [logFilterId, setLogFilterId] = useState(null);
   const [logFilterType, setLogFilterType] = useState(null);
+  const logFilterIdRef = useRef(null);
+  const logFilterTypeRef = useRef(null);
+  useEffect(() => {
+    logFilterIdRef.current = logFilterId;
+    logFilterTypeRef.current = logFilterType;
+  }, [logFilterId, logFilterType]);
+
+  /** Cap in-memory log list; WebSocket + refetch stay responsive */
+  const MAX_LOGS_BUFFER = 8000;
   const [highlightedJobId, setHighlightedJobId] = useState(null);
   const [highlightedOperationId, setHighlightedOperationId] = useState(null);
   const [connectionState, setConnectionState] = useState({
@@ -119,8 +128,15 @@ function Dashboard() {
     };
 
     const handleLogUpdate = (logData) => {
-      // Add logs directly to the logs array for immediate display
-      setLogs(prevLogs => [logData, ...prevLogs]);
+      setLogs((prevLogs) => {
+        const id = logData?.id;
+        let base = prevLogs;
+        if (id != null && prevLogs.some((l) => l.id === id)) {
+          base = prevLogs.filter((l) => l.id !== id);
+        }
+        const merged = [logData, ...base];
+        return merged.length > MAX_LOGS_BUFFER ? merged.slice(0, MAX_LOGS_BUFFER) : merged;
+      });
       
       // Increment new logs badge count only if not currently on logs view
       setActiveTab(currentTab => {
@@ -237,7 +253,15 @@ function Dashboard() {
       }
       
       try {
-        logsRes = await apiService.getLogs({ limit: 10000 });
+        const fid = logFilterIdRef.current;
+        const ftype = logFilterTypeRef.current;
+        if (fid && ftype === 'job') {
+          logsRes = await apiService.getLogsByJob(fid);
+        } else if (fid && ftype === 'operation') {
+          logsRes = await apiService.getLogsByOperation(fid);
+        } else {
+          logsRes = await apiService.getLogs({ limit: 10000 });
+        }
       } catch (error) {
         console.error('Logs API Error:', error);
         handleSystemError(error, 'logs');
@@ -246,7 +270,10 @@ function Dashboard() {
 
       // Check if we got valid data (axios wraps response in .data)
       const newOperations = operationsRes.data?.data?.operations || [];
-      const newLogs = logsRes.data?.data?.logs || [];
+      let newLogs = logsRes.data?.data?.logs || [];
+      if (newLogs.length > MAX_LOGS_BUFFER) {
+        newLogs = newLogs.slice(0, MAX_LOGS_BUFFER);
+      }
 
 
 
@@ -427,19 +454,11 @@ function Dashboard() {
 
   const navigateToLogs = (filterId, filterType = 'operation') => {
     handleTabChange('logs');
-    // Set the filter for the logs view
     setLogFilterId(filterId);
     setLogFilterType(filterType);
-    
-    // Legacy support - trigger event for old components
-    if (filterType === 'operation') {
-      setTimeout(() => {
-        const event = new CustomEvent('filterLogsByOperation', { 
-          detail: { operationId: filterId } 
-        });
-        window.dispatchEvent(event);
-      }, 100);
-    }
+    logFilterIdRef.current = filterId;
+    logFilterTypeRef.current = filterType;
+    setTimeout(() => fetchDataRef.current?.(false), 0);
   };
 
   const navigateToJobWithHighlight = (jobId) => {
@@ -536,6 +555,9 @@ function Dashboard() {
   const clearLogFilter = () => {
     setLogFilterId(null);
     setLogFilterType(null);
+    logFilterIdRef.current = null;
+    logFilterTypeRef.current = null;
+    setTimeout(() => fetchDataRef.current?.(false), 0);
   };
 
   const handleTabChange = (tabId) => {

@@ -61,6 +61,13 @@ if _cors_env:
 if not hasattr(settings, 'dashboard_api_key'):
     settings.dashboard_api_key = os.getenv("DASHBOARD_API_KEY", "").strip() or ""
 
+# Log ingest limits (env: DASHBOARD_MAX_LOG_BATCH_ENTRIES, DASHBOARD_MAX_LOG_INGEST_BODY_BYTES)
+if not hasattr(settings, 'max_log_batch_entries'):
+    settings.max_log_batch_entries = int(os.getenv("DASHBOARD_MAX_LOG_BATCH_ENTRIES", "1000"))
+if not hasattr(settings, 'max_log_ingest_body_bytes'):
+    # Enforced when clients send Content-Length; pair with proxy body limits for chunked uploads.
+    settings.max_log_ingest_body_bytes = int(os.getenv("DASHBOARD_MAX_LOG_INGEST_BODY_BYTES", str(5 * 1024 * 1024)))
+
 
 def internal_log_ingest_headers() -> Dict[str, str]:
     """

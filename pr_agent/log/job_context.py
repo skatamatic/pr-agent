@@ -860,7 +860,11 @@ def update_operation_ai_metrics(model_used: Optional[str] = None,
                                input_tokens: Optional[int] = None,
                                output_tokens: Optional[int] = None,
                                estimated_dev_hours_saved: Optional[float] = None):
-    """Update the current operation's AI metrics (error resilient)"""
+    """Update the current operation's AI metrics via ``/api/operations/{id}/ai-metrics`` (error resilient).
+
+    For per-model breakdowns for multiple models in one update, use
+    ``update_operation_multi_model_ai_metrics`` → ``/multi-model-ai-metrics`` instead.
+    """
     operation_id = JobContext.get_current_operation_id()
     if not operation_id:
         if logger:

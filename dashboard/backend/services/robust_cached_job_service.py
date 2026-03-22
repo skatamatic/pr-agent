@@ -282,6 +282,7 @@ class RobustCachedJobService:
             # Update cache
             await self.cache.update_operation(operation_id, operation_data)
             
+            await self.cache.force_sync_operation_to_db(operation_id)
             logger.debug(f"Updated multi-model AI metrics for operation {operation_id}: {list(models_data.keys())}")
             return True
             
@@ -374,6 +375,41 @@ class RobustCachedJobService:
             await self._update_job_log_count(job_id, level)
             
         return log_id
+
+    async def create_log_entries_batch(self, raw_logs: List[Dict[str, Any]]) -> List[int]:
+        """
+        Build normalized log payloads and persist in one transaction (see RobustCacheService.create_logs_batch).
+        """
+        if not raw_logs:
+            return []
+        prepared: List[Dict[str, Any]] = []
+        for log_data in raw_logs:
+            repo_value = log_data.get("repository") or log_data.get("repo")
+            prepared.append(
+                {
+                    "timestamp": to_utc_iso(datetime.utcnow()),
+                    "level": log_data.get("level", "INFO"),
+                    "message": log_data.get("message", ""),
+                    "source": log_data.get("source") or log_data.get("module", "unknown"),
+                    "job_id": log_data.get("job_id"),
+                    "operation_id": log_data.get("operation_id"),
+                    "repository": repo_value,
+                    "repo": repo_value,
+                    "status": log_data.get("status"),
+                    "module": log_data.get("module"),
+                    "function": log_data.get("function"),
+                    "severity": "high"
+                    if log_data.get("level") in ["ERROR", "CRITICAL"]
+                    else "normal",
+                    "artifacts": log_data.get("artifacts"),
+                }
+            )
+        ids = await self.cache.create_logs_batch(prepared)
+        for i, log_id in enumerate(ids):
+            jd = prepared[i].get("job_id")
+            if jd:
+                await self._update_job_log_count(jd, prepared[i].get("level", "INFO"))
+        return ids
         
     async def get_jobs(self, limit: int = 100, include_operations: bool = False,
                       status: str = None, job_type: str = None, repository: str = None,
@@ -435,7 +471,8 @@ class RobustCachedJobService:
         return await self.cache.get_operation(operation_id)
         
     async def get_logs(self, limit: int = 10000, level: str = None, job_id: str = None,
-                      operation_id: str = None, repository: str = None) -> List[Dict[str, Any]]:
+                      operation_id: str = None, repository: str = None,
+                      search: str = None, offset: int = 0) -> List[Dict[str, Any]]:
         """Get logs with robust cache-through pattern"""
         filters = {}
         if repository:
@@ -446,6 +483,8 @@ class RobustCachedJobService:
             level=level,
             job_id=job_id,
             operation_id=operation_id,
+            search=search,
+            offset=offset,
             **filters
         )
         

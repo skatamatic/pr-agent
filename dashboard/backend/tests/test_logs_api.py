@@ -94,6 +94,33 @@ class TestLogsAPI:
         for log in logs:
             assert log.get("level") == "INFO"
 
+    def test_get_logs_search_filters_message(self, client_app, auth_headers):
+        needle = "unique-search-needle-xyz"
+        client_app.post(
+            "/logs/immediate",
+            json={"level": "INFO", "message": needle, "source": "test"},
+            headers=auth_headers,
+        )
+        r = client_app.get(f"/api/logs?search={needle}&limit=50", headers=auth_headers)
+        assert r.status_code == 200
+        logs = r.json()["data"]["logs"]
+        assert all(needle in (log.get("message") or "") or needle.lower() in (log.get("message") or "").lower() for log in logs)
+
+    def test_get_logs_offset_skips_rows(self, client_app, auth_headers):
+        for i in range(3):
+            client_app.post(
+                "/logs/immediate",
+                json={"level": "INFO", "message": f"offset-test-{i}", "source": "test"},
+                headers=auth_headers,
+            )
+        r0 = client_app.get("/api/logs?limit=2&offset=0", headers=auth_headers)
+        r1 = client_app.get("/api/logs?limit=2&offset=1", headers=auth_headers)
+        assert r0.status_code == 200 and r1.status_code == 200
+        ids0 = [x.get("id") for x in r0.json()["data"]["logs"]]
+        ids1 = [x.get("id") for x in r1.json()["data"]["logs"]]
+        if ids0 and ids1:
+            assert ids0[0] != ids1[0]
+
     def test_get_logs_with_repo_param(self, client_app, auth_headers):
         # Use a unique repo so this test is not order-dependent on other tests' log data.
         unique_repo = "org/repo-filter-isolation-test"

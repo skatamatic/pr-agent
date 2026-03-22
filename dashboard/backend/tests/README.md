@@ -28,6 +28,8 @@ Tests use **in-memory SQLite** (`DATABASE_URL=sqlite:///:memory:` set in `confte
 | **Operations & jobs** | test_operations_jobs_api | List jobs, get job 404, list operations (auth), get operation 404, job operations, POST jobs/create, job status, operations create, operation status, deletion preview, delete job |
 | **Logs** | test_logs_api | GET logs (list, by job, by operation), POST `/logs/immediate`, POST `/logs/batch` |
 | **Internal log ingest auth** | test_internal_log_ingest_headers | `internal_log_ingest_headers()` (Bearer when `DASHBOARD_API_KEY` set); POST `/logs/immediate` & `/logs/batch` with those headers |
+| **Log batch / WS** | test_logs_batch_limits | `MAX_LOG_BATCH_ENTRIES`, single `logs_batch` WebSocket broadcast, empty batch, single-transaction batch insert |
+| **Logs cache merge** | test_logs_cache_merge | Unique log ids after inserts; GET `/api/logs` with `search` / `offset` |
 | **Metrics** | test_metrics_api | Summary, config, recalculate, operations/repositories breakdown |
 | **Config** | test_config_api, test_config | GET/POST config, pr-agent-path, validate path; CORS/port/database_url from env |
 | **Repositories** | test_repositories_api | List, names, create (minimal), get 404, health |

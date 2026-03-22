@@ -1,7 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Search, Download, Filter, Info, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, RefreshCw, Clock, ExternalLink, X, Calendar, FileText, Star } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import { Search, Download, Filter, Info, ChevronDown, ChevronUp, RefreshCw, Clock, ExternalLink, X, Calendar, FileText, Star } from 'lucide-react';
 import ViewHeader from './ViewHeader';
 import { formatTimestamp as formatTimestampUtil } from '../utils/timeUtils';
+import apiService from '../services/api';
 
 const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, onNavigateToJob, onNavigateToOperation, onClearFilter }) => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -11,8 +13,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
   const [showSystemLogs, setShowSystemLogs] = useState(true);
   const [showOnlyArtifacts, setShowOnlyArtifacts] = useState(false);
   const [expandedLogs, setExpandedLogs] = useState(new Set());
-  const [currentPage, setCurrentPage] = useState(1);
-  const [repositories] = useState([]);
+  const [repositories, setRepositories] = useState([]);
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
   const [showExportDropdown, setShowExportDropdown] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
@@ -21,7 +22,13 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
   const [lastLogCount, setLastLogCount] = useState(0);
   const [newLogsCount, setNewLogsCount] = useState(0);
   const exportDropdownRef = useRef(null);
-  const itemsPerPage = 100; // Increased from 30 to show more logs per page
+  const logsScrollParentRef = useRef(null);
+
+  const scrollLogsToTop = useCallback(() => {
+    if (logsScrollParentRef.current) {
+      logsScrollParentRef.current.scrollTop = 0;
+    }
+  }, []);
 
   // Helper function to extract step information from log message
   const extractStepFromLog = (log) => {
@@ -60,36 +67,6 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     setLastLogCount(logs.length);
   }, [logs.length, lastLogCount]);
 
-  // Handle external filtering (from JobsList component)
-  useEffect(() => {
-    if (filterId && filterType) {
-      if (filterType === 'job') {
-        setSelectedOperationType('all');
-      } else if (filterType === 'operation') {
-        // For operation filtering from JobsList, we need to filter by the specific operation_id
-        // We'll add a separate operationIdFilter for this case
-        setSelectedOperationType('all');
-      }
-      setSelectedRepository('all');
-      setCurrentPage(1);
-    }
-  }, [filterId, filterType]);
-
-  // Listen for operation filtering events from other components (legacy support)
-  useEffect(() => {
-    const handleFilterByOperation = () => {
-      setSelectedOperationType('all');
-      setSelectedRepository('all');
-      setCurrentPage(1);
-    };
-
-    window.addEventListener('filterLogsByOperation', handleFilterByOperation);
-    
-    return () => {
-      window.removeEventListener('filterLogsByOperation', handleFilterByOperation);
-    };
-  }, []);
-
   // Handle clicks outside export dropdown
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -104,23 +81,17 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     };
   }, []);
 
-  // Fetch repository names for filtering
   useEffect(() => {
-    // Temporarily disable repository names API call due to 422 errors
-    // TODO: Fix the /api/repositories/names endpoint
-    /*
     const fetchRepositoryNames = async () => {
       try {
-        const response = await api.getRepositoryNames({ active_only: false });
-        const names = response.data.data || [];
-        setRepositories(names);
+        const response = await apiService.getRepositoryNames({ active_only: false });
+        const names = response?.data?.data || [];
+        setRepositories(Array.isArray(names) ? names : []);
       } catch (error) {
         console.error('Failed to fetch repository names:', error);
       }
     };
-    
     fetchRepositoryNames();
-    */
   }, []);
 
   // Also extract unique repo names from logs as fallback
@@ -206,7 +177,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       // Ensure at least one level is selected
       return newLevels.length > 0 ? newLevels : [upperLevel];
     });
-    setCurrentPage(1); // Reset to first page when filter changes
+    scrollLogsToTop();
     // Note: expandedLogs state preserved when filter changes
   };
 
@@ -283,10 +254,28 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       return matchesSearch && matchesLevel && matchesRepo && matchesOperationType && matchesStep && matchesExternalOperation && matchesJob && matchesDateRange && matchesSystemLogFilter && matchesArtifacts;
     });
 
-  // Pagination
-  const totalPages = Math.ceil(filteredLogs.length / itemsPerPage);
-  const startIndex = (currentPage - 1) * itemsPerPage;
-  const paginatedLogs = filteredLogs.slice(startIndex, startIndex + itemsPerPage);
+  const rowVirtualizer = useVirtualizer({
+    count: filteredLogs.length,
+    getScrollElement: () => logsScrollParentRef.current,
+    estimateSize: () => 88,
+    overscan: 12,
+  });
+
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [expandedLogs, rowVirtualizer]);
+
+  useEffect(() => {
+    if (filterId && filterType) {
+      if (filterType === 'job') {
+        setSelectedOperationType('all');
+      } else if (filterType === 'operation') {
+        setSelectedOperationType('all');
+      }
+      setSelectedRepository('all');
+      scrollLogsToTop();
+    }
+  }, [filterId, filterType, scrollLogsToTop]);
 
   // Helper to escape CSV fields
   const escapeCsvField = (field) => {
@@ -473,7 +462,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     setShowOnlyArtifacts(false);
     setDateRange({ start: '', end: '' });
     setSearchTerm('');
-    setCurrentPage(1);
+    scrollLogsToTop();
     
     // Also clear external job/operation filters
     if (onClearFilter) {
@@ -504,7 +493,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                 value={searchTerm}
                 onChange={(e) => {
                   setSearchTerm(e.target.value);
-                  setCurrentPage(1);
+                  scrollLogsToTop();
                 }}
                 className="pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
@@ -625,7 +614,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                 setSelectedOperationType('all');
                 setSelectedRepository('all');
                 setDateRange({ start: '', end: '' });
-                setCurrentPage(1);
+                scrollLogsToTop();
                 
                 // Clear external filter by notifying parent
                 if (onClearFilter) {
@@ -750,7 +739,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                     checked={showSystemLogs}
                     onChange={(e) => {
                       setShowSystemLogs(e.target.checked);
-                      setCurrentPage(1);
+                      scrollLogsToTop();
                     }}
                     className="mr-2 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500"
                   />
@@ -768,7 +757,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                     checked={showOnlyArtifacts}
                     onChange={(e) => {
                       setShowOnlyArtifacts(e.target.checked);
-                      setCurrentPage(1);
+                      scrollLogsToTop();
                     }}
                     className="mr-2 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500"
                   />
@@ -795,7 +784,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                     value={dateRange.start}
                     onChange={(e) => {
                       setDateRange(prev => ({ ...prev, start: e.target.value }));
-                      setCurrentPage(1);
+                      scrollLogsToTop();
                     }}
                     className="px-3 py-1 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
@@ -807,7 +796,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                     value={dateRange.end}
                     onChange={(e) => {
                       setDateRange(prev => ({ ...prev, end: e.target.value }));
-                      setCurrentPage(1);
+                      scrollLogsToTop();
                     }}
                     className="px-3 py-1 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
@@ -816,7 +805,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                   <button
                     onClick={() => {
                       setDateRange({ start: '', end: '' });
-                      setCurrentPage(1);
+                      scrollLogsToTop();
                     }}
                     className="px-2 py-1 text-xs bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 rounded hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
                   >
@@ -838,7 +827,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                       key={repo}
                       onClick={() => {
                         setSelectedRepository(repo);
-                        setCurrentPage(1);
+                        scrollLogsToTop();
                       }}
                       className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
                         selectedRepository === repo
@@ -865,7 +854,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                       key={opType}
                       onClick={() => {
                         setSelectedOperationType(opType);
-                        setCurrentPage(1);
+                        scrollLogsToTop();
                       }}
                       className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
                         selectedOperationType === opType
@@ -892,7 +881,7 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                       key={step}
                       onClick={() => {
                         setSelectedStep(step);
-                        setCurrentPage(1);
+                        scrollLogsToTop();
                       }}
                       className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
                         selectedStep === step
@@ -912,17 +901,17 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
 
       {/* Logs table */}
       <div className="bg-white dark:bg-gray-800 shadow-sm border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-        {paginatedLogs.length === 0 ? (
+        {filteredLogs.length === 0 ? (
           <div className="text-center py-12">
             <FileText className="h-12 w-12 text-gray-400 dark:text-gray-500 mx-auto mb-4" />
             <p className="text-gray-500 dark:text-gray-400">
-              {filteredLogs.length === 0 ? 'No logs found matching the selected filters.' : 'No logs on this page.'}
+              No logs found matching the selected filters.
             </p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div ref={logsScrollParentRef} className="overflow-x-auto max-h-[70vh] overflow-y-auto">
             <table className="w-full table-fixed">
-              <thead className="bg-gray-50 dark:bg-gray-900">
+              <thead className="bg-gray-50 dark:bg-gray-900 sticky top-0 z-10">
                 <tr>
                   <th className="w-24 px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Level
@@ -942,19 +931,39 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                   <th className="w-12 px-4 py-3 text-right"></th>
                 </tr>
               </thead>
-              <tbody className="bg-white dark:bg-gray-800">
-                {paginatedLogs.map((log, index) => {
-                  const LogIcon = getLogIcon(log);
-                  const logId = log.id || `${index}-${log.timestamp}`;
-                  const isExpanded = expandedLogs.has(logId);
-                  
-                  return (
-                    <React.Fragment key={logId}>
-                      {/* Main log row */}
+            </table>
+            <div
+              className="relative w-full bg-white dark:bg-gray-800"
+              style={{ height: `${Math.max(rowVirtualizer.getTotalSize(), 1)}px` }}
+            >
+              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                const log = filteredLogs[virtualRow.index];
+                const index = virtualRow.index;
+                const LogIcon = getLogIcon(log);
+                const logId = log.id || `${index}-${log.timestamp}`;
+                const isExpanded = expandedLogs.has(logId);
+
+                return (
+                  <div
+                    key={virtualRow.key}
+                    data-index={virtualRow.index}
+                    ref={rowVirtualizer.measureElement}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                  >
+                    <table className="w-full table-fixed">
+                      <tbody className="bg-white dark:bg-gray-800 [contain:layout_style]">
+                      <React.Fragment key={logId}>
                       <tr 
                         className={`border-b border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-200 ease-in-out cursor-pointer ${
                           isExpanded ? 'bg-blue-50 dark:bg-blue-900/10' : ''
                         }`}
+                        style={{ contentVisibility: 'auto', containIntrinsicSize: '80px' }}
                         onClick={() => toggleExpanded(logId)}
                       >
                         <td className="w-24 px-4 py-4 whitespace-nowrap">
@@ -1250,68 +1259,19 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                         </tr>
                       )}
                     </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>
 
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between">
-          <div className="text-sm text-gray-700 dark:text-gray-300">
-            Showing {startIndex + 1} to {Math.min(startIndex + itemsPerPage, filteredLogs.length)} of {filteredLogs.length} entries
-          </div>
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-              disabled={currentPage === 1}
-              className="flex items-center px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <ChevronLeft className="h-4 w-4 mr-1" />
-              Previous
-            </button>
-            
-            <div className="flex items-center space-x-1">
-              {[...Array(Math.min(totalPages, 7))].map((_, i) => {
-                let pageNum;
-                if (totalPages <= 7) {
-                  pageNum = i + 1;
-                } else if (currentPage <= 4) {
-                  pageNum = i + 1;
-                } else if (currentPage >= totalPages - 3) {
-                  pageNum = totalPages - 6 + i;
-                } else {
-                  pageNum = currentPage - 3 + i;
-                }
-                
-                return (
-                  <button
-                    key={pageNum}
-                    onClick={() => setCurrentPage(pageNum)}
-                    className={`px-3 py-2 text-sm rounded-md ${
-                      currentPage === pageNum
-                        ? 'bg-blue-600 text-white'
-                        : 'border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
-                    }`}
-                  >
-                    {pageNum}
-                  </button>
-                );
-              })}
-            </div>
-            
-            <button
-              onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-              disabled={currentPage === totalPages}
-              className="flex items-center px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Next
-              <ChevronRight className="h-4 w-4 ml-1" />
-            </button>
-          </div>
+      {filteredLogs.length > 0 && (
+        <div className="text-sm text-gray-600 dark:text-gray-400 px-1 py-2">
+          Showing {filteredLogs.length} log{filteredLogs.length !== 1 ? 's' : ''}
         </div>
       )}
     </div>

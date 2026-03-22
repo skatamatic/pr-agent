@@ -1,3 +1,11 @@
+/** Verbose WS lifecycle logs (local dev only) */
+const wsDebug = (...args) => {
+  if (process.env.NODE_ENV === 'development') {
+    // eslint-disable-next-line no-console
+    console.log(...args);
+  }
+};
+
 class WebSocketService {
   constructor() {
     this.ws = null;
@@ -84,7 +92,7 @@ class WebSocketService {
           // Ignore close from a socket we've already replaced (e.g. after forceReconnect)
           if (event.target !== this.ws) return;
           this.ws = null;
-          console.log('WebSocket disconnected:', event.code, event.reason);
+          wsDebug('WebSocket disconnected:', event.code, event.reason);
           this.isConnecting = false;
           this.stopHeartbeat();
           this.emit('disconnected');
@@ -127,7 +135,7 @@ class WebSocketService {
     this.reconnectAttempts++;
     const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), 30000); // Cap at 30 seconds
     
-    console.log(`Attempting to reconnect in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+    wsDebug(`Attempting to reconnect in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
     
     this.reconnectTimeout = setTimeout(() => {
       if (this.shouldReconnect) {
@@ -171,9 +179,9 @@ class WebSocketService {
       case 'job_update':
         this.emit('job_update', data);
         break;
-              case 'metrics_update':
-          this.emit('metrics_update', data);
-          break;
+      case 'metrics_update':
+        this.emit('metrics_update', data);
+        break;
       case 'system_status':
         this.emit('system_status', data);
         break;

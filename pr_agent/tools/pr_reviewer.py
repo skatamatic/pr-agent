@@ -216,6 +216,7 @@ class PRReviewer:
 
     async def _execute_streamlined_workflow(self) -> None:
         """Execute the streamlined PR review workflow with step tracking"""
+        aggregated_metrics_sent = False
         try:
             # Step 1: Context and diff preparation
             if DASHBOARD_INTEGRATION_AVAILABLE:
@@ -254,6 +255,7 @@ class PRReviewer:
             if DASHBOARD_INTEGRATION_AVAILABLE:
                 get_logger().debug("[AI] - Sending aggregated AI metrics...")
                 self._send_aggregated_ai_metrics(dev_hours_saved)
+                aggregated_metrics_sent = True
             
             # Step 6: Publishing
             if DASHBOARD_INTEGRATION_AVAILABLE:
@@ -264,6 +266,16 @@ class PRReviewer:
             return result
             
         except Exception as e:
+            # Flush partial token totals only if we never sent the final aggregate (avoid double POST)
+            if (
+                DASHBOARD_INTEGRATION_AVAILABLE
+                and not aggregated_metrics_sent
+                and getattr(self, 'ai_models_metrics', None)
+            ):
+                try:
+                    self._send_aggregated_ai_metrics(None)
+                except Exception as flush_e:
+                    get_logger().debug(f"[AI] - Failed to flush partial AI metrics on error: {flush_e}")
             get_logger().error(f"[Review] - Error in streamlined PR review workflow: {e}")
             raise
 
@@ -433,30 +445,15 @@ class PRReviewer:
                             files_count=len(self.git_provider.get_files()) if self.git_provider.get_files() else 0
                         )
                     
-                    # Update AI metrics
-                    update_operation_ai_metrics(
-                        model_used=model,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        estimated_dev_hours_saved=estimated_hours
-                    )
-                    
                     get_logger().info(f"[AI] - Metrics updated - Input: {input_tokens}, Output: {output_tokens}, "
                                     f"Calls: {totals['call_count']}, Failed: {totals['failed_calls']}")
                     
-                    # Track AI metrics for this model
+                    # Track per-model token totals (may accumulate multiple models across review steps).
+                    # Dashboard HTTP update runs once in _send_aggregated_ai_metrics after dev-time step.
                     self._track_ai_metrics(model, {
                         'input_tokens': input_tokens,
                         'output_tokens': output_tokens
                     })
-                    
-                    # Track AI metrics - use either multi-model or single model update
-                    if hasattr(self, 'ai_models_metrics') and self.ai_models_metrics:
-                        # Multi-model tracking (prepare for future multi-model support)
-                        update_operation_multi_model_ai_metrics(self.ai_models_metrics)
-                    else:
-                        # Single model tracking (current case)
-                        update_operation_ai_metrics(model, input_tokens, output_tokens)
                     
                 except Exception as e:
                     get_logger().debug(f"Failed to update dashboard AI metrics: {e}")
@@ -650,13 +647,9 @@ class PRReviewer:
     async def _send_insights(self, insights_data: dict):
         """Send insights to dashboard (Step 4.5 of streamlined workflow)"""
         try:
-            get_logger().info(f"[Insights] - DEBUG: _send_insights called with data keys: {list(insights_data.keys()) if insights_data else 'None'}")
-            
             from pr_agent.log.dashboard_client import get_dashboard_client
             
             dashboard_client = get_dashboard_client()
-            get_logger().info(f"[Insights] - DEBUG: Dashboard client obtained: {dashboard_client is not None}")
-            get_logger().info(f"[Insights] - DEBUG: Dashboard client enabled: {dashboard_client._enabled if dashboard_client else 'None'}")
             
             if not dashboard_client or not dashboard_client._enabled:
                 get_logger().debug("[Insights] - Dashboard client not available, skipping insights")
@@ -668,8 +661,6 @@ class PRReviewer:
                 if data is not None:
                     cleaned_insights[category] = data
             
-            get_logger().info(f"[Insights] - DEBUG: Cleaned insights keys: {list(cleaned_insights.keys())}")
-            
             if not cleaned_insights:
                 get_logger().debug("[Insights] - No insights data to send")
                 return
@@ -677,7 +668,6 @@ class PRReviewer:
             get_logger().info(f"[Insights] - Sending insights to dashboard: {list(cleaned_insights.keys())}", 
                              artifacts={'insights_categories': list(cleaned_insights.keys())})
             
-            get_logger().info("[Insights] - DEBUG: About to call dashboard_client.update_operation_insights")
             await dashboard_client.update_operation_insights(cleaned_insights)
             get_logger().info("[Insights] - Successfully sent insights to dashboard")
             

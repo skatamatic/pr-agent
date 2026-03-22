@@ -306,7 +306,6 @@ const MetricsView = () => {
   // COMPLETELY SEPARATE: Config data loading (isolated from live metrics updates)
   const fetchConfigData = async () => {
     try {
-      console.log('MetricsView: Fetching config data separately');
       const configRes = await apiService.get('/api/metrics/config');
       const configData = configRes.data?.data || configRes.data;
       
@@ -321,7 +320,6 @@ const MetricsView = () => {
           model_costs: configData.model_costs || {}
         });
         setConfigLoaded(true);
-        console.log('MetricsView: Config form populated from server');
       }
     } catch (err) {
       console.error('Error fetching config data:', err);
@@ -385,7 +383,6 @@ const MetricsView = () => {
       }
       
       setLastUpdated(new Date());
-      console.log('MetricsView: Live metrics data updated (config data untouched)');
     } catch (err) {
       console.error('Error fetching metrics:', err);
       setError('Failed to load metrics data');
@@ -437,7 +434,6 @@ const MetricsView = () => {
       // Trigger metrics recalculation with the new config
       await handleRecalculate();
       
-      console.log('MetricsView: Config saved successfully, form preserved');
     } catch (err) {
       console.error('Error saving config:', err);
       setError('Failed to save configuration');
@@ -520,7 +516,6 @@ const MetricsView = () => {
   const handleTabChange = (tabId) => {
     // If switching to configuration tab, ensure we have fresh config data
     if (tabId === 'configuration' && !userHasEditedConfig) {
-      console.log('MetricsView: Switching to config tab - fetching fresh config data');
       fetchConfigData();
     }
     

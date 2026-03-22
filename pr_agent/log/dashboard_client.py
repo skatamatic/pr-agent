@@ -2,6 +2,13 @@
 Dashboard Client - Interface for PR-Agent to communicate with the Dashboard API
 Provides simple methods for job and operation management.
 Environment overrides: DASHBOARD_URL, DASHBOARD_API_KEY (for GCP/container deployment).
+
+Metrics endpoints (use exactly one per logical update to avoid duplicate dashboard writes):
+- ``POST /api/operations/{id}/ai-metrics`` — single primary model, legacy ``input_tokens`` /
+  ``output_tokens``, optional ``estimated_dev_hours_saved``. Use for one-model flows.
+- ``POST /api/operations/{id}/multi-model-ai-metrics`` — body ``models_data`` mapping model name
+  to ``{input_tokens, output_tokens}``, optional ``estimated_dev_hours_saved``. Use when multiple
+  models contribute to the same operation in one payload.
 """
 import asyncio
 import json
