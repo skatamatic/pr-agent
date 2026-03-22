@@ -28,7 +28,7 @@ class DataCleanupService:
                 # Count records to be deleted (using correct date fields for each table)
                 operations_query = db.query(OperationDB).filter(OperationDB.started_at < cutoff_date)
                 if repository:
-                    operations_query = operations_query.filter(OperationDB.repo == repository)
+                    operations_query = operations_query.filter(OperationDB.repository == repository)
                 operations_count = operations_query.count()
                 
                 jobs_query = db.query(JobDB).filter(JobDB.started_at < cutoff_date)
@@ -38,7 +38,7 @@ class DataCleanupService:
                 
                 logs_query = db.query(LogEntryDB).filter(LogEntryDB.timestamp < cutoff_date)
                 if repository:
-                    logs_query = logs_query.filter(LogEntryDB.repo == repository)
+                    logs_query = logs_query.filter(LogEntryDB.repository == repository)
                 logs_count = logs_query.count()
                 
                 notification_events_query = db.query(NotificationEventDB).filter(NotificationEventDB.timestamp < cutoff_date)
@@ -49,7 +49,7 @@ class DataCleanupService:
                 # Count remaining records
                 remaining_operations_query = db.query(OperationDB).filter(OperationDB.started_at >= cutoff_date)
                 if repository:
-                    remaining_operations_query = remaining_operations_query.filter(OperationDB.repo == repository)
+                    remaining_operations_query = remaining_operations_query.filter(OperationDB.repository == repository)
                 remaining_operations = remaining_operations_query.count()
                 
                 remaining_jobs_query = db.query(JobDB).filter(JobDB.started_at >= cutoff_date)
@@ -59,7 +59,7 @@ class DataCleanupService:
                 
                 remaining_logs_query = db.query(LogEntryDB).filter(LogEntryDB.timestamp >= cutoff_date)
                 if repository:
-                    remaining_logs_query = remaining_logs_query.filter(LogEntryDB.repo == repository)
+                    remaining_logs_query = remaining_logs_query.filter(LogEntryDB.repository == repository)
                 remaining_logs = remaining_logs_query.count()
                 
                 remaining_notification_events_query = db.query(NotificationEventDB).filter(NotificationEventDB.timestamp >= cutoff_date)
@@ -131,13 +131,13 @@ class DataCleanupService:
                     if not data_types or 'logs' in data_types:
                         logs_query = db.query(LogEntryDB).filter(LogEntryDB.timestamp < cutoff_date)
                         if repository:
-                            logs_query = logs_query.filter(LogEntryDB.repo == repository)
+                            logs_query = logs_query.filter(LogEntryDB.repository == repository)
                         deleted_counts['logs'] = logs_query.delete(synchronize_session=False)
                     
                     if not data_types or 'operations' in data_types:
                         operations_query = db.query(OperationDB).filter(OperationDB.started_at < cutoff_date)
                         if repository:
-                            operations_query = operations_query.filter(OperationDB.repo == repository)
+                            operations_query = operations_query.filter(OperationDB.repository == repository)
                         deleted_counts['operations'] = operations_query.delete(synchronize_session=False)
                     
                     if not data_types or 'jobs' in data_types:
@@ -218,7 +218,7 @@ class DataCleanupService:
                 OperationDB.estimated_dev_hours_saved
             )
             if repository:
-                operations_query = operations_query.filter(OperationDB.repo == repository)
+                operations_query = operations_query.filter(OperationDB.repository == repository)
             operations = operations_query.all()
 
             for op_data in operations:
@@ -270,7 +270,7 @@ class DataCleanupService:
                 OperationDB.estimated_dev_hours_saved
             ).filter(OperationDB.started_at >= cutoff_date)
             if repository:
-                operations_query = operations_query.filter(OperationDB.repo == repository)
+                operations_query = operations_query.filter(OperationDB.repository == repository)
             operations = operations_query.all()
 
             for op_data in operations:
@@ -311,7 +311,7 @@ class DataCleanupService:
             # Rough estimation based on record counts and average sizes
             operations_query = db.query(OperationDB).filter(OperationDB.started_at < cutoff_date)
             if repository:
-                operations_query = operations_query.filter(OperationDB.repo == repository)
+                operations_query = operations_query.filter(OperationDB.repository == repository)
             operations_count = operations_query.count()
             
             jobs_query = db.query(JobDB).filter(JobDB.started_at < cutoff_date)
@@ -321,7 +321,7 @@ class DataCleanupService:
             
             logs_query = db.query(LogEntryDB).filter(LogEntryDB.timestamp < cutoff_date)
             if repository:
-                logs_query = logs_query.filter(LogEntryDB.repo == repository)
+                logs_query = logs_query.filter(LogEntryDB.repository == repository)
             logs_count = logs_query.count()
             
             # Rough size estimates (in bytes)

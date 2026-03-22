@@ -5,6 +5,29 @@ import ViewHeader from './ViewHeader';
 import { formatTimestamp as formatTimestampUtil } from '../utils/timeUtils';
 import apiService from '../services/api';
 
+/** Normalize repo strings for deduping and filter matching (trim, Unicode NFC, case-insensitive). */
+function normalizeRepoKey(name) {
+  if (name == null || name === '') return '';
+  return String(name).trim().normalize('NFC').toLowerCase();
+}
+
+/**
+ * Merge API + in-log repo names; one entry per normalized key (prefer API order, then logs).
+ */
+function buildDedupedRepositoryList(apiNames, logDerivedNames) {
+  const map = new Map();
+  const add = (raw) => {
+    if (raw == null || raw === '') return;
+    const trimmed = String(raw).trim();
+    const k = normalizeRepoKey(trimmed);
+    if (!k) return;
+    if (!map.has(k)) map.set(k, trimmed);
+  };
+  (apiNames || []).forEach(add);
+  (logDerivedNames || []).forEach(add);
+  return Array.from(map.values()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
 const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, onNavigateToJob, onNavigateToOperation, onClearFilter }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedLevels, setSelectedLevels] = useState(['ERROR', 'WARNING', 'INFO', 'DEBUG']);
@@ -71,7 +94,8 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
   useEffect(() => {
     const fetchRepositoryNames = async () => {
       try {
-        const response = await apiService.getRepositoryNames({ active_only: false });
+        // Active repos only — avoids stale rows from deleted/re-added registrations
+        const response = await apiService.getRepositoryNames({ active_only: true });
         const names = response?.data?.data || [];
         setRepositories(Array.isArray(names) ? names : []);
       } catch (error) {
@@ -81,10 +105,9 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     fetchRepositoryNames();
   }, []);
 
-  // Also extract unique repo names from logs as fallback
-  const getLogRepository = (log) => log.repo || log.repository || null;
+  const getLogRepository = (log) => log.repository || null;
   const uniqueRepoNames = [...new Set(logs.map(log => getLogRepository(log)).filter(Boolean))];
-  const allRepoNames = [...new Set([...repositories, ...uniqueRepoNames])];
+  const allRepoNames = buildDedupedRepositoryList(repositories, uniqueRepoNames);
 
   // Extract unique operation types from logs
   const uniqueOperationTypes = [...new Set(logs.map(log => log.command).filter(Boolean))];
@@ -187,8 +210,11 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
       
       const matchesLevel = selectedLevels.includes(log.level?.toUpperCase());
       
-      // Repository filter
-      const matchesRepo = selectedRepository === 'all' || getLogRepository(log) === selectedRepository;
+      // Repository filter (normalized match for casing/Unicode)
+      const logRepoNorm = normalizeRepoKey(getLogRepository(log));
+      const matchesRepo =
+        selectedRepository === 'all' ||
+        (logRepoNorm !== '' && logRepoNorm === normalizeRepoKey(selectedRepository));
       
       // Operation type filter - using command field for operation type
       const matchesOperationType = selectedOperationType === 'all' || log.command === selectedOperationType;
@@ -772,13 +798,17 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
                 <div className="flex flex-wrap gap-2">
                   {['all', ...allRepoNames].map((repo) => (
                     <button
-                      key={repo}
+                      key={repo === 'all' ? 'all' : normalizeRepoKey(repo)}
                       onClick={() => {
                         setSelectedRepository(repo);
                         scrollLogsToTop();
                       }}
                       className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
-                        selectedRepository === repo
+                        repo === 'all'
+                          ? selectedRepository === 'all'
+                            ? 'bg-blue-600 text-white shadow-md scale-105'
+                            : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600 hover:border-blue-300 dark:hover:border-blue-500'
+                          : normalizeRepoKey(selectedRepository) === normalizeRepoKey(repo)
                           ? 'bg-blue-600 text-white shadow-md scale-105'
                           : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600 hover:border-blue-300 dark:hover:border-blue-500'
                       }`}

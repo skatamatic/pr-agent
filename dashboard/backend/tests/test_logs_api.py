@@ -121,8 +121,8 @@ class TestLogsAPI:
         if ids0 and ids1:
             assert ids0[0] != ids1[0]
 
-    def test_get_logs_with_repo_param(self, client_app, auth_headers):
-        # Use a unique repo so this test is not order-dependent on other tests' log data.
+    def test_get_logs_with_repository_param(self, client_app, auth_headers):
+        # Use a unique repository name so this test is not order-dependent on other tests' log data.
         unique_repo = "org/repo-filter-isolation-test"
         client_app.post(
             "/logs/immediate",
@@ -135,13 +135,13 @@ class TestLogsAPI:
             headers=auth_headers,
         )
         response = client_app.get(
-            f"/api/logs?repo={unique_repo}&limit=20",
+            f"/api/logs?repository={unique_repo}&limit=20",
             headers=auth_headers,
         )
         assert response.status_code == 200
         logs = response.json()["data"]["logs"]
         assert isinstance(logs, list)
-        assert logs, "expected at least one log when filtering by repo we just wrote"
+        assert logs, "expected at least one log when filtering by repository we just wrote"
         for log in logs:
-            r = log.get("repo") or log.get("repository")
+            r = log.get("repository")
             assert r == unique_repo

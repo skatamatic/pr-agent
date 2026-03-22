@@ -201,6 +201,19 @@ def migrate_database():
                 conn.execute(text("ALTER TABLE operations ADD COLUMN insights JSON"))
                 conn.commit()
             print("Added insights column to operations table")
+
+        # Unify owner/repo string column name: repo -> repository
+        if check_column_exists(engine, 'operations', 'repo') and not check_column_exists(engine, 'operations', 'repository'):
+            print("Renaming operations.repo to repository...")
+            dialect = getattr(engine.dialect, "name", "sqlite")
+            with engine.connect() as conn:
+                if dialect == "postgresql":
+                    conn.execute(text('ALTER TABLE operations RENAME COLUMN repo TO repository'))
+                else:
+                    # SQLite 3.25+ and other dialects with RENAME COLUMN
+                    conn.execute(text("ALTER TABLE operations RENAME COLUMN repo TO repository"))
+                conn.commit()
+            print("Renamed operations.repo to repository")
     
     # Check if log_entries table needs job_id and operation_id columns
     if check_table_exists(engine, 'log_entries'):
@@ -217,6 +230,17 @@ def migrate_database():
                 conn.execute(text("ALTER TABLE log_entries ADD COLUMN operation_id VARCHAR"))
                 conn.commit()
             print("Added operation_id column to log_entries table")
+
+        if check_column_exists(engine, 'log_entries', 'repo') and not check_column_exists(engine, 'log_entries', 'repository'):
+            print("Renaming log_entries.repo to repository...")
+            dialect = getattr(engine.dialect, "name", "sqlite")
+            with engine.connect() as conn:
+                if dialect == "postgresql":
+                    conn.execute(text('ALTER TABLE log_entries RENAME COLUMN repo TO repository'))
+                else:
+                    conn.execute(text("ALTER TABLE log_entries RENAME COLUMN repo TO repository"))
+                conn.commit()
+            print("Renamed log_entries.repo to repository")
     
     if not check_table_exists(engine, 'action_runner_connections'):
         print("Creating action_runner_connections table...")

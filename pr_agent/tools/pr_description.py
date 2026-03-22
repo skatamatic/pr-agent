@@ -129,7 +129,7 @@ class PRDescription:
                 operation_context_manager = operation_context(
                     operation_type=OperationType.GENERATING_DESCRIPTION,
                     command="describe",
-                    repo=repository,
+                    repository=repository,
                     pr_url=pr_url,
                     installation_id=getattr(self.git_provider, 'installation_id', None),
                     sender=getattr(self.git_provider, 'sender', None)

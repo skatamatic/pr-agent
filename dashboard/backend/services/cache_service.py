@@ -604,7 +604,7 @@ class CacheService:
                         'operation_type': operation.operation_type,
                         'command': operation.command,
                         'status': operation.status,
-                        'repo': operation.repo,
+                        'repository': operation.repository,
                         'pr_url': operation.pr_url,
                         'installation_id': operation.installation_id,
                         'sender': operation.sender,
@@ -677,7 +677,7 @@ class CacheService:
             # Find test operations to delete
             test_op_ids = []
             for op_id, entry in list(self.operations_cache.items()):
-                repo = entry.data.get('repo', '')
+                repo = entry.data.get('repository', '')
                 if repo.startswith('test/') or entry.data.get('job_id') in test_job_ids:
                     test_op_ids.append(op_id)
                     self._remove_operation_from_cache(op_id)

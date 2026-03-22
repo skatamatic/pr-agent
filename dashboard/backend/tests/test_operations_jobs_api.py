@@ -149,7 +149,7 @@ class TestOperationsJobsAPI:
         job_id = create_job.json()["data"]["job_id"]
         response = client_app.post(
             "/api/operations/create",
-            json={"job_id": job_id, "operation_type": "review", "repo": "r"},
+            json={"job_id": job_id, "operation_type": "review", "repository": "r"},
             headers=auth_headers,
         )
         assert response.status_code == 200
@@ -166,7 +166,7 @@ class TestOperationsJobsAPI:
         job_id = create_job.json()["data"]["job_id"]
         create_op = client_app.post(
             "/api/operations/create",
-            json={"job_id": job_id, "operation_type": "review", "repo": "r"},
+            json={"job_id": job_id, "operation_type": "review", "repository": "r"},
             headers=auth_headers,
         )
         assert create_op.status_code == 200

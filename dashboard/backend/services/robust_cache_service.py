@@ -432,7 +432,7 @@ class AsyncPersistenceQueue:
         
         # Filter out invalid fields that don't exist on the model
         valid_fields = {
-            'operation_id', 'job_id', 'operation_type', 'command', 'status', 'repo', 
+            'operation_id', 'job_id', 'operation_type', 'command', 'status', 'repository',
             'pr_url', 'installation_id', 'sender', 'request_id', 'started_at', 
             'last_updated', 'completed_at', 'duration', 'error_details', 'response_time',
             'context_fetch_time', 'ai_processing_time', 'model_used', 'input_tokens',
@@ -478,12 +478,10 @@ class AsyncPersistenceQueue:
                 if not log_data.get('app_name') and source_value:
                     log_data['app_name'] = source_value
                     
-            # Handle 'repository' field - should be 'repo' in database
-            if 'repository' in log_data:
-                repo_value = log_data.pop('repository')
-                if not log_data.get('repo') and repo_value:
-                    log_data['repo'] = repo_value
-                    
+            # Reject legacy key `repo` on ingest (use `repository` only)
+            if 'repo' in log_data:
+                log_data.pop('repo', None)
+
             # Handle 'severity' field - not in database model
             if 'severity' in log_data:
                 log_data.pop('severity')
@@ -676,7 +674,7 @@ class RobustCacheService:
             'operation_type': operation.operation_type,
             'command': operation.command,
             'status': operation.status,
-            'repo': operation.repo,
+            'repository': operation.repository,
             'pr_url': operation.pr_url,
             'installation_id': operation.installation_id,
             'sender': operation.sender,
@@ -708,9 +706,7 @@ class RobustCacheService:
             'source': log.module or log.app_name or 'unknown',  # Use module or app_name as source
             'job_id': log.job_id,
             'operation_id': log.operation_id,
-            # Include both keys to keep client contracts stable.
-            'repository': log.repo,
-            'repo': log.repo,
+            'repository': log.repository,
             'status': log.status,
             'module': log.module,
             'function': log.function,
@@ -1149,7 +1145,7 @@ class RobustCacheService:
                 if operation_db:
                     # Update existing operation
                     valid_fields = {
-                        'operation_id', 'job_id', 'operation_type', 'command', 'status', 'repo', 
+                        'operation_id', 'job_id', 'operation_type', 'command', 'status', 'repository',
                         'pr_url', 'installation_id', 'sender', 'request_id', 'started_at', 
                         'last_updated', 'completed_at', 'duration', 'error_details', 'response_time',
                         'context_fetch_time', 'ai_processing_time', 'model_used', 'input_tokens',
@@ -1345,7 +1341,7 @@ class RobustCacheService:
                     
                 for key, value in filters.items():
                     if key == "repository" and value is not None:
-                        lr = log_data.get("repository") or log_data.get("repo")
+                        lr = log_data.get("repository")
                         if lr != value:
                             matches = False
                             break
@@ -1385,9 +1381,8 @@ class RobustCacheService:
                     ))
                     
                 for key, value in filters.items():
-                    # Model column is `repo`; API / filters use `repository`.
                     if key == "repository" and value is not None:
-                        query = query.filter(LogEntryDB.repo == value)
+                        query = query.filter(LogEntryDB.repository == value)
                     elif hasattr(LogEntryDB, key):
                         query = query.filter(getattr(LogEntryDB, key) == value)
                         

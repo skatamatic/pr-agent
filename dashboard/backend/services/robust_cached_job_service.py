@@ -133,7 +133,7 @@ class RobustCachedJobService:
         return success
         
     async def create_operation(self, job_id: str, operation_type: str, command: str,
-                              repo: str, pr_url: str = None, installation_id: str = None,
+                              repository: str = None, pr_url: str = None, installation_id: str = None,
                               sender: str = None, request_id: str = None) -> str:
         """Create a new operation with robust caching"""
         import uuid
@@ -147,7 +147,7 @@ class RobustCachedJobService:
             'operation_type': operation_type,
             'command': command,
             'status': OperationStatus.STARTING.value,
-            'repo': repo,
+            'repository': repository,
             'pr_url': pr_url,
             'installation_id': installation_id,
             'sender': sender,
@@ -358,9 +358,7 @@ class RobustCachedJobService:
             'source': source,
             'job_id': job_id,
             'operation_id': operation_id,
-            # Keep both keys for backward compatibility across frontend/backend paths.
             'repository': repository,
-            'repo': repository,
             'status': status,
             'module': module,
             'function': function,
@@ -384,7 +382,7 @@ class RobustCachedJobService:
             return []
         prepared: List[Dict[str, Any]] = []
         for log_data in raw_logs:
-            repo_value = log_data.get("repository") or log_data.get("repo")
+            repo_value = log_data.get("repository")
             prepared.append(
                 {
                     "timestamp": to_utc_iso(datetime.utcnow()),
@@ -394,7 +392,6 @@ class RobustCachedJobService:
                     "job_id": log_data.get("job_id"),
                     "operation_id": log_data.get("operation_id"),
                     "repository": repo_value,
-                    "repo": repo_value,
                     "status": log_data.get("status"),
                     "module": log_data.get("module"),
                     "function": log_data.get("function"),
@@ -453,11 +450,11 @@ class RobustCachedJobService:
         return job
         
     async def get_operations(self, limit: int = 100, status: str = None,
-                           repo: str = None, job_id: str = None) -> List[Dict[str, Any]]:
+                           repository: str = None, job_id: str = None) -> List[Dict[str, Any]]:
         """Get operations with robust cache-through pattern"""
         filters = {}
-        if repo:
-            filters['repo'] = repo
+        if repository:
+            filters['repository'] = repository
             
         return await self.cache.get_operations(
             limit=limit,

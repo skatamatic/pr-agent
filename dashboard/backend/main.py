@@ -794,9 +794,9 @@ class DashboardApplication:
         from sqlalchemy import or_
         from models import JobDB, LogEntryDB, NotificationEventDB
 
-        operations_count = db.query(OperationDB).filter(OperationDB.repo == repo.name).count()
+        operations_count = db.query(OperationDB).filter(OperationDB.repository == repo.name).count()
         jobs_count = db.query(JobDB).filter(JobDB.repository == repo.name).count()
-        logs_count = db.query(LogEntryDB).filter(LogEntryDB.repo == repo.name).count()
+        logs_count = db.query(LogEntryDB).filter(LogEntryDB.repository == repo.name).count()
         try:
             notification_events_count = db.query(NotificationEventDB).filter(
                 or_(
@@ -910,9 +910,9 @@ class DashboardApplication:
             )
             self._set_repo_action_step(operation_id, "delete_repo_metrics", "running", "Deleting metrics and history records.")
 
-            operations_deleted = db.query(OperationDB).filter(OperationDB.repo == repo_name).delete(synchronize_session=False)
+            operations_deleted = db.query(OperationDB).filter(OperationDB.repository == repo_name).delete(synchronize_session=False)
             jobs_deleted = db.query(JobDB).filter(JobDB.repository == repo_name).delete(synchronize_session=False)
-            logs_deleted = db.query(LogEntryDB).filter(LogEntryDB.repo == repo_name).delete(synchronize_session=False)
+            logs_deleted = db.query(LogEntryDB).filter(LogEntryDB.repository == repo_name).delete(synchronize_session=False)
             try:
                 notification_deleted = db.query(NotificationEventDB).filter(
                     or_(
@@ -1223,7 +1223,7 @@ class DashboardApplication:
         async def get_operations(
             limit: int = 100,
             status: Optional[str] = None,
-            repo: Optional[str] = None,
+            repository: Optional[str] = None,
             db: Session = Depends(get_db),
             current_user: UserDB = Depends(require_auth),
             request: Request = None,
@@ -1232,7 +1232,7 @@ class DashboardApplication:
             operations = await self.cached_job_service.get_operations(
                 limit=limit,
                 status=status,
-                repo=repo
+                repository=repository
             )
             return APIResponse(data={"operations": operations}, total=len(operations))
         
@@ -1558,7 +1558,7 @@ class DashboardApplication:
                         'operation_type': operation_data.get('operation_type', 'starting'),
                         'command': operation_data.get('command'),
                         'status': OperationStatus.STARTING.value,
-                        'repo': operation_data.get('repo'),
+                        'repository': operation_data.get('repository'),
                         'pr_url': operation_data.get('pr_url'),
                         'installation_id': operation_data.get('installation_id'),
                         'sender': operation_data.get('sender'),
@@ -1573,7 +1573,7 @@ class DashboardApplication:
                         job_id=operation_data.get('job_id'),
                         operation_type=operation_data.get('operation_type', 'starting'),
                         command=operation_data.get('command'),
-                        repo=operation_data.get('repo'),
+                        repository=operation_data.get('repository'),
                         pr_url=operation_data.get('pr_url'),
                         installation_id=operation_data.get('installation_id'),
                         sender=operation_data.get('sender'),
@@ -1587,7 +1587,7 @@ class DashboardApplication:
                         "job_id": operation_data.get('job_id'),
                         "operation_type": operation_data.get('operation_type', 'starting'),
                         "command": operation_data.get('command'),
-                        "repo": operation_data.get('repo'),
+                        "repository": operation_data.get('repository'),
                         "status": "starting",
                         "started_at": operation_data.get('started_at')
                     }
@@ -1857,7 +1857,7 @@ class DashboardApplication:
             limit: int = 50000,  # Increased limit to show all logs, no artificial restriction
             level: Optional[str] = None,
             search: Optional[str] = None,
-            repo: Optional[str] = None,
+            repository: Optional[str] = None,
             job_id: Optional[str] = None,
             operation_id: Optional[str] = None,
             offset: int = 0,
@@ -1871,7 +1871,7 @@ class DashboardApplication:
                 level=level,
                 job_id=job_id,
                 operation_id=operation_id,
-                repository=repo,
+                repository=repository,
                 search=search,
                 offset=offset,
             )
@@ -1891,7 +1891,7 @@ class DashboardApplication:
         @self.app.post("/logs/immediate")
         async def receive_immediate_log(log_data: dict, db: Session = Depends(get_db), _: None = Depends(require_auth_or_api_key)):
             try:
-                repo_value = log_data.get('repository') or log_data.get('repo')
+                repo_value = log_data.get('repository')
                 # Use robust cached job service for logs too
                 log_id = await self.cached_job_service.create_log_entry(
                     level=log_data.get('level', 'INFO'),
@@ -1931,7 +1931,6 @@ class DashboardApplication:
                         "job_id": log_data.get('job_id'),
                         "operation_id": log_data.get('operation_id'),
                         "repository": repo_value,
-                        "repo": repo_value,
                         "command": log_data.get('command'),
                         "pr_url": log_data.get('pr_url'),
                         "module": log_data.get('module'),
@@ -1967,7 +1966,7 @@ class DashboardApplication:
                 log_ids = await self.cached_job_service.create_log_entries_batch(logs)
                 for i, log_data in enumerate(logs):
                     log_id = log_ids[i]
-                    repo_value = log_data.get('repository') or log_data.get('repo')
+                    repo_value = log_data.get('repository')
                     received_log_ids.append({'id': log_id, 'message': log_data.get('message', '')})
                     broadcast_logs.append({
                         "id": log_id,
@@ -1979,7 +1978,6 @@ class DashboardApplication:
                         "job_id": log_data.get('job_id'),
                         "operation_id": log_data.get('operation_id'),
                         "repository": repo_value,
-                        "repo": repo_value,
                         "command": log_data.get('command'),
                         "pr_url": log_data.get('pr_url'),
                         "module": log_data.get('module'),
@@ -2040,7 +2038,7 @@ class DashboardApplication:
                     recent_operations.append({
                         "id": op.operation_id,
                         "command": op.command,
-                        "repo": op.repo,
+                        "repository": op.repository,
                         "status": op.status,
                         "started_at": op.started_at.isoformat() if op.started_at else None,
                         "duration": op.duration

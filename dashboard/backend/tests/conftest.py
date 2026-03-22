@@ -124,7 +124,7 @@ def sample_operation_data():
     return {
         'operation_id': 'test-op-123',
         'job_id': 'test-job-123',
-        'repo': 'test/repo',
+        'repository': 'test/repo',
         'operation_type': 'review',
         'model_used': 'gpt-4',
         'input_tokens': 1000,
@@ -142,7 +142,7 @@ def sample_log_data():
     """Sample log data for testing"""
     return {
         'job_id': 'test-job-123',
-        'repo': 'test/repo',
+        'repository': 'test/repo',
         'level': 'INFO',
         'message': 'Test log message',
         'timestamp': datetime.now() - timedelta(days=1)

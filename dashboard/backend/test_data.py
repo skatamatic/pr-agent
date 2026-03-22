@@ -77,11 +77,11 @@ def _generate_realistic_log_sequence(operation) -> list:
     status = operation.status
     
     # Always start with initialization
-    logs.append(("INFO", f"Starting {command} operation for {operation.repo}", "pr_agent.core", "handle_request"))
+    logs.append(("INFO", f"Starting {command} operation for {operation.repository}", "pr_agent.core", "handle_request"))
     logs.append(("DEBUG", f"Operation ID: {operation.operation_id}, Request ID: {operation.request_id}", "pr_agent.core", "handle_request"))
     
     # Authentication and setup
-    logs.append(("INFO", f"Authenticating with GitHub for repository {operation.repo}", "pr_agent.git_provider", "authenticate"))
+    logs.append(("INFO", f"Authenticating with GitHub for repository {operation.repository}", "pr_agent.git_provider", "authenticate"))
     logs.append(("DEBUG", f"Installation ID: {operation.installation_id}, Sender: {operation.sender}", "pr_agent.git_provider", "get_installation"))
     
     # Fetch PR data
@@ -351,7 +351,7 @@ async def generate_test_data() -> Dict[str, Any]:
                     job_id=job_id,
                     operation_type=command,
                     command=command,
-                    repo=repo,
+                    repository=repo,
                     pr_url=job.pr_url,
                     status=op_status,
                     started_at=op_started_time,
@@ -397,7 +397,7 @@ async def generate_test_data() -> Dict[str, Any]:
                         pr_url=operation.pr_url,
                         command=operation.command,
                         installation_id=operation.installation_id,
-                        repo=operation.repo,
+                        repository=operation.repository,
                         sender=operation.sender,
                         request_id=operation.request_id,
                         status=operation.status,
@@ -505,7 +505,7 @@ async def simulate_live_activity() -> Dict[str, Any]:
             job_id=job_id,
             operation_type=command,
             command=command,
-            repo=repo,
+            repository=repo,
             pr_url=job.pr_url,
             status="processing",
             started_at=started_time,
@@ -563,7 +563,7 @@ async def simulate_live_activity() -> Dict[str, Any]:
                 pr_url=operation.pr_url,
                 command=operation.command,
                 installation_id=operation.installation_id,
-                repo=operation.repo,
+                repository=operation.repository,
                 sender=operation.sender,
                 request_id=operation.request_id,
                 status=operation.status,
@@ -624,7 +624,7 @@ async def trigger_test_error() -> Dict[str, Any]:
             job_id=job_id,
             operation_type="improve",
             command="improve",
-            repo="error/test-repo",
+            repository="error/test-repo",
             pr_url=job.pr_url,
             status="failed",
             started_at=datetime.utcnow() - timedelta(minutes=2),
@@ -825,7 +825,7 @@ async def generate_ai_metrics_data() -> Dict[str, Any]:
                 operation_type=random.choice(commands),
                 command=random.choice(commands),
                 status="completed",
-                repo=job.repository,
+                repository=job.repository,
                 pr_url=job.pr_url,
                 installation_id=f"inst_{random.randint(10000, 99999)}",
                 sender=job.trigger_user,

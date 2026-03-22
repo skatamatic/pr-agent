@@ -545,7 +545,11 @@ class TestRunnerProvisionAPI:
         calls = {"deprovision": 0, "provision": 0}
 
         def fake_get_instance_status(self, instance_name, zone):
-            return "RUNNING" if instance_name == "vm-existing" else None
+            # Before deprovision: VM is running. After deprovision: gone (None) so the
+            # post-delete poll loop in main does not sleep 45×2s (looks like a hang).
+            if instance_name == "vm-existing":
+                return None if calls["deprovision"] else "RUNNING"
+            return None
 
         def fake_deprovision(self, instance_name, zone):
             calls["deprovision"] += 1

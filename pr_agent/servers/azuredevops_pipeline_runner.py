@@ -299,7 +299,7 @@ async def run_action():
                                         op_type = OperationType.DESCRIBE
                                     else:
                                         op_type = OperationType.STARTING
-                                    with operation_context(operation_type=op_type, command=skipped_op['command'], repo=repository, pr_url=pr_url):
+                                    with operation_context(operation_type=op_type, command=skipped_op['command'], repository=repository, pr_url=pr_url):
                                         update_operation_status('skipped', result_data={ 'reason': skipped_op['reason'] })
                                 # Mark job as skipped and wait for completion
                                 update_job_status('skipped', result_summary={ 'reason': 'All commands skipped by PR filters' })

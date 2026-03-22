@@ -198,7 +198,7 @@ class DashboardSink:
         
         # Add context from extra fields
         context_fields = [
-            "job_id", "operation_id", "command", "repo", "pr_url", 
+            "job_id", "operation_id", "command", "repository", "pr_url",
             "installation_id", "sender", "request_id", "status"
         ]
         

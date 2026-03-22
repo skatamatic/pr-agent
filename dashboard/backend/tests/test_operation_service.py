@@ -58,7 +58,7 @@ class TestOperationService:
         assert "operations" in result.data
 
     async def test_get_operations_with_repo_filter(self, operation_service, db_session):
-        result = await operation_service.get_operations(db_session, limit=5, repo="some/repo")
+        result = await operation_service.get_operations(db_session, limit=5, repository="some/repo")
         assert result.total >= 0
         assert isinstance(result.data["operations"], list)
 
@@ -66,7 +66,7 @@ class TestOperationService:
         op = OperationDB(
             operation_id="op-status-test-123",
             job_id="job-1",
-            repo="test/repo",
+            repository="test/repo",
             operation_type="review",
             status="in_progress",
             started_at=datetime.utcnow(),

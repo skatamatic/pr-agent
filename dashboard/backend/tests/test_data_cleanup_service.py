@@ -46,7 +46,7 @@ class TestDataCleanupService:
         old_operation = OperationDB(
             operation_id='old-op-123',
             job_id='old-job-123',
-            repo='test/repo',
+            repository='test/repo',
             operation_type='review',
             model_used='gpt-4',
             input_tokens=1000,
@@ -60,7 +60,7 @@ class TestDataCleanupService:
         recent_operation = OperationDB(
             operation_id='recent-op-456',
             job_id='recent-job-456',
-            repo='test/repo',
+            repository='test/repo',
             operation_type='review',
             model_used='gpt-4',
             input_tokens=800,
@@ -74,7 +74,7 @@ class TestDataCleanupService:
         for i in range(2):
             old_log = LogEntryDB(
                 job_id='old-job-123',
-                repo='test/repo',
+                repository='test/repo',
                 level='INFO',
                 message=f'Old log message {i}',
                 timestamp=datetime.now() - timedelta(days=2)
@@ -85,7 +85,7 @@ class TestDataCleanupService:
         for i in range(2):
             recent_log = LogEntryDB(
                 job_id='recent-job-456',
-                repo='test/repo',
+                repository='test/repo',
                 level='INFO',
                 message=f'Recent log message {i}',
                 timestamp=datetime.now() - timedelta(hours=1)

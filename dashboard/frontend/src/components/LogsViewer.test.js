@@ -16,7 +16,7 @@ describe('LogsViewer', () => {
     const api = require('../services/api').default;
     render(<LogsViewer logs={[]} />);
     await waitFor(() => {
-      expect(api.getRepositoryNames).toHaveBeenCalledWith({ active_only: false });
+      expect(api.getRepositoryNames).toHaveBeenCalledWith({ active_only: true });
     });
   });
 });

@@ -976,7 +976,7 @@ const StatusOverview = ({ operations = [], onNavigateToConfig, onNavigateToJob, 
                           <p className="text-xs text-gray-600 dark:text-gray-400 truncate">
                             {isJob ? 
                               `${job.operations_count || 0} operations • ${formatTime(job.started_at)}` :
-                              `${job.repo || 'Unknown repo'} • ${formatTime(job.started_at || job.timestamp)}`
+                              `${job.repository || 'Unknown repo'} • ${formatTime(job.started_at || job.timestamp)}`
                             }
                           </p>
                         </div>

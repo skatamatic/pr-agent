@@ -59,8 +59,8 @@ class OperationDB(Base):
     status = Column(String)
     current_step = Column(String, nullable=True)  # Real-time step tracking: "Context", "Generating", "Reflecting", etc.
     
-    # Context
-    repo = Column(String, nullable=True)
+    # Context (owner/repo string)
+    repository = Column(String, nullable=True)
     pr_url = Column(String, nullable=True)
     installation_id = Column(String, nullable=True)
     sender = Column(String, nullable=True)
@@ -224,7 +224,7 @@ class LogEntryDB(Base):
     pr_url = Column(String, nullable=True)
     command = Column(String, nullable=True)
     installation_id = Column(String, nullable=True)
-    repo = Column(String, nullable=True)
+    repository = Column(String, nullable=True)
     sender = Column(String, nullable=True)
     request_id = Column(String, nullable=True)
     sub_feature = Column(String, nullable=True)
@@ -445,8 +445,8 @@ class Operation(BaseModel):
     status: OperationStatus
     current_step: Optional[str] = None
     
-    # Context
-    repo: Optional[str] = None
+    # Context (owner/repo string)
+    repository: Optional[str] = None
     pr_url: Optional[str] = None
     installation_id: Optional[str] = None
     sender: Optional[str] = None
@@ -501,7 +501,7 @@ class LogEntry(BaseModel):
     pr_url: Optional[str] = None
     command: Optional[str] = None
     installation_id: Optional[str] = None
-    repo: Optional[str] = None
+    repository: Optional[str] = None
     sender: Optional[str] = None
     request_id: Optional[str] = None
     sub_feature: Optional[str] = None

@@ -33,7 +33,7 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
   }, []);
 
   // Also extract unique repo names from operations as fallback
-  const uniqueRepoNames = [...new Set(operations.map(op => op.repo).filter(Boolean))];
+  const uniqueRepoNames = [...new Set(operations.map(op => op.repository).filter(Boolean))];
   const allRepoNames = [...new Set([...repositoryNames, ...uniqueRepoNames])];
 
   const getStatusColor = (status) => {
@@ -102,7 +102,7 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
   // Apply additional filters for live tab
   const filteredOperations = getTabOperations().filter(op => {
     // Repository filter (applies to both tabs)
-    const repoMatch = repoFilter === 'all' || op.repo === repoFilter;
+    const repoMatch = repoFilter === 'all' || op.repository === repoFilter;
     
     if (activeTab === 'live') {
       // For live operations, only filter by status (not by result since they're still running)
@@ -476,7 +476,7 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
                               </td>
                               <td className="px-6 py-4 whitespace-nowrap">
                                 <div className="text-sm text-gray-900 dark:text-white font-medium">
-                                  {operation.repo || 'N/A'}
+                                  {operation.repository || 'N/A'}
                                 </div>
                                 {operation.pr_url && (
                                   <div className="text-sm text-gray-500 dark:text-gray-400">
@@ -690,7 +690,7 @@ const OperationsList = ({ operations = [], onRefresh, onShowLogs }) => {
                               </td>
                               <td className="px-6 py-4 whitespace-nowrap">
                                 <div className="text-sm text-gray-900 dark:text-white font-medium">
-                                  {operation.repo || 'N/A'}
+                                  {operation.repository || 'N/A'}
                                 </div>
                                 {operation.pr_url && (
                                   <div className="text-sm text-gray-500 dark:text-gray-400">

@@ -153,7 +153,7 @@ class PRCodeSuggestions:
                 operation_context_manager = operation_context(
                     operation_type=OperationType.GENERATING_SUGGESTIONS,
                     command="improve",
-                    repo=repository,
+                    repository=repository,
                     pr_url=self.pr_url,
                     installation_id=getattr(self.git_provider, 'installation_id', None),
                     sender=getattr(self.git_provider, 'sender', None)

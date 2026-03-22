@@ -21,7 +21,7 @@ class OperationService:
         db: Session,
         limit: int = 100,
         status: Optional[str] = None,
-        repo: Optional[str] = None
+        repository: Optional[str] = None
     ) -> APIResponse:
         """Get list of operations with optional filtering"""
         query = db.query(OperationDB)
@@ -29,8 +29,8 @@ class OperationService:
         if status and status != "all":
             query = query.filter(OperationDB.status == status)
             
-        if repo and repo != "all":
-            query = query.filter(OperationDB.repo == repo)
+        if repository and repository != "all":
+            query = query.filter(OperationDB.repository == repository)
         
         operations = query.order_by(OperationDB.started_at.desc()).limit(limit).all()
         
@@ -42,7 +42,7 @@ class OperationService:
                 "operation_id": op.operation_id,
                 "request_id": op.request_id,
                 "command": op.command,
-                "repo": op.repo,
+                "repository": op.repository,
                 "pr_url": op.pr_url,
                 "status": op.status,
                 "started_at": to_utc_iso(op.started_at),
@@ -136,7 +136,7 @@ class LogService:
         limit: int = 1000,
         level: Optional[str] = None,
         search: Optional[str] = None,
-        repo: Optional[str] = None,
+        repository: Optional[str] = None,
         job_id: Optional[str] = None,
         operation_id: Optional[str] = None
     ) -> APIResponse:
@@ -149,8 +149,8 @@ class LogService:
         if search:
             query = query.filter(LogEntryDB.message.contains(search))
             
-        if repo and repo != "all":
-            query = query.filter(LogEntryDB.repo == repo)
+        if repository and repository != "all":
+            query = query.filter(LogEntryDB.repository == repository)
         
         if job_id:
             query = query.filter(LogEntryDB.job_id == job_id)
@@ -172,7 +172,7 @@ class LogService:
                 "function": log.function,
                 "pr_url": log.pr_url,
                 "command": log.command,
-                "repo": log.repo,
+                "repository": log.repository,
                 "request_id": log.request_id,
                 "job_id": getattr(log, 'job_id', None),  # Safe access for backward compatibility
                 "operation_id": getattr(log, 'operation_id', None),  # Safe access for backward compatibility
@@ -201,7 +201,7 @@ class LogService:
                 "function": log.function,
                 "pr_url": log.pr_url,
                 "command": log.command,
-                "repo": log.repo,
+                "repository": log.repository,
                 "request_id": log.request_id,
                 "job_id": getattr(log, 'job_id', None),
                 "operation_id": getattr(log, 'operation_id', None),
@@ -238,7 +238,7 @@ class LogService:
                 "function": log.function,
                 "pr_url": log.pr_url,
                 "command": log.command,
-                "repo": log.repo,
+                "repository": log.repository,
                 "request_id": log.request_id,
                 "status": log.status,
                 "error": log.error,
@@ -265,7 +265,7 @@ class LogService:
             pr_url=log_data.get('pr_url'),
             command=log_data.get('command'),
             installation_id=log_data.get('installation_id'),
-            repo=log_data.get('repo'),
+            repository=log_data.get('repository'),
             sender=log_data.get('sender'),
             request_id=log_data.get('request_id'),
             sub_feature=log_data.get('sub_feature'),

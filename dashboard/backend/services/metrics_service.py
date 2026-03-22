@@ -605,7 +605,7 @@ class MetricsService:
             total_dev_hours = 0.0
             
             for operation in operations:
-                repo = operation.repo or "unknown"
+                repo = operation.repository or "unknown"
                 estimated_dev_hours = operation.estimated_dev_hours_saved or 0.0
                 
                 # Calculate operation cost and tokens - handle both multi-model and legacy data

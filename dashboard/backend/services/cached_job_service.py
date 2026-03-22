@@ -105,7 +105,7 @@ class CachedJobService:
         return success
         
     async def create_operation(self, job_id: str, operation_type: OperationType,
-                              command: str, repo: str = None, pr_url: str = None,
+                              command: str, repository: str = None, pr_url: str = None,
                               installation_id: str = None, sender: str = None,
                               request_id: str = None, operation_id: str = None) -> str:
         """Create a new operation in cache"""
@@ -122,7 +122,7 @@ class CachedJobService:
             'operation_type': operation_type.value if isinstance(operation_type, OperationType) else operation_type,
             'command': command,
             'status': OperationStatus.STARTING.value,
-            'repo': repo,
+            'repository': repository,
             'pr_url': pr_url,
             'installation_id': installation_id,
             'sender': sender,
@@ -262,11 +262,11 @@ class CachedJobService:
         return job
         
     async def get_operations(self, limit: int = 100, status: str = None,
-                           repo: str = None) -> List[Dict[str, Any]]:
+                           repository: str = None) -> List[Dict[str, Any]]:
         """Get operations from cache"""
         filters = {}
-        if repo:
-            filters['repo'] = repo
+        if repository:
+            filters['repository'] = repository
             
         return await self.cache.get_operations(
             limit=limit,

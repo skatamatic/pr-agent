@@ -427,7 +427,7 @@ class JobContext:
                                 job_id=current_job_id,  # Use captured job_id
                                 operation_type=operation_metadata.get('operation_type', 'starting'),
                                 command=operation_metadata.get('command'),
-                                repo=operation_metadata.get('repo'),
+                                repository=operation_metadata.get('repository'),
                                 pr_url=operation_metadata.get('pr_url'),
                                 installation_id=operation_metadata.get('installation_id'),
                                 sender=operation_metadata.get('sender'),
@@ -449,7 +449,7 @@ class JobContext:
                                 'job_id': current_job_id,  # Use captured job_id
                                 'operation_type': operation_metadata.get('operation_type', 'starting'),
                                 'command': operation_metadata.get('command'),
-                                'repo': operation_metadata.get('repo'),
+                                'repository': operation_metadata.get('repository'),
                                 'pr_url': operation_metadata.get('pr_url'),
                                 'installation_id': operation_metadata.get('installation_id'),
                                 'sender': operation_metadata.get('sender'),
@@ -640,7 +640,7 @@ def job_context(job_type: JobType,
 @contextmanager
 def operation_context(operation_type: OperationType,
                      command: Optional[str] = None,
-                     repo: Optional[str] = None,
+                     repository: Optional[str] = None,
                      pr_url: Optional[str] = None,
                      installation_id: Optional[str] = None,
                      sender: Optional[str] = None,
@@ -651,7 +651,7 @@ def operation_context(operation_type: OperationType,
     operation_metadata = {
         'operation_type': operation_type.value,
         'command': command,
-        'repo': repo,
+        'repository': repository,
         'pr_url': pr_url,
         'installation_id': installation_id,
         'sender': sender,
@@ -688,13 +688,17 @@ def bind_logger_context():
     context = {}
     
     job_id = JobContext.get_current_job_id()
+    job_meta = JobContext.get_job_metadata() if job_id else {}
+    op_meta = JobContext.get_operation_metadata() if JobContext.get_current_operation_id() else {}
+    repo_canonical = (job_meta.get('repository') or op_meta.get('repository') or '').strip() or None
+
     if job_id:
         context['job_id'] = job_id
         # Don't include all metadata to avoid duplication
         context.update({
-            'repository': JobContext.get_job_metadata().get('repository'),
-            'pr_url': JobContext.get_job_metadata().get('pr_url'),
-            'command': JobContext.get_job_metadata().get('command')
+            'repository': job_meta.get('repository'),
+            'pr_url': job_meta.get('pr_url'),
+            'command': job_meta.get('command'),
         })
     
     operation_id = JobContext.get_current_operation_id()
@@ -702,8 +706,12 @@ def bind_logger_context():
         context['operation_id'] = operation_id
         # Don't include all metadata to avoid duplication
         context.update({
-            'operation_type': JobContext.get_operation_metadata().get('operation_type')
+            'operation_type': op_meta.get('operation_type'),
         })
+
+    if repo_canonical:
+        # Single canonical key for owner/repo string (job may omit; operation supplies it)
+        context['repository'] = repo_canonical
     
     # Remove None values
     context = {k: v for k, v in context.items() if v is not None}
