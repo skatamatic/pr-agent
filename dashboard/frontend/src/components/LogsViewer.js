@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Search, Download, Filter, Info, ChevronDown, ChevronUp, RefreshCw, Clock, ExternalLink, X, Calendar, FileText, Star } from 'lucide-react';
+import { Search, Download, Filter, Info, ChevronDown, ChevronUp, Clock, ExternalLink, X, Calendar, FileText, Star } from 'lucide-react';
 import ViewHeader from './ViewHeader';
 import { formatTimestamp as formatTimestampUtil } from '../utils/timeUtils';
 import apiService from '../services/api';
@@ -18,9 +18,6 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
   const [showExportDropdown, setShowExportDropdown] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [selectedStep, setSelectedStep] = useState('all');
-  const [newLogsAvailable, setNewLogsAvailable] = useState(false);
-  const [lastLogCount, setLastLogCount] = useState(0);
-  const [newLogsCount, setNewLogsCount] = useState(0);
   const exportDropdownRef = useRef(null);
   const logsScrollParentRef = useRef(null);
 
@@ -56,16 +53,6 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Intentionally empty - only run on mount to auto-refresh when navigating to logs
-
-  // Detect new logs arriving and show banner
-  useEffect(() => {
-    if (logs.length > lastLogCount && lastLogCount > 0) {
-      const newCount = logs.length - lastLogCount;
-      setNewLogsAvailable(true);
-      setNewLogsCount(newCount);
-    }
-    setLastLogCount(logs.length);
-  }, [logs.length, lastLogCount]);
 
   // Handle clicks outside export dropdown
   useEffect(() => {
@@ -440,17 +427,6 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
     return filters;
   };
 
-  const handleRefreshWithNewLogs = () => {
-    // Clear the new logs banner
-    setNewLogsAvailable(false);
-    setNewLogsCount(0);
-    
-    // Refresh the parent component to fetch new logs, then clear the banner
-    if (onRefresh) {
-      onRefresh();
-    }
-  };
-
   // Clear all filters function
   const clearAllFilters = (event) => {
     event.stopPropagation(); // Prevent filter card from toggling
@@ -556,34 +532,6 @@ const LogsViewer = ({ logs = [], onRefresh, filterId = null, filterType = null, 
           </div>
         }
       />
-
-      {/* New Logs Available Banner */}
-      {newLogsAvailable && (
-        <div className="bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 border-2 border-green-300 dark:border-green-600 rounded-xl p-4 shadow-sm animate-pulse">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-lg">
-                <RefreshCw className="h-5 w-5 text-green-600 dark:text-green-400" />
-              </div>
-              <div>
-                <h3 className="text-lg font-semibold text-green-900 dark:text-green-200">
-                  {newLogsCount} New Log{newLogsCount !== 1 ? 's' : ''} Available
-                </h3>
-                <p className="text-sm text-green-700 dark:text-green-300">
-                  New log entries have arrived since your last refresh
-                </p>
-              </div>
-            </div>
-            <button
-              onClick={handleRefreshWithNewLogs}
-              className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 transition-colors duration-200 shadow-sm"
-            >
-              <RefreshCw className="h-4 w-4 mr-2" />
-              Click to Refresh
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Job/Operation Filter Alert - Show when filtered externally */}
       {(filterId && filterType) && (

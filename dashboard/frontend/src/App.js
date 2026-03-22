@@ -73,7 +73,6 @@ function Dashboard() {
   const [configNavigationTarget, setConfigNavigationTarget] = useState(null);
   
   // Navigation badge counts for new data
-  const [newLogsCount, setNewLogsCount] = useState(0);
   const [newJobsCount, setNewJobsCount] = useState(0);
   const fetchDataRef = useRef(null);
   const navigateToJobWithHighlightRef = useRef(null);
@@ -136,14 +135,6 @@ function Dashboard() {
         }
         const merged = [logData, ...base];
         return merged.length > MAX_LOGS_BUFFER ? merged.slice(0, MAX_LOGS_BUFFER) : merged;
-      });
-      
-      // Increment new logs badge count only if not currently on logs view
-      setActiveTab(currentTab => {
-        if (currentTab !== 'logs') {
-          setNewLogsCount(prev => prev + 1);
-        }
-        return currentTab; // Don't change the tab, just use it for the check
       });
     };
 
@@ -566,9 +557,6 @@ function Dashboard() {
     setHighlightedOperationId(null);
     
     // Clear badge counts when navigating to respective views
-    if (tabId === 'logs') {
-      setNewLogsCount(0);
-    }
     if (tabId === 'jobs') {
       setNewJobsCount(0);
     }
@@ -694,9 +682,6 @@ function Dashboard() {
               
               // Check if this tab has new activity to show notification badge
               const hasNewActivity = () => {
-                if (tab.id === 'logs' && newLogsCount > 0 && activeTab !== 'logs') {
-                  return true;
-                }
                 if (tab.id === 'jobs' && newJobsCount > 0 && activeTab !== 'jobs') {
                   return true;
                 }
