@@ -5,7 +5,12 @@ import requests
 from litellm import acompletion
 from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
 
-from pr_agent.algo import CLAUDE_EXTENDED_THINKING_MODELS, NO_SUPPORT_TEMPERATURE_MODELS, SUPPORT_REASONING_EFFORT_MODELS, USER_MESSAGE_ONLY_MODELS
+from pr_agent.algo.model_registry import (
+    model_is_user_message_only,
+    model_supports_claude_extended_thinking,
+    model_supports_reasoning_effort,
+    model_supports_temperature,
+)
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.utils import ReasoningEffort, get_version
 from pr_agent.config_loader import get_settings
@@ -22,33 +27,29 @@ class LiteLLMAIHandler(BaseAiHandler):
     and provides a method for performing chat completions using the OpenAI ChatCompletion API.
     """
 
-    def __init__(self):
+    def __init__(self, use_injected_credentials: bool = False):
         """
         Initializes the OpenAI API key and other settings from a configuration file.
-        Raises a ValueError if the OpenAI key is missing.
+        When use_injected_credentials is True, skip loading API keys from settings so
+        temporary credentials (e.g. dashboard benchmark overrides) are preserved.
         """
         self.azure = False
         self.api_base = None
         self.repetition_penalty = None
-        
+
+        if not use_injected_credentials:
+            self._apply_settings_credentials()
+        else:
+            self._sync_runtime_from_litellm_globals()
+
+        self._apply_settings_runtime_config()
+
+    def _apply_settings_credentials(self):
         if get_settings().get("OPENAI.KEY", None):
             openai.api_key = get_settings().openai.key
             litellm.openai_key = get_settings().openai.key
         elif 'OPENAI_API_KEY' not in os.environ:
             litellm.api_key = "dummy_key"
-        if get_settings().get("aws.AWS_ACCESS_KEY_ID"):
-            assert get_settings().aws.AWS_SECRET_ACCESS_KEY and get_settings().aws.AWS_REGION_NAME, "AWS credentials are incomplete"
-            os.environ["AWS_ACCESS_KEY_ID"] = get_settings().aws.AWS_ACCESS_KEY_ID
-            os.environ["AWS_SECRET_ACCESS_KEY"] = get_settings().aws.AWS_SECRET_ACCESS_KEY
-            os.environ["AWS_REGION_NAME"] = get_settings().aws.AWS_REGION_NAME
-        if get_settings().get("LITELLM.DROP_PARAMS", None):
-            litellm.drop_params = get_settings().litellm.drop_params
-        if get_settings().get("LITELLM.SUCCESS_CALLBACK", None):
-            litellm.success_callback = get_settings().litellm.success_callback
-        if get_settings().get("LITELLM.FAILURE_CALLBACK", None):
-            litellm.failure_callback = get_settings().litellm.failure_callback
-        if get_settings().get("LITELLM.SERVICE_CALLBACK", None):
-            litellm.service_callback = get_settings().litellm.service_callback
         if get_settings().get("OPENAI.ORG", None):
             litellm.organization = get_settings().openai.org
         if get_settings().get("OPENAI.API_TYPE", None):
@@ -78,6 +79,53 @@ class LiteLLMAIHandler(BaseAiHandler):
         if get_settings().get("OLLAMA.API_BASE", None):
             litellm.api_base = get_settings().ollama.api_base
             self.api_base = get_settings().ollama.api_base
+        if get_settings().get("GOOGLE_AI_STUDIO.GEMINI_API_KEY", None):
+            os.environ["GEMINI_API_KEY"] = get_settings().google_ai_studio.gemini_api_key
+        if get_settings().get("DEEPSEEK.KEY", None):
+            os.environ['DEEPSEEK_API_KEY'] = get_settings().get("DEEPSEEK.KEY")
+        if get_settings().get("DEEPINFRA.KEY", None):
+            os.environ['DEEPINFRA_API_KEY'] = get_settings().get("DEEPINFRA.KEY")
+        if get_settings().get("MISTRAL.KEY", None):
+            os.environ["MISTRAL_API_KEY"] = get_settings().get("MISTRAL.KEY")
+        if get_settings().get("CODESTRAL.KEY", None):
+            os.environ["CODESTRAL_API_KEY"] = get_settings().get("CODESTRAL.KEY")
+        if get_settings().get("AZURE_AD.CLIENT_ID", None):
+            self.azure = True
+            access_token = self._get_azure_ad_token()
+            litellm.api_key = access_token
+            openai.api_key = access_token
+            self.api_base = get_settings().azure_ad.api_base
+            litellm.api_base = self.api_base
+            openai.api_base = self.api_base
+        if get_settings().get("OPENROUTER.KEY", None):
+            openrouter_api_key = get_settings().get("OPENROUTER.KEY", None)
+            os.environ["OPENROUTER_API_KEY"] = openrouter_api_key
+            litellm.api_key = openrouter_api_key
+            openai.api_key = openrouter_api_key
+            openrouter_api_base = get_settings().get("OPENROUTER.API_BASE", "https://openrouter.ai/api/v1")
+            os.environ["OPENROUTER_API_BASE"] = openrouter_api_base
+            self.api_base = openrouter_api_base
+            litellm.api_base = openrouter_api_base
+
+    def _sync_runtime_from_litellm_globals(self):
+        """Read azure/base routing from litellm globals set by temporary credentials."""
+        self.azure = bool(getattr(litellm, "azure_key", None))
+        self.api_base = getattr(litellm, "api_base", None)
+
+    def _apply_settings_runtime_config(self):
+        if get_settings().get("aws.AWS_ACCESS_KEY_ID"):
+            assert get_settings().aws.AWS_SECRET_ACCESS_KEY and get_settings().aws.AWS_REGION_NAME, "AWS credentials are incomplete"
+            os.environ["AWS_ACCESS_KEY_ID"] = get_settings().aws.AWS_ACCESS_KEY_ID
+            os.environ["AWS_SECRET_ACCESS_KEY"] = get_settings().aws.AWS_SECRET_ACCESS_KEY
+            os.environ["AWS_REGION_NAME"] = get_settings().aws.AWS_REGION_NAME
+        if get_settings().get("LITELLM.DROP_PARAMS", None):
+            litellm.drop_params = get_settings().litellm.drop_params
+        if get_settings().get("LITELLM.SUCCESS_CALLBACK", None):
+            litellm.success_callback = get_settings().litellm.success_callback
+        if get_settings().get("LITELLM.FAILURE_CALLBACK", None):
+            litellm.failure_callback = get_settings().litellm.failure_callback
+        if get_settings().get("LITELLM.SERVICE_CALLBACK", None):
+            litellm.service_callback = get_settings().litellm.service_callback
         if get_settings().get("HUGGINGFACE.REPETITION_PENALTY", None):
             self.repetition_penalty = float(get_settings().huggingface.repetition_penalty)
         if get_settings().get("VERTEXAI.VERTEX_PROJECT", None):
@@ -85,63 +133,6 @@ class LiteLLMAIHandler(BaseAiHandler):
             litellm.vertex_location = get_settings().get(
                 "VERTEXAI.VERTEX_LOCATION", None
             )
-        # Google AI Studio
-        # SEE https://docs.litellm.ai/docs/providers/gemini
-        if get_settings().get("GOOGLE_AI_STUDIO.GEMINI_API_KEY", None):
-          os.environ["GEMINI_API_KEY"] = get_settings().google_ai_studio.gemini_api_key
-
-        # Support deepseek models
-        if get_settings().get("DEEPSEEK.KEY", None):
-            os.environ['DEEPSEEK_API_KEY'] = get_settings().get("DEEPSEEK.KEY")
-
-        # Support deepinfra models
-        if get_settings().get("DEEPINFRA.KEY", None):
-            os.environ['DEEPINFRA_API_KEY'] = get_settings().get("DEEPINFRA.KEY")
-
-        # Support mistral models
-        if get_settings().get("MISTRAL.KEY", None):
-            os.environ["MISTRAL_API_KEY"] = get_settings().get("MISTRAL.KEY")
-        
-        # Support codestral models
-        if get_settings().get("CODESTRAL.KEY", None):
-            os.environ["CODESTRAL_API_KEY"] = get_settings().get("CODESTRAL.KEY")
-
-        # Check for Azure AD configuration
-        if get_settings().get("AZURE_AD.CLIENT_ID", None):
-            self.azure = True
-            # Generate access token using Azure AD credentials from settings
-            access_token = self._get_azure_ad_token()
-            litellm.api_key = access_token
-            openai.api_key = access_token
-            
-            # Set API base from settings
-            self.api_base = get_settings().azure_ad.api_base
-            litellm.api_base = self.api_base
-            openai.api_base = self.api_base
-
-        # Support for Openrouter models
-        if get_settings().get("OPENROUTER.KEY", None):
-            openrouter_api_key = get_settings().get("OPENROUTER.KEY", None)
-            os.environ["OPENROUTER_API_KEY"] = openrouter_api_key
-            litellm.api_key = openrouter_api_key
-            openai.api_key = openrouter_api_key
-
-            openrouter_api_base = get_settings().get("OPENROUTER.API_BASE", "https://openrouter.ai/api/v1")
-            os.environ["OPENROUTER_API_BASE"] = openrouter_api_base
-            self.api_base = openrouter_api_base
-            litellm.api_base = openrouter_api_base
-
-        # Models that only use user meessage
-        self.user_message_only_models = USER_MESSAGE_ONLY_MODELS
-
-        # Model that doesn't support temperature argument
-        self.no_support_temperature_models = NO_SUPPORT_TEMPERATURE_MODELS
-
-        # Models that support reasoning effort
-        self.support_reasoning_models = SUPPORT_REASONING_EFFORT_MODELS
-
-        # Models that support extended thinking
-        self.claude_extended_thinking_models = CLAUDE_EXTENDED_THINKING_MODELS
 
     def _get_azure_ad_token(self):
         """
@@ -281,7 +272,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         try:
             resp, finish_reason = None, None
             deployment_id = self.deployment_id
-            if self.azure:
+            if self.azure and not model.startswith("azure/"):
                 model = 'azure/' + model
             model_for_check = model.removeprefix('azure/')
             if 'claude' in model and not system:
@@ -305,7 +296,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                                           {"type": "image_url", "image_url": {"url": img_path}}]
 
             # Currently, some models do not support a separate system and user prompts
-            if model_for_check in self.user_message_only_models or get_settings().config.custom_reasoning_model:
+            if model_is_user_message_only(model_for_check) or get_settings().config.custom_reasoning_model:
                 user = f"{system}\n\n\n{user}"
                 system = ""
                 get_logger().info(f"Using model {model}, combining system and user prompts")
@@ -327,19 +318,19 @@ class LiteLLMAIHandler(BaseAiHandler):
                 }
 
             # Add temperature only if model supports it
-            if model_for_check not in self.no_support_temperature_models and not get_settings().config.custom_reasoning_model:
+            if model_supports_temperature(model_for_check) and not get_settings().config.custom_reasoning_model:
                 # get_logger().info(f"Adding temperature with value {temperature} to model {model}.")
                 kwargs["temperature"] = temperature
 
             # Add reasoning_effort if model supports it
-            if (model_for_check in self.support_reasoning_models):
+            if model_supports_reasoning_effort(model_for_check):
                 supported_reasoning_efforts = [ReasoningEffort.HIGH.value, ReasoningEffort.MEDIUM.value, ReasoningEffort.LOW.value]
                 reasoning_effort = get_settings().config.reasoning_effort if (get_settings().config.reasoning_effort in supported_reasoning_efforts) else ReasoningEffort.MEDIUM.value
                 get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
                 kwargs["reasoning_effort"] = reasoning_effort
 
             # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
-            if (model_for_check in self.claude_extended_thinking_models) and get_settings().config.get("enable_claude_extended_thinking", False):
+            if model_supports_claude_extended_thinking(model_for_check) and get_settings().config.get("enable_claude_extended_thinking", False):
                 kwargs = self._configure_claude_extended_thinking(model, kwargs)
 
             if get_settings().litellm.get("enable_callbacks", False):
@@ -371,7 +362,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 "temperature": kwargs.get("temperature", "not_set"),
                 "system_prompt_chars": len(system),
                 "user_prompt_chars": len(user),
-                "combined_prompt": model_for_check in self.user_message_only_models or get_settings().config.custom_reasoning_model
+                "combined_prompt": model_is_user_message_only(model_for_check) or get_settings().config.custom_reasoning_model
             })
             
             # Log full prompts for debugging purposes

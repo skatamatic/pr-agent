@@ -1,6 +1,3 @@
 [csharp_code_context_service]
-enabled = true
-default_depth = 1
-default_mode = "Minified"
-timeout = 180
-url = "https://localhost:7110/"
+enabled = false
+url = ''

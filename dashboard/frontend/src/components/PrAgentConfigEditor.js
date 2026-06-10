@@ -20,7 +20,8 @@ import {
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
-import { MODELS_BY_PROVIDER } from '../constants/models';
+import ModelCombobox from './ModelCombobox';
+import ModelMultiCombobox from './ModelMultiCombobox';
 
 const PrAgentConfigEditor = ({ 
   repositoryId, 
@@ -40,20 +41,14 @@ const PrAgentConfigEditor = ({
   const fetchConfigsRef = useRef(null);
   const { showSuccess, showError } = useContext(ToastContext);
 
-  // Models grouped by provider – imported from shared constants
-  const availableModels = MODELS_BY_PROVIDER;
-
-  // Use the same provider-grouped structure for all dropdowns
-  const allAvailableModels = MODELS_BY_PROVIDER;
-
   const configSections = {
     models: {
       title: 'AI Models',
       icon: Brain,
       fields: [
-        { key: 'config.model', label: 'Primary Model', type: 'select', options: allAvailableModels, description: 'Main AI model for most operations' },
-        { key: 'config.model_reasoning', label: 'Reasoning Model', type: 'select', options: allAvailableModels, description: 'AI model for complex reasoning tasks' },
-        { key: 'config.model_weak', label: 'Weak Model', type: 'select', options: allAvailableModels, description: 'Lightweight model for simple tasks (used for PR descriptions)' },
+        { key: 'config.model', label: 'Primary Model', type: 'model', description: 'Main AI model for most operations' },
+        { key: 'config.model_reasoning', label: 'Reasoning Model', type: 'model', description: 'AI model for complex reasoning tasks' },
+        { key: 'config.model_weak', label: 'Weak Model', type: 'model', description: 'Lightweight model for simple tasks (used for PR descriptions)' },
         { key: 'config.temperature', label: 'Temperature', type: 'number', min: 0, max: 2, step: 0.1, description: 'Creativity level (0 = focused, 2 = creative)' },
         { key: 'config.max_model_tokens', label: 'Max Model Tokens', type: 'number', min: 1000, max: 200000, description: 'Maximum tokens per request' },
         { key: 'config.reasoning_effort', label: 'Reasoning Effort', type: 'select', options: { effort: ['low', 'medium', 'high'] }, description: 'Reasoning intensity for complex tasks' }
@@ -78,7 +73,7 @@ const PrAgentConfigEditor = ({
       fields: [
         { key: 'pr_reviewer.num_max_findings', label: 'Max Findings', type: 'number', min: 1, max: 50, description: 'Maximum number of review findings' },
         { key: 'pr_reviewer.extra_instructions', label: 'Extra Instructions', type: 'textarea', description: 'Additional instructions for code review' },
-        { key: 'pr_reviewer.model', label: 'Override Model', type: 'select', options: availableModels, description: 'Specific model for code review (optional)' }
+        { key: 'pr_reviewer.model', label: 'Override Model', type: 'model', description: 'Specific model for code review (optional)' }
       ]
     },
     suggestions: {
@@ -91,7 +86,7 @@ const PrAgentConfigEditor = ({
         { key: 'pr_code_suggestions.focus_only_on_problems', label: 'Focus Only on Problems', type: 'boolean', description: 'Only suggest fixes for actual problems' },
         { key: 'pr_code_suggestions.dual_publishing_score_threshold', label: 'Dual Publishing Threshold', type: 'number', min: -1, max: 10, description: 'Threshold for dual publishing (-1 to disable)' },
         { key: 'pr_code_suggestions.extra_instructions', label: 'Extra Instructions', type: 'textarea', description: 'Additional instructions for code suggestions' },
-        { key: 'pr_code_suggestions.model', label: 'Override Model', type: 'select', options: availableModels, description: 'Specific model for code suggestions (optional)' }
+        { key: 'pr_code_suggestions.model', label: 'Override Model', type: 'model', description: 'Specific model for code suggestions (optional)' }
       ]
     },
     description: {
@@ -101,8 +96,7 @@ const PrAgentConfigEditor = ({
         { key: 'pr_description.publish_labels', label: 'Publish Labels', type: 'boolean', description: 'Automatically publish PR labels' },
         { key: 'pr_description.generate_ai_title', label: 'Generate AI Title', type: 'boolean', description: 'Generate PR title using AI' },
         { key: 'pr_description.enable_large_pr_handling', label: 'Large PR Handling', type: 'boolean', description: 'Special handling for large PRs' },
-        { key: 'pr_description.extra_instructions', label: 'Extra Instructions', type: 'textarea', description: 'Additional instructions for PR description' },
-        { key: 'pr_description.model', label: 'Override Model', type: 'select', options: availableModels, description: 'Specific model for PR description (optional)' }
+        { key: 'pr_description.extra_instructions', label: 'Extra Instructions', type: 'textarea', description: 'Additional instructions for PR description' }
       ]
     },
     github: {
@@ -118,6 +112,7 @@ const PrAgentConfigEditor = ({
       icon: Clock,
       fields: [
         { key: 'pr_dev_time_estimation.enabled', label: 'Enable Time Estimation', type: 'boolean', description: 'Enable development time estimation' },
+        { key: 'pr_dev_time_estimation.model', label: 'Override Model', type: 'model', description: 'Specific model for time estimation (optional)' },
         { key: 'pr_dev_time_estimation.extra_instructions', label: 'Extra Instructions', type: 'textarea', description: 'Additional instructions for time estimation' }
       ]
     },
@@ -125,7 +120,8 @@ const PrAgentConfigEditor = ({
       title: 'Advanced Settings',
       icon: Zap,
       fields: [
-        { key: 'config.fallback_models', label: 'Fallback Models', type: 'multiselect', options: availableModels, description: 'Fallback models when primary fails' },
+        { key: 'config.fallback_models', label: 'Fallback Models', type: 'multiselect', description: 'Fallback models when primary fails' },
+        { key: 'config.custom_model_max_tokens', label: 'Custom Model Max Tokens', type: 'number', min: -1, max: 2000000, description: 'Token limit for unknown models (-1 = auto)' },
         { key: 'config.use_repo_settings_file', label: 'Use Repo Settings File', type: 'boolean', description: 'Use repository-specific settings file' },
         { key: 'config.verbosity_level', label: 'Verbosity Level', type: 'select', options: { level: [0, 1, 2] }, description: 'Logging verbosity level' }
       ]
@@ -370,6 +366,38 @@ const PrAgentConfigEditor = ({
     let fieldElement;
     
     switch (field.type) {
+      case 'model':
+        fieldElement = (
+          <ModelCombobox
+            label=""
+            value={currentValue || ''}
+            onChange={(value) => updateOverride(field.key, value || undefined)}
+            description=""
+            disabled={false}
+            allowEmpty={field.label.includes('Override')}
+            emptyLabel={
+              field.key.includes('model') && field.label.includes('Override')
+                ? 'Use default model'
+                : 'Use global default'
+            }
+            showRefresh={false}
+            className=""
+          />
+        );
+        break;
+
+      case 'multiselect':
+        fieldElement = (
+          <ModelMultiCombobox
+            label=""
+            value={Array.isArray(currentValue) ? currentValue : []}
+            onChange={(value) => updateOverride(field.key, value.length ? value : undefined)}
+            description=""
+            disabled={false}
+          />
+        );
+        break;
+
       case 'select':
         fieldElement = (
           <select

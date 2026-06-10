@@ -1,13 +1,14 @@
 # Seed config for GCS; dashboard and PR-Agent use this bucket. Edit in dashboard to persist.
 [config]
-model = "anthropic/claude-sonnet-4-6-20260205"
-model_weak = "gpt-5.3-codex-spark"
-fallback_models = ["gpt-5.3-codex-spark"]
+model = "anthropic/claude-sonnet-4-6-20250514"
+model_weak = "gpt-4.1-mini"
+fallback_models = ["gpt-4.1-mini"]
 max_model_tokens = 94000
 temperature = 0.2
 verbosity_level = 2
 publish_output = true
 ai_timeout = 180
+git_provider = "azure"
 
 [pr_reviewer]
 enabled = true
@@ -37,7 +38,14 @@ pr_test = false
 pr_add_docs = false
 pr_update_changelog = false
 
-[api_keys]
-openai = ""
-anthropic = ""
-google = ""
+# Dashboard connection (auto-populated by backend on startup; edit here to override)
+[dashboard]
+url = ""
+
+# Azure DevOps runner defaults (used when running via azure-pipelines-pr-agent-docker.yml)
+[azure_devops_config]
+auto_describe = true
+auto_review = true
+auto_improve = true
+enable_output = true
+pr_actions = ["pullrequest"]

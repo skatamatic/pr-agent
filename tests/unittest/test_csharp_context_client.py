@@ -241,3 +241,146 @@ class TestNormalizeAzureOrgAndCollection:
         org, uri = csharp_context_client._normalize_azure_org_and_collection("mdt-software")
         assert org == "mdt-software"
         assert uri == "https://dev.azure.com/mdt-software"
+
+
+def _settings_for_context_cache():
+    """Minimal Dynaconf-like settings for cache tests."""
+    s = MagicMock()
+    s.config.get = lambda k, default=None: "github"
+    s.azure_devops.get = lambda k, default=None: ""
+
+    def csharp_get(k, default=None):
+        return {
+            "enabled": True,
+            "default_depth": 1,
+            "default_mode": "Minified",
+            "base_url": "http://127.0.0.1:9",
+            "username": "u",
+            "password": "p",
+            "timeout": 5,
+        }.get(k, default)
+
+    s.csharp_code_context_service.get = csharp_get
+    return s
+
+
+class TestMakeContextCacheKeyDepth:
+    """Cache key must change when depth/mode change."""
+
+    def test_cache_key_includes_depth(self):
+        csharp_context_client.reset_csharp_context_cache_for_job()
+        s1 = _settings_for_context_cache()
+        s2 = _settings_for_context_cache()
+        base = {
+            "enabled": True,
+            "base_url": "http://x",
+            "username": "u",
+            "password": "p",
+            "timeout": 5,
+            "default_mode": "Minified",
+        }
+
+        def csharp_get_1(k, default=None):
+            d = {**base, "default_depth": 1}
+            return d.get(k, default)
+
+        def csharp_get_2(k, default=None):
+            d = {**base, "default_depth": 2}
+            return d.get(k, default)
+
+        s1.csharp_code_context_service.get = csharp_get_1
+        s2.csharp_code_context_service.get = csharp_get_2
+
+        with patch.object(csharp_context_client, "get_settings", return_value=s1):
+            k1 = csharp_context_client._make_context_cache_key("o", "r", 1, "t")
+        with patch.object(csharp_context_client, "get_settings", return_value=s2):
+            k2 = csharp_context_client._make_context_cache_key("o", "r", 1, "t")
+
+        assert k1 != k2
+
+
+@pytest.mark.asyncio
+class TestCsharpContextJobCache:
+    """Per-job cache: get_pr_diff + get_pr_context must not double-fetch."""
+
+    async def test_identical_args_only_one_impl_call(self):
+        csharp_context_client.reset_csharp_context_cache_for_job()
+        calls = []
+
+        async def fake_impl(owner, repo_name, pr_number, access_token):
+            calls.append((owner, repo_name, pr_number, access_token))
+            return {"mergedResults": {"k": 1}}
+
+        with patch.object(csharp_context_client, "get_settings", return_value=_settings_for_context_cache()):
+            with patch.object(
+                csharp_context_client,
+                "_fetch_csharp_minimal_context_impl",
+                side_effect=fake_impl,
+            ):
+                r1 = await csharp_context_client.get_csharp_minimal_context("acme", "repo", 42, "tok")
+                r2 = await csharp_context_client.get_csharp_minimal_context("acme", "repo", 42, "tok")
+
+        assert r1 == r2 == {"mergedResults": {"k": 1}}
+        assert len(calls) == 1
+
+    async def test_different_pr_number_second_fetch(self):
+        csharp_context_client.reset_csharp_context_cache_for_job()
+        calls = []
+
+        async def fake_impl(owner, repo_name, pr_number, access_token):
+            calls.append(pr_number)
+            return {"id": pr_number}
+
+        with patch.object(csharp_context_client, "get_settings", return_value=_settings_for_context_cache()):
+            with patch.object(
+                csharp_context_client,
+                "_fetch_csharp_minimal_context_impl",
+                side_effect=fake_impl,
+            ):
+                await csharp_context_client.get_csharp_minimal_context("a", "b", 1, "t")
+                await csharp_context_client.get_csharp_minimal_context("a", "b", 2, "t")
+
+        assert calls == [1, 2]
+
+    async def test_concurrent_requests_coalesce_to_single_fetch(self):
+        csharp_context_client.reset_csharp_context_cache_for_job()
+        calls = []
+
+        async def fake_impl(*args, **kwargs):
+            calls.append(1)
+            await asyncio.sleep(0.03)
+            return {"coalesced": True}
+
+        with patch.object(csharp_context_client, "get_settings", return_value=_settings_for_context_cache()):
+            with patch.object(
+                csharp_context_client,
+                "_fetch_csharp_minimal_context_impl",
+                side_effect=fake_impl,
+            ):
+                r1, r2 = await asyncio.gather(
+                    csharp_context_client.get_csharp_minimal_context("o", "r", 9, "tok"),
+                    csharp_context_client.get_csharp_minimal_context("o", "r", 9, "tok"),
+                )
+
+        assert r1 == r2 == {"coalesced": True}
+        assert len(calls) == 1
+
+    async def test_reset_allows_fresh_fetch(self):
+        csharp_context_client.reset_csharp_context_cache_for_job()
+        calls = []
+
+        async def fake_impl(*args, **kwargs):
+            calls.append(1)
+            return {"n": len(calls)}
+
+        with patch.object(csharp_context_client, "get_settings", return_value=_settings_for_context_cache()):
+            with patch.object(
+                csharp_context_client,
+                "_fetch_csharp_minimal_context_impl",
+                side_effect=fake_impl,
+            ):
+                await csharp_context_client.get_csharp_minimal_context("o", "r", 1, "t")
+                csharp_context_client.reset_csharp_context_cache_for_job()
+                await csharp_context_client.get_csharp_minimal_context("o", "r", 1, "t")
+
+        assert len(calls) == 2

@@ -7,6 +7,8 @@ from pr_agent.algo.utils import load_large_diff
 from pr_agent.config_loader import get_settings
 get_settings(use_context=False).set("CONFIG.CLI_MODE", True)
 get_settings(use_context=False).config.allow_dynamic_context = False
+get_settings(use_context=False).set("config.patch_extension_skip_types", [".md", ".txt"])
+get_settings(use_context=False).set("config.max_extra_lines_before_dynamic_context", 10)
 
 
 class TestExtendPatch:

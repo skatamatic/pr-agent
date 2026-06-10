@@ -111,6 +111,9 @@ const apiService = {
   getDashboardAutoSetup: () => api.get('/api/config/dashboard-auto-setup'),
   updateConfig: (config) => api.post('/api/config', { config }),
   testContextService: (params) => api.post('/api/config/test-context-service', params),
+  getAvailableModels: (refresh = false) =>
+    api.get('/api/models/available', { params: refresh ? { refresh: true } : {} }),
+  testModel: (params) => api.post('/api/models/test', params, { timeout: 120000 }),
   bulkUploadConfig: (file) => {
     const formData = new FormData();
     formData.append('file', file);

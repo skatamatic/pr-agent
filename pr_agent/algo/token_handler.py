@@ -294,19 +294,12 @@ class TokenHandler:
         """
         Get the maximum number of tokens for a given model.
 
-        Args:
-        - model: The model name.
-
-        Returns:
-        The maximum number of tokens for the model.
+        Uses the shared model registry resolution (same as utils.get_max_tokens).
         """
+        from pr_agent.algo.utils import get_max_tokens
+
         try:
-            max_tokens_model = MAX_TOKENS.get(model, 4096)
-            max_tokens_model = min(max_tokens_model, get_settings().config.max_model_tokens)
-            custom_model_max_tokens = get_settings().config.custom_model_max_tokens
-            if custom_model_max_tokens != -1:
-                max_tokens_model = custom_model_max_tokens
-            return max_tokens_model
+            return get_max_tokens(model)
         except Exception as e:
             get_logger().warning(f"Failed to get max tokens for model {model}: {e}")
             return 4096

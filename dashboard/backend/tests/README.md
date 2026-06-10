@@ -18,6 +18,20 @@ python run_tests.py
 
 Tests use **in-memory SQLite** (`DATABASE_URL=sqlite:///:memory:` set in `conftest.py`), so no real database is modified.
 
+## Coverage
+
+Run from **dashboard/backend** so the `services` package resolves. Use **dotted** module names (not path-style `services/...`):
+
+```bash
+python -m pytest tests/ --cov=services --cov-report=term-missing
+```
+
+To narrow to the robust cache package:
+
+```bash
+python -m pytest tests/test_robust_cache_repository_contract.py --cov=services.robust_cache_service --cov-report=term-missing
+```
+
 ## Coverage by area
 
 | Area | Files | What's tested |
@@ -32,6 +46,7 @@ Tests use **in-memory SQLite** (`DATABASE_URL=sqlite:///:memory:` set in `confte
 | **Logs cache merge** | test_logs_cache_merge | Unique log ids after inserts; GET `/api/logs` with `search` / `offset` / `repository` |
 | **Metrics** | test_metrics_api | Summary, config, recalculate, operations/repositories breakdown |
 | **Config** | test_config_api, test_config | GET/POST config, pr-agent-path, validate path; CORS/port/database_url from env |
+| **Models & discovery** | test_model_service, test_models_api | GET `/api/models/available`, POST `/api/models/test`, cache, auth, benchmark response shape |
 | **Repositories** | test_repositories_api | List, names, create (minimal), get 404, health |
 | **Admin** | test_admin_api | Retention config, database stats |
 | **System** | test_system_api | Status realtime, alerts, performance |
@@ -52,6 +67,18 @@ Tests use **in-memory SQLite** (`DATABASE_URL=sqlite:///:memory:` set in `confte
 ## API conventions
 
 - **Owner/repo string** (e.g. `org/name`) is always the field **`repository`** on jobs, operations, logs, and related JSON/query parameters (no `repo` alias).
+
+## Repository field contract (unit)
+
+- [`test_robust_cache_repository_contract.py`](test_robust_cache_repository_contract.py) — log ingest strips legacy `repo`, serializers expose `repository` only (mocked DB); `_get_logs_from_cache` filters by `repository` (in-memory LRU only).
+
+## Robust cache service (unit / integration)
+
+- [`test_robust_cache_service_comprehensive.py`](test_robust_cache_service_comprehensive.py) — `CacheEntry` / `LRUCache`, `AsyncPersistenceQueue` helpers, enqueue + flush, full `RobustCacheService` cache-through paths (jobs, operations, logs), DB error paths (mocked), cleanup + memory pressure, optional SQLite round-trips via `ensure_db_schema` (`create_log`, `create_logs_batch`, job insert).
+
+```bash
+python -m pytest tests/test_robust_cache_service_comprehensive.py --cov=services.robust_cache_service --cov-report=term-missing
+```
 
 ## Fixtures (conftest.py)
 

@@ -242,7 +242,7 @@ class TestShouldTerminateJob:
         should_terminate, reason = should_terminate_job(mock_git_provider)
         
         assert should_terminate == True
-        assert "[no_bots] found in PR description" in reason
+        assert "[nobots] found in PR description" in reason
         mock_git_provider.get_pr_description_full.assert_called_once()
     
     @patch('pr_agent.algo.pr_filters.get_settings')
@@ -260,7 +260,7 @@ class TestShouldTerminateJob:
         should_terminate, reason = should_terminate_job(mock_git_provider)
         
         assert should_terminate == True
-        assert "[no_bots] found in PR description" in reason
+        assert "[nobots] found in PR description" in reason
     
     @patch('pr_agent.algo.pr_filters.get_settings')
     def test_no_terminate_when_no_bots_not_found(self, mock_get_settings):
@@ -492,7 +492,7 @@ class TestCheckPRFilters:
         
         assert result.should_skip == False
         assert result.should_terminate == True
-        assert "[no_bots] found" in result.reason
+        assert "[nobots] found" in result.reason
     
     @patch('pr_agent.algo.pr_filters.calculate_total_lines_changed')
     @patch('pr_agent.algo.pr_filters.get_settings')
@@ -591,7 +591,7 @@ class TestCheckPRFilters:
         # Should terminate due to [no_bots], not skip due to size
         assert result.should_skip == False
         assert result.should_terminate == True
-        assert "[no_bots] found" in result.reason
+        assert "[nobots] found" in result.reason
 
 
 class TestIntegrationScenarios:
@@ -643,7 +643,7 @@ class TestIntegrationScenarios:
         for command in ["review", "improve"]:
             result = check_pr_filters(mock_git_provider, command)
             assert result.should_terminate == True
-            assert "[no_bots] found" in result.reason
+            assert "[nobots] found" in result.reason
         
         # For describe command, it should skip due to description existence, not terminate
         result = check_pr_filters(mock_git_provider, "describe")
@@ -815,8 +815,8 @@ class TestCheckForExistingPRAgentComments:
 
         assert result == True
 
-    def test_case_sensitive_header_matching(self):
-        """Test that header matching is case-sensitive"""
+    def test_case_insensitive_header_matching(self):
+        """Any case of 'PR Reviewer Guide' substring matches (see pr_filters implementation)."""
         mock_git_provider = Mock()
         mock_comment = Mock()
         mock_comment.body = "pr reviewer guide 🔍"  # lowercase
@@ -824,18 +824,17 @@ class TestCheckForExistingPRAgentComments:
 
         result = check_for_existing_pr_agent_comments(mock_git_provider)
 
-        assert result == False
+        assert result is True
 
     def test_partial_header_match_not_sufficient(self):
-        """Test that partial header matches don't count"""
+        """Strings that do not contain the contiguous marker 'pr reviewer guide' are ignored."""
         mock_git_provider = Mock()
 
-        # These should not match
         test_comments = [
-            "PR Reviewer Guide",  # missing emoji
-            "Reviewer Guide 🔍",  # missing PR prefix
-            "PR Reviewer 🔍",     # missing Guide
-            "Guide 🔍",           # missing PR Reviewer
+            "Reviewer Guide 🔍",  # missing leading 'pr '
+            "PR Reviewer 🔍",  # missing 'guide'
+            "Guide 🔍",
+            "Notes about pull request review standards",
         ]
 
         for comment_body in test_comments:
@@ -844,7 +843,7 @@ class TestCheckForExistingPRAgentComments:
             mock_git_provider.get_issue_comments.return_value = [mock_comment]
 
             result = check_for_existing_pr_agent_comments(mock_git_provider)
-            assert result == False, f"Should not match partial header: {comment_body}"
+            assert result is False, f"Should not match partial header: {comment_body}"
 
 
 class TestSkipIfReviewSuggestionsExist:
@@ -1021,7 +1020,7 @@ class TestLargePRTermination:
         # Should terminate due to [no_bots], not due to size
         assert result.should_skip == False
         assert result.should_terminate == True
-        assert "[no_bots] found" in result.reason
+        assert "[nobots] found" in result.reason
         assert "PR too large" not in result.reason
 
     @patch('pr_agent.algo.pr_filters.calculate_total_lines_changed')

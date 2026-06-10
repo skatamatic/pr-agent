@@ -55,8 +55,6 @@ class TestConvertToMarkdown:
         expected_output = textwrap.dedent(f"""\
             {PRReviewHeader.REGULAR.value} 🔍
 
-            Here are some key observations to aid the review process:
-
             <table>
             <tr><td>⏱️&nbsp;<strong>Estimated effort to review</strong>: 1 🔵⚪⚪⚪⚪</td></tr>
             <tr><td>🧪&nbsp;<strong>No relevant tests</strong></td></tr>
@@ -76,8 +74,6 @@ class TestConvertToMarkdown:
         expected_output = textwrap.dedent("""\
             ## PR Reviewer Guide 🔍
 
-            Here are some key observations to aid the review process:
-
             ### ⏱️ Estimated effort to review: 1 🔵⚪⚪⚪⚪
 
             ### 🧪 No relevant tests
@@ -86,6 +82,8 @@ class TestConvertToMarkdown:
 
 
             ### 🔒 No security concerns identified
+
+
         """)
 
         assert convert_to_markdown_v2(input_data, gfm_supported=False).strip() == expected_output.strip()
@@ -108,14 +106,12 @@ class TestConvertToMarkdown:
 
         expected_output = textwrap.dedent(f"""\
             ## PR Reviewer Guide 🔍
-                                          
-            Here are some key observations to aid the review process:
-                                          
+
             <table>
             <tr><td>⚡&nbsp;<strong>Recommended focus areas for review</strong><br><br>
-                                                                                    
+
             <a href='{reference_link}'><strong>Code Smell</strong></a><br>The function is too long and complex.
-                                          
+
             </td></tr>
             </table>
         """)
@@ -138,25 +134,23 @@ class TestConvertToMarkdown:
         
         expected_output = textwrap.dedent("""\
             ## PR Reviewer Guide 🔍
-            
-            Here are some key observations to aid the review process:
-                                          
+
             <table>
             <tr><td>
-                                          
+
             **🎫 Ticket compliance analysis ✅**
-                                          
-                                          
-                                          
+
+
+
             **[123](https://example.com/ticket/123) - Fully compliant**
-                                          
+
             Compliant requirements:
-                                          
+
             - Requirement 1
             - Requirement 2
-                                          
-                                          
-                                          
+
+
+
             </td></tr>
             </table>
         """)
@@ -185,37 +179,35 @@ class TestConvertToMarkdown:
 
         expected_output = textwrap.dedent("""\
             ## PR Reviewer Guide 🔍
-                                          
-            Here are some key observations to aid the review process:
 
             <table>
             <tr><td>🔀 <strong>Multiple PR themes</strong><br><br>
-                                          
+
             <details><summary>
             Sub-PR theme: <b>Refactoring</b></summary>
-                                          
+
             ___
-                                          
+
             Relevant files:
-                                          
+
             - src/file1.py
             - src/file2.py
             ___
-                                          
+
             </details>
-                                          
+
             <details><summary>
             Sub-PR theme: <b>Bug Fix</b></summary>
-                                          
+
             ___
-                                          
+
             Relevant files:
-                                          
+
             - src/file3.py
             ___
-                                          
+
             </details>
-                                          
+
             </td></tr>
             </table>
         """)

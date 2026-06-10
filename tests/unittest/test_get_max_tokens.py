@@ -30,13 +30,16 @@ class TestGetMaxTokens:
         })()
 
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        import pr_agent.algo.model_registry as model_registry
+        monkeypatch.setattr(model_registry, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(model_registry, "_litellm_model_info", lambda _m: None)
 
         model = "custom-model"
         expected = 5000
 
         assert get_max_tokens(model) == expected
 
-    def test_model_not_max_tokens_and_not_has_custom(self, monkeypatch):
+    def test_model_not_max_tokens_uses_default(self, monkeypatch):
         fake_settings = type('', (), {
             'config': type('', (), {
                 'custom_model_max_tokens': 0,
@@ -45,11 +48,29 @@ class TestGetMaxTokens:
         })()
 
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        import pr_agent.algo.model_registry as model_registry
+        monkeypatch.setattr(
+            "pr_agent.algo.model_registry.resolve_max_input_tokens",
+            lambda _m: model_registry.DEFAULT_MAX_INPUT_TOKENS,
+        )
 
-        model = "custom-model"
+        assert get_max_tokens("custom-model") == model_registry.DEFAULT_MAX_INPUT_TOKENS
 
-        with pytest.raises(Exception):
-            get_max_tokens(model)
+    def test_litellm_fallback_path(self, monkeypatch):
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 0,
+                'max_model_tokens': 0
+            })()
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        import pr_agent.algo.model_registry as model_registry
+        monkeypatch.setattr(
+            "pr_agent.algo.model_registry.resolve_max_input_tokens",
+            lambda _m: 200000,
+        )
+
+        assert get_max_tokens("brand-new-model") == 200000
 
     def test_model_max_tokens_with__limit(self, monkeypatch):
         fake_settings = type('', (), {

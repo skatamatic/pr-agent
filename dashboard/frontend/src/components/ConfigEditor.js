@@ -24,7 +24,9 @@ import {
 import JSZip from 'jszip';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
-import { MODELS_BY_PROVIDER, ALL_MODEL_IDS } from '../constants/models';
+import ModelCombobox from './ModelCombobox';
+import ModelMultiCombobox from './ModelMultiCombobox';
+import { invalidateAvailableModelsCache } from '../hooks/useAvailableModels';
 
 /** Zip an array of File objects (e.g. from a folder picker) into a single ZIP File for bulk upload. */
 async function zipFolderFiles(files) {
@@ -51,6 +53,9 @@ const ConfigEditor = ({ navigationTarget = null }) => {
   const [dashboardAutoSetupLoading, setDashboardAutoSetupLoading] = useState(false);
   const [contextTestLoading, setContextTestLoading] = useState(false);
   const [contextTestResult, setContextTestResult] = useState(null);
+  const [modelTestLoading, setModelTestLoading] = useState(false);
+  const [modelTestResult, setModelTestResult] = useState(null);
+  const [modelTestTarget, setModelTestTarget] = useState('');
 
   const [errors, setErrors] = useState({});
   const [animatingCheckbox, setAnimatingCheckbox] = useState(null);
@@ -74,12 +79,6 @@ const ConfigEditor = ({ navigationTarget = null }) => {
   const fetchPrAgentPathRef = useRef(null);
 
   const { showSuccess, showError } = useContext(ToastContext);
-
-  // Models grouped by provider – imported from shared constants
-  const availableModels = MODELS_BY_PROVIDER;
-
-  // Flat list wrapped in an object for dropdowns that don't need categories
-  const allAvailableModels = MODELS_BY_PROVIDER;
 
   const tabLabels = {
     models: 'AI Models',
@@ -227,6 +226,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           model_reasoning: configData.config?.model_reasoning || configData.config?.model || 'anthropic/claude-opus-4-6-20260205',
           model_weak: configData.config?.model_weak || 'gpt-5.3-codex-spark',
           fallback_models: configData.config?.fallback_models || ['gpt-5.3-codex-spark'],
+          custom_model_max_tokens: configData.config?.custom_model_max_tokens ?? -1,
           reasoning_effort: configData.config?.reasoning_effort || 'high',
           max_model_tokens: configData.config?.max_model_tokens || 94000,
           temperature: configData.config?.temperature || 0.2,
@@ -352,6 +352,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           model_reasoning: 'anthropic/claude-opus-4-6-20260205',
           model_weak: 'gpt-5.3-codex-spark',
           fallback_models: ['gpt-5.3-codex-spark'],
+          custom_model_max_tokens: -1,
           reasoning_effort: 'high',
           max_model_tokens: 94000,
           temperature: 0.2,
@@ -461,6 +462,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
       }
 
       await api.updateConfig(config);
+      invalidateAvailableModelsCache();
       setOriginalConfig(JSON.parse(JSON.stringify(config))); // Update original after successful save
       setEditing(false); // Exit edit mode on successful save
       showSuccess('Configuration Saved', 'Your configuration has been saved successfully!');
@@ -469,6 +471,45 @@ const ConfigEditor = ({ navigationTarget = null }) => {
       showError('Save Failed', 'Failed to save configuration. Please try again.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleModelBenchmarkTest = async () => {
+    const model = (modelTestTarget || config?.config?.model || '').trim();
+    if (!model) {
+      setModelTestResult({ success: false, message: 'Model is required for benchmark test.' });
+      return;
+    }
+
+    try {
+      setModelTestLoading(true);
+      setModelTestResult(null);
+      const response = await api.testModel({
+        model,
+        use_saved_config: true,
+        api_keys: {
+          openai: config?.api_keys?.openai,
+          anthropic: config?.api_keys?.anthropic,
+          google: config?.api_keys?.google,
+        },
+      });
+      const data = response?.data || {};
+      setModelTestResult({
+        success: Boolean(data.success),
+        message: data.success
+          ? `Benchmark completed for ${data.model || model} (${data.output_tokens_per_sec ?? 0} output tok/s)`
+          : (data.error || 'Model benchmark failed.'),
+        details: data,
+      });
+    } catch (error) {
+      const apiError = error?.response?.data;
+      setModelTestResult({
+        success: false,
+        message: apiError?.error || apiError?.detail || error.message || 'Model benchmark failed.',
+        details: apiError || {},
+      });
+    } finally {
+      setModelTestLoading(false);
     }
   };
 
@@ -837,32 +878,6 @@ const ConfigEditor = ({ navigationTarget = null }) => {
     );
   }, [validationErrorCountsByTab]);
 
-  const ModelSelector = useCallback(({ label, value, onChange, models, description, editing }) => (
-    <div className="space-y-2">
-      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-        {label}
-        {description && (
-          <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal">{description}</span>
-        )}
-      </label>
-      <select
-        value={value || ''}
-        onChange={(e) => onChange(e.target.value)}
-        disabled={!editing}
-        className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        <option value="">Select a model...</option>
-        {Object.entries(models).map(([category, modelList]) => (
-          <optgroup key={category} label={category.charAt(0).toUpperCase() + category.slice(1)}>
-            {modelList.map(model => (
-              <option key={model} value={model}>{model}</option>
-            ))}
-          </optgroup>
-        ))}
-      </select>
-    </div>
-  ), []);
-
   const SectionHeader = useCallback(({ title, icon: Icon, children }) => (
     <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
       <div className="px-6 py-4 flex items-center space-x-3">
@@ -1183,31 +1198,29 @@ const ConfigEditor = ({ navigationTarget = null }) => {
             <SectionHeader title="AI Models & API Keys" icon={Brain}>
           <div className="space-y-6 pt-4">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <ModelSelector
+              <ModelCombobox
                 label="Default Model"
                 value={config?.config?.model}
                 onChange={(value) => updateConfig('config.model', value)}
-                models={allAvailableModels}
                 description="Primary model for most operations"
-                    editing={editing}
+                disabled={!editing}
+                showProviderStatus
               />
-              
-              <ModelSelector
+
+              <ModelCombobox
                 label="Reasoning Model"
                 value={config?.config?.model_reasoning}
                 onChange={(value) => updateConfig('config.model_reasoning', value)}
-                models={allAvailableModels}
                 description="Dedicated model for complex reasoning tasks"
-                    editing={editing}
+                disabled={!editing}
               />
-              
-              <ModelSelector
+
+              <ModelCombobox
                 label="Simple/Budget Model"
                 value={config?.config?.model_weak}
                 onChange={(value) => updateConfig('config.model_weak', value)}
-                models={allAvailableModels}
                 description="Lightweight model for simple tasks (used for PR descriptions)"
-                    editing={editing}
+                disabled={!editing}
               />
             </div>
 
@@ -1252,6 +1265,51 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   />
                 </div>
               </div>
+            </div>
+
+            <div className="border-t border-gray-200 dark:border-gray-700 pt-6">
+              <h4 className="text-md font-medium text-gray-900 dark:text-white mb-4 flex items-center">
+                <Gauge className="h-4 w-4 mr-2" />
+                Test Model
+              </h4>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-end">
+                <ModelCombobox
+                  label="Model to benchmark"
+                  value={modelTestTarget || config?.config?.model || ''}
+                  onChange={setModelTestTarget}
+                  description="Runs a substantive review prompt and reports latency and tokens/sec"
+                  disabled={modelTestLoading}
+                  showRefresh={false}
+                />
+                <button
+                  type="button"
+                  onClick={handleModelBenchmarkTest}
+                  disabled={modelTestLoading}
+                  className="inline-flex items-center justify-center px-4 py-2 rounded-md bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
+                >
+                  {modelTestLoading ? 'Testing...' : 'Test Model'}
+                </button>
+              </div>
+              {modelTestResult && (
+                <div
+                  className={`mt-4 rounded-md border p-4 text-sm ${
+                    modelTestResult.success
+                      ? 'border-green-200 bg-green-50 text-green-900 dark:border-green-800 dark:bg-green-900/20 dark:text-green-200'
+                      : 'border-red-200 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-900/20 dark:text-red-200'
+                  }`}
+                >
+                  <p className="font-medium">{modelTestResult.message}</p>
+                  {modelTestResult.details?.latency_ms != null && (
+                    <ul className="mt-2 space-y-1 text-xs">
+                      <li>Latency: {modelTestResult.details.latency_ms} ms</li>
+                      <li>Input tokens: {modelTestResult.details.input_tokens ?? 0}</li>
+                      <li>Output tokens: {modelTestResult.details.output_tokens ?? 0}</li>
+                      <li>Output tokens/sec: {modelTestResult.details.output_tokens_per_sec ?? 0}</li>
+                      <li>Total tokens/sec: {modelTestResult.details.total_tokens_per_sec ?? 0}</li>
+                    </ul>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </SectionHeader>
@@ -1519,26 +1577,15 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      AI Model for Reviews
-                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                        Specific AI model to use for code reviews. Leave empty to use the default model configured in General Settings.
-                      </span>
-                    </label>
-                    <select
+                    <ModelCombobox
+                      label="AI Model for Reviews"
                       value={config.pr_reviewer?.model || ''}
-                      onChange={(e) => updateConfig('pr_reviewer.model', e.target.value)}
+                      onChange={(value) => updateConfig('pr_reviewer.model', value)}
+                      description="Optional: Override default model for better review quality. Leave empty to use the default model."
                       disabled={!editing}
-                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <option value="">Use default model</option>
-                      {ALL_MODEL_IDS.map(model => (
-                        <option key={model} value={model}>{model}</option>
-                      ))}
-                    </select>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                      Optional: Override default model for better review quality
-                    </p>
+                      allowEmpty
+                      emptyLabel="Use default model"
+                    />
                   </div>
                 </div>
 
@@ -1778,26 +1825,15 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                    AI Model for Code Suggestions
-                    <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                      Specific AI model to use for generating code suggestions. Leave empty to use the default model configured in General Settings.
-                    </span>
-                  </label>
-                  <select
+                  <ModelCombobox
+                    label="AI Model for Code Suggestions"
                     value={config.pr_code_suggestions?.model || ''}
-                    onChange={(e) => updateConfig('pr_code_suggestions.model', e.target.value)}
+                    onChange={(value) => updateConfig('pr_code_suggestions.model', value)}
+                    description="Optional: Override default model for code suggestions. Leave empty to use the default model."
                     disabled={!editing}
-                    className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <option value="">Use default model</option>
-                    {ALL_MODEL_IDS.map(model => (
-                      <option key={model} value={model}>{model}</option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    Optional: Override default model for code suggestions
-                  </p>
+                    allowEmpty
+                    emptyLabel="Use default model"
+                  />
                 </div>
 
                 <div>
@@ -1856,27 +1892,15 @@ const ConfigEditor = ({ navigationTarget = null }) => {
 
                  {/* Model Selection */}
                  <div>
-                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                     Time Estimation Model
-                     <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
-                       Leave empty to use the same model as the tool being executed. Use a cheaper model to reduce costs.
-                     </span>
-                   </label>
-                   <select
+                   <ModelCombobox
+                     label="Time Estimation Model"
                      value={config.pr_dev_time_estimation?.model || ''}
-                     onChange={(e) => updateConfig('pr_dev_time_estimation.model', e.target.value)}
+                     onChange={(value) => updateConfig('pr_dev_time_estimation.model', value)}
+                     description="Leave empty to use the same model as the tool being executed."
                      disabled={!editing || !config.pr_dev_time_estimation?.enabled}
-                     className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                   >
-                     <option value="">Use same model as tool (recommended for accuracy)</option>
-                     {Object.entries(availableModels).map(([category, modelList]) => (
-                       <optgroup key={category} label={`${category.charAt(0).toUpperCase() + category.slice(1)} Models`}>
-                         {modelList.map(model => (
-                           <option key={model} value={model}>{model}</option>
-                         ))}
-                       </optgroup>
-                     ))}
-                   </select>
+                     allowEmpty
+                     emptyLabel="Use same model as tool (recommended for accuracy)"
+                   />
                  </div>
 
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -2098,6 +2122,33 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 <span className="text-yellow-800 dark:text-yellow-200 text-sm">
                   Advanced settings should only be modified by experienced users. Incorrect values may cause issues.
                 </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <ModelMultiCombobox
+                label="Fallback Models"
+                value={config?.config?.fallback_models || []}
+                onChange={(models) => updateConfig('config.fallback_models', models)}
+                description="Models tried sequentially when the primary model fails"
+                disabled={!editing}
+              />
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Custom Model Max Tokens
+                  <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal">
+                    Token limit for models not in the built-in registry (-1 = use automatic detection)
+                  </span>
+                </label>
+                <input
+                  type="number"
+                  value={config?.config?.custom_model_max_tokens ?? -1}
+                  onChange={(e) => updateConfig('config.custom_model_max_tokens', parseInt(e.target.value, 10))}
+                  min={-1}
+                  max={2000000}
+                  disabled={!editing}
+                  className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                />
               </div>
             </div>
 

@@ -30,6 +30,7 @@ from services.health_service import HealthService
 from services.metrics_service import MetricsService
 from services.operation_service import OperationService, LogService
 from services.config_service import ConfigService
+from services.model_service import ModelService
 from services.repository_service import RepositoryService
 from services.robust_cached_job_service import get_robust_cached_job_service
 from services.auth_service import AuthService
@@ -90,6 +91,7 @@ class DashboardApplication:
             # Initialize services (Dependency Injection)
             self.database_manager = DatabaseManager()
             self.config_service = ConfigService(self.database_manager)
+            self.model_service = ModelService(self.config_service)
             self.notification_service = NotificationService(self.database_manager)
                 
             # Pass config_service to health service as third parameter
@@ -2179,6 +2181,8 @@ class DashboardApplication:
         @self.app.post("/api/config")
         async def update_config(config_update: ConfigUpdate, current_user: UserDB = Depends(require_auth)):
             result = await self.config_service.update_config(config_update.config)
+            if config_update.config.get("api_keys"):
+                self.model_service.clear_cache()
             return result
 
         @self.app.post("/api/config/test-context-service")
@@ -2285,6 +2289,40 @@ class DashboardApplication:
                 return {
                     "success": False,
                     "message": f"Unexpected error while testing context service: {str(e)}",
+                }
+
+        @self.app.get("/api/models/available")
+        async def get_available_models(
+            refresh: bool = False,
+            current_user: UserDB = Depends(require_auth),
+        ):
+            """List chat models from configured providers plus LiteLLM fallback catalog."""
+            try:
+                data = await self.model_service.discover_models(force_refresh=refresh)
+                return APIResponse(data=data, message="Available models retrieved")
+            except Exception as e:
+                logger.exception("Failed to discover available models")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/models/test")
+        async def test_model_connection(payload: dict, current_user: UserDB = Depends(require_auth)):
+            """Benchmark a model with a substantive prompt; returns latency and tokens/sec."""
+            model = (payload.get("model") or "").strip()
+            if not model:
+                raise HTTPException(status_code=400, detail="Model is required")
+            try:
+                result = await self.model_service.test_model(
+                    model=model,
+                    api_keys=payload.get("api_keys"),
+                    use_saved_config=bool(payload.get("use_saved_config", True)),
+                )
+                return result
+            except Exception as e:
+                logger.exception("Model benchmark failed")
+                return {
+                    "success": False,
+                    "model": model,
+                    "error": str(e),
                 }
 
         @self.app.post("/api/config/bulk-upload")

@@ -1,11 +1,81 @@
 # pr_agent/algo/csharp_context_client.py
+from __future__ import annotations
+
+import asyncio
 import httpx
 import json
 import os
 import ssl
+from typing import Any
 from urllib.parse import urlparse
+
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
+
+# Process-wide cache keyed by _make_context_cache_key(...). Safe across concurrent asyncio
+# tasks: identical keys share one HTTP fetch. Different PRs use different keys.
+# reset_csharp_context_cache_for_job() clears entries (e.g. between sequential jobs if desired).
+_context_results: dict[tuple[Any, ...], dict | None] = {}
+_context_inflight: dict[tuple[Any, ...], asyncio.Task] = {}
+
+
+def reset_csharp_context_cache_for_job() -> None:
+    """
+    Clear in-memory C# context cache and in-flight trackers.
+
+    Call between jobs if you reuse the same worker process and need to drop stale
+    entries; otherwise keys already include owner/repo/PR and coalesce correctly.
+    """
+    _context_results.clear()
+    _context_inflight.clear()
+
+
+def _make_context_cache_key(
+    owner: str, repo_name: str, pr_number: int, access_token: str | None
+) -> tuple[Any, ...]:
+    """
+    Hashable key for everything that affects the /api/analyze payload for this call.
+
+    Same owner/repo/PR/token with same settings + source-control resolution => one fetch.
+    """
+    service_settings = get_settings().csharp_code_context_service
+    if hasattr(service_settings, "get"):
+        depth = service_settings.get("default_depth", 1)
+        mode = str(service_settings.get("default_mode", "Minified"))
+    else:
+        depth = getattr(service_settings, "default_depth", 1)
+        mode = str(getattr(service_settings, "default_mode", "Minified"))
+
+    sc = _resolve_source_control_type()
+    token = access_token or ""
+
+    if sc == "azure":
+        azure_org_setting = ""
+        try:
+            azure_org_setting = get_settings().azure_devops.get("org", "") or ""
+        except Exception:
+            pass
+        azure_org_setting = azure_org_setting or os.getenv("SYSTEM_COLLECTIONURI", "")
+        org, collection_uri = _normalize_azure_org_and_collection(azure_org_setting)
+        azure_bits = (org, collection_uri)
+    else:
+        azure_bits = ("", "")
+
+    try:
+        depth_int = int(depth)
+    except (TypeError, ValueError):
+        depth_int = 1
+
+    return (
+        owner,
+        repo_name,
+        int(pr_number),
+        token,
+        sc,
+        depth_int,
+        mode,
+        azure_bits,
+    )
 
 def _get_base_url(service_settings) -> str:
     """Resolve context service base URL from settings (supports 'url' or 'base_url' key)."""
@@ -122,7 +192,10 @@ def _normalize_azure_org_and_collection(azure_org_setting: str) -> tuple[str, st
     return org, f"https://dev.azure.com/{org}"
 
 
-async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int, access_token: str) -> dict | None:
+async def _fetch_csharp_minimal_context_impl(
+    owner: str, repo_name: str, pr_number: int, access_token: str
+) -> dict | None:
+    """Perform HTTP login + analyze (uncached)."""
     service_settings = get_settings().csharp_code_context_service
     if not service_settings.get("enabled", False):
         return None
@@ -256,3 +329,59 @@ async def get_csharp_minimal_context(owner: str, repo_name: str, pr_number: int,
         except Exception as e:
             get_logger().error(f"[Context] - Error processing C# CodeContextService (analysis) response: {e}", exc_info=True)
             return None
+
+
+_cache_lock = asyncio.Lock()
+
+
+async def get_csharp_minimal_context(
+    owner: str, repo_name: str, pr_number: int, access_token: str
+) -> dict | None:
+    """
+    Fetch minimal C# analysis context from the configured service.
+
+    Identical requests in the same process (same owner/repo/PR/token and same
+    settings-derived payload) are served from an in-memory cache so callers
+    such as ``get_pr_diff`` and ``get_pr_context`` do not each trigger a
+    duplicate HTTP round-trip. Concurrent awaiters coalesce to a single fetch.
+    """
+    service_settings = get_settings().csharp_code_context_service
+    if not service_settings.get("enabled", False):
+        return None
+
+    key = _make_context_cache_key(owner, repo_name, pr_number, access_token)
+    results = _context_results
+    inflight = _context_inflight
+
+    if key in results:
+        get_logger().debug(
+            "[Context] - Reusing in-memory C# context cache for %s/%s PR#%s",
+            owner,
+            repo_name,
+            pr_number,
+        )
+        return results[key]
+
+    async with _cache_lock:
+        if key in results:
+            return results[key]
+        if key in inflight:
+            task = inflight[key]
+        else:
+
+            async def _run_fetch() -> dict | None:
+                try:
+                    res = await _fetch_csharp_minimal_context_impl(
+                        owner, repo_name, pr_number, access_token
+                    )
+                    async with _cache_lock:
+                        results[key] = res
+                    return res
+                finally:
+                    async with _cache_lock:
+                        inflight.pop(key, None)
+
+            task = asyncio.create_task(_run_fetch())
+            inflight[key] = task
+
+    return await task
