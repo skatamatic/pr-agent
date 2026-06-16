@@ -406,7 +406,101 @@ class TestRepositoriesById:
         assert data.get("repository", {}).get("id") == repo_id
         assert "cleanup_scope" in data
         assert data["cleanup_scope"].get("azure_checks") == 1
+        assert data.get("azure_cleanup_available") is True
+        assert data.get("impacts", {}).get("azure_check_removed") is True
         assert data.get("impacts", {}).get("target_repository_deleted") is False
+
+    def test_repository_cleanup_preview_azure_without_pat_warns(self, client_app, auth_headers):
+        create = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "Product/CleanupNoPatRepo",
+                "provider": "azure_devops",
+                "url": "https://mdt-software.visualstudio.com/Product/_git/CleanupNoPatRepo",
+            },
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        repo_id = create.json()["data"]["id"]
+
+        preview = client_app.get(f"/api/repositories/{repo_id}/cleanup/preview", headers=auth_headers)
+        assert preview.status_code == 200
+        data = preview.json().get("data", {})
+        assert data.get("azure_cleanup_available") is False
+        assert data.get("impacts", {}).get("azure_check_removed") is False
+        assert "PAT" in (data.get("azure_policy_warning") or "")
+
+    def test_repository_cleanup_preview_azure_auth_error_warns(self, client_app, auth_headers, monkeypatch):
+        create = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "Product/CleanupAuthErrorRepo",
+                "provider": "azure_devops",
+                "url": "https://mdt-software.visualstudio.com/Product/_git/CleanupAuthErrorRepo",
+                "azure_pat": "expired-pat",
+            },
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        repo_id = create.json()["data"]["id"]
+
+        async def _fake_list_build_policies(_repo_data):
+            return {"error": "Unauthorized"}
+
+        monkeypatch.setattr(
+            backend_main.dashboard_app.azure_pipeline_config_service,
+            "list_build_policies",
+            _fake_list_build_policies,
+        )
+
+        preview = client_app.get(f"/api/repositories/{repo_id}/cleanup/preview", headers=auth_headers)
+        assert preview.status_code == 200
+        data = preview.json().get("data", {})
+        assert data.get("azure_cleanup_available") is False
+        assert data.get("impacts", {}).get("azure_check_removed") is False
+        assert "Unauthorized" in (data.get("azure_policy_warning") or "")
+
+    @pytest.mark.asyncio
+    async def test_repository_cleanup_completes_when_azure_auth_fails(self, client_app, auth_headers, monkeypatch):
+        create = client_app.post(
+            "/api/repositories",
+            json={
+                "name": "Product/CleanupAuthFailRepo",
+                "provider": "azure_devops",
+                "url": "https://mdt-software.visualstudio.com/Product/_git/CleanupAuthFailRepo",
+                "azure_pat": "expired-pat",
+            },
+            headers=auth_headers,
+        )
+        assert create.status_code == 200
+        repo_id = create.json()["data"]["id"]
+
+        async def _fake_list_build_policies(_repo_data):
+            return {"error": "Unauthorized"}
+
+        monkeypatch.setattr(
+            backend_main.dashboard_app.azure_pipeline_config_service,
+            "list_build_policies",
+            _fake_list_build_policies,
+        )
+
+        steps = [
+            {"id": "remove_azure_check", "label": "Remove Azure check", "status": "pending", "detail": ""},
+            {"id": "delete_repo_metrics", "label": "Delete repository metrics/history", "status": "pending", "detail": ""},
+            {"id": "delete_dashboard_repo_entry", "label": "Delete dashboard repository entry", "status": "pending", "detail": ""},
+            {"id": "complete", "label": "Cleanup complete", "status": "pending", "detail": ""},
+        ]
+        op = backend_main.dashboard_app._new_repo_action_operation(repo_id, "repository_cleanup", steps)
+        await backend_main.dashboard_app._run_repository_cleanup_operation(op["operation_id"], repo_id)
+
+        final_op = backend_main.dashboard_app._get_repo_action_operation(op["operation_id"])
+        assert final_op["status"] == "completed"
+        azure_step = next(s for s in final_op["steps"] if s["id"] == "remove_azure_check")
+        assert azure_step["status"] == "skipped"
+        assert "Unauthorized" in azure_step["detail"]
+
+        get_repo = client_app.get(f"/api/repositories/{repo_id}", headers=auth_headers)
+        assert get_repo.status_code == 404
 
     def test_repository_cleanup_start_and_status(self, client_app, auth_headers, monkeypatch):
         create = client_app.post(

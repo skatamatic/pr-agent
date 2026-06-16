@@ -811,23 +811,35 @@ class DashboardApplication:
             notification_events_count = 0
 
         azure_policy_count = 0
-        azure_policy_error = None
-        if repo.provider == "azure_devops" and repo.azure_pat:
-            repo_data = {"url": repo.url, "azure_pat": repo.azure_pat, "provider": repo.provider}
-            policies_result = await self.azure_pipeline_config_service.list_build_policies(repo_data)
-            if "error" in policies_result:
-                azure_policy_error = policies_result.get("error")
+        azure_policy_warning = None
+        azure_cleanup_available = False
+        if repo.provider == "azure_devops":
+            if not repo.azure_pat:
+                azure_policy_warning = (
+                    "No Azure DevOps PAT is configured. PR-Agent checks and policies cannot be removed from Azure, "
+                    "but the repository can still be removed from the dashboard."
+                )
             else:
-                azure_policy_count = len([
-                    p for p in policies_result.get("policies", [])
-                    if (p.get("pipeline_name") or "").lower().startswith("pr-agent")
-                ])
+                repo_data = {"url": repo.url, "azure_pat": repo.azure_pat, "provider": repo.provider}
+                policies_result = await self.azure_pipeline_config_service.list_build_policies(repo_data)
+                if "error" in policies_result:
+                    azure_policy_warning = (
+                        f"Could not access Azure DevOps ({policies_result.get('error')}). "
+                        "PR-Agent checks and policies cannot be removed remotely, but the repository can still "
+                        "be removed from the dashboard."
+                    )
+                else:
+                    azure_cleanup_available = True
+                    azure_policy_count = len([
+                        p for p in policies_result.get("policies", [])
+                        if (p.get("pipeline_name") or "").lower().startswith("pr-agent")
+                    ])
 
         return {
             "repository": {"id": repo.id, "name": repo.name, "provider": repo.provider},
             "impacts": {
                 "dashboard_repository_entry_deleted": True,
-                "azure_check_removed": repo.provider == "azure_devops",
+                "azure_check_removed": azure_cleanup_available,
                 "metrics_and_history_cleanup": True,
                 "target_repository_deleted": False,
             },
@@ -838,7 +850,8 @@ class DashboardApplication:
                 "notification_events": notification_events_count,
                 "azure_checks": azure_policy_count,
             },
-            "azure_policy_warning": azure_policy_error,
+            "azure_cleanup_available": azure_cleanup_available,
+            "azure_policy_warning": azure_policy_warning,
         }
 
     async def _run_repository_cleanup_operation(self, operation_id: str, repo_id: int) -> None:
@@ -865,43 +878,63 @@ class DashboardApplication:
             )
             self._set_repo_action_step(operation_id, "remove_azure_check", "running", "Checking Azure checks.")
 
-            if repo.provider == "azure_devops" and repo.azure_pat:
-                repo_data = {"url": repo.url, "azure_pat": repo.azure_pat, "provider": repo.provider}
-                policies_result = await self.azure_pipeline_config_service.list_build_policies(repo_data)
-                if "error" in policies_result:
-                    err = policies_result.get("error")
-                    self._set_repo_action_step(operation_id, "remove_azure_check", "error", err)
-                    self._update_repo_action_operation(
+            if repo.provider == "azure_devops":
+                if not repo.azure_pat:
+                    self._set_repo_action_step(
                         operation_id,
-                        status="failed",
-                        message="Cleanup failed while removing Azure check",
-                        error=err,
+                        "remove_azure_check",
+                        "skipped",
+                        "No Azure DevOps PAT configured. Skipping remote PR check removal.",
                     )
-                    return
-
-                pr_agent_policies = [
-                    p for p in policies_result.get("policies", [])
-                    if (p.get("pipeline_name") or "").lower().startswith("pr-agent")
-                ]
-                removed = 0
-                for pol in pr_agent_policies:
-                    pol_id = pol.get("policy_id")
-                    if not pol_id:
-                        continue
-                    del_result = await self.azure_pipeline_config_service.delete_build_policy(repo_data, int(pol_id))
-                    if not del_result.get("success"):
-                        err = del_result.get("error", "Failed to delete Azure policy")
-                        self._set_repo_action_step(operation_id, "remove_azure_check", "error", err)
-                        self._update_repo_action_operation(
+                else:
+                    repo_data = {"url": repo.url, "azure_pat": repo.azure_pat, "provider": repo.provider}
+                    policies_result = await self.azure_pipeline_config_service.list_build_policies(repo_data)
+                    if "error" in policies_result:
+                        err = policies_result.get("error")
+                        self._set_repo_action_step(
                             operation_id,
-                            status="failed",
-                            message="Cleanup failed while removing Azure check",
-                            error=err,
+                            "remove_azure_check",
+                            "skipped",
+                            f"Could not access Azure DevOps ({err}). Skipping remote PR check removal.",
                         )
-                        return
-                    removed += 1
-                detail = "No PR-Agent checks found to remove." if removed == 0 else f"Removed {removed} PR-Agent check(s)."
-                self._set_repo_action_step(operation_id, "remove_azure_check", "completed", detail)
+                    else:
+                        pr_agent_policies = [
+                            p for p in policies_result.get("policies", [])
+                            if (p.get("pipeline_name") or "").lower().startswith("pr-agent")
+                        ]
+                        removed = 0
+                        failed_messages = []
+                        for pol in pr_agent_policies:
+                            pol_id = pol.get("policy_id")
+                            if not pol_id:
+                                continue
+                            del_result = await self.azure_pipeline_config_service.delete_build_policy(
+                                repo_data, int(pol_id)
+                            )
+                            if not del_result.get("success"):
+                                failed_messages.append(del_result.get("error", f"Failed to delete policy {pol_id}"))
+                            else:
+                                removed += 1
+                        if failed_messages:
+                            detail = (
+                                f"Removed {removed} PR-Agent check(s). "
+                                f"{len(failed_messages)} could not be removed: {failed_messages[0]}"
+                            )
+                            self._set_repo_action_step(operation_id, "remove_azure_check", "skipped", detail)
+                        elif removed == 0:
+                            self._set_repo_action_step(
+                                operation_id,
+                                "remove_azure_check",
+                                "completed",
+                                "No PR-Agent checks found to remove.",
+                            )
+                        else:
+                            self._set_repo_action_step(
+                                operation_id,
+                                "remove_azure_check",
+                                "completed",
+                                f"Removed {removed} PR-Agent check(s).",
+                            )
             else:
                 self._set_repo_action_step(operation_id, "remove_azure_check", "skipped", "Not an Azure DevOps repository.")
 

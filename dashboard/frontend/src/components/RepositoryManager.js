@@ -761,7 +761,18 @@ const RepositoryManager = () => {
       if (done) {
         if (op.status === 'completed') {
           if (operationType === 'cleanup') {
-            showSuccess('Repository removed', 'Cleanup completed and repository was removed from the dashboard.');
+            const azureStep = (op.steps || []).find((s) => s.id === 'remove_azure_check');
+            const azureSkippedWithLimitation = azureStep?.status === 'skipped'
+              && azureStep?.detail
+              && !azureStep.detail.includes('Not an Azure DevOps repository');
+            if (azureSkippedWithLimitation) {
+              showWarning(
+                'Repository removed',
+                azureStep.detail,
+              );
+            } else {
+              showSuccess('Repository removed', 'Cleanup completed and repository was removed from the dashboard.');
+            }
             if (expandedRepo === repoId) setExpandedRepo(null);
           } else {
             const target = !!op.result?.is_active;
@@ -790,7 +801,7 @@ const RepositoryManager = () => {
       }));
       showError('Operation failed', error.response?.data?.detail || error.message || 'Failed to poll operation status.');
     }
-  }, [expandedRepo, fetchRepositories, showError, showSuccess]);
+  }, [expandedRepo, fetchRepositories, showError, showSuccess, showWarning]);
 
   const startRepoActionModal = async (repo, operationType, startResponse) => {
     const payload = startResponse?.data?.data || {};
@@ -6813,12 +6824,18 @@ const RepositoryManager = () => {
                   )}
                   <ul className="text-sm text-gray-700 dark:text-gray-300 space-y-1">
                     <li>- Deletes this dashboard repository entry (not the target source repository).</li>
-                    <li>- Removes Azure PR-Agent check/policy entries for Azure repositories.</li>
+                    {repoCleanupConfirmModal.repo?.provider === 'azure_devops' && (
+                      <li>
+                        {repoCleanupConfirmModal.preview?.azure_cleanup_available
+                          ? '- Removes Azure PR-Agent check/policy entries for this repository.'
+                          : '- Azure PR-Agent checks will not be removed (missing or invalid Azure credentials).'}
+                      </li>
+                    )}
                     <li>- Cleans repository-scoped metrics/history and recalculates aggregates.</li>
                   </ul>
                   {repoCleanupConfirmModal.preview?.azure_policy_warning && (
                     <div className="rounded-md bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 p-3 text-sm text-yellow-800 dark:text-yellow-300">
-                      Azure check preview warning: {repoCleanupConfirmModal.preview.azure_policy_warning}
+                      {repoCleanupConfirmModal.preview.azure_policy_warning}
                     </div>
                   )}
                 </>
