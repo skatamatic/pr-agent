@@ -155,7 +155,14 @@ class LiteLLMAIHandler(BaseAiHandler):
             raise
 
     def prepare_logs(self, response, system, user, resp, finish_reason):
-        response_log = response.dict().copy()
+        if hasattr(response, "model_dump") and callable(response.model_dump):
+            response_log = response.model_dump()
+        elif hasattr(response, "dict") and callable(response.dict):
+            response_log = response.dict().copy()
+        elif isinstance(response, dict):
+            response_log = dict(response)
+        else:
+            response_log = {"response": str(response)}
         response_log['system'] = system
         response_log['user'] = user
         response_log['output'] = resp
@@ -295,8 +302,10 @@ class LiteLLMAIHandler(BaseAiHandler):
                 messages[1]["content"] = [{"type": "text", "text": messages[1]["content"]},
                                           {"type": "image_url", "image_url": {"url": img_path}}]
 
+            custom_reasoning_model = bool(get_settings().config.get("custom_reasoning_model", False))
+
             # Currently, some models do not support a separate system and user prompts
-            if model_is_user_message_only(model_for_check) or get_settings().config.custom_reasoning_model:
+            if model_is_user_message_only(model_for_check) or custom_reasoning_model:
                 user = f"{system}\n\n\n{user}"
                 system = ""
                 get_logger().info(f"Using model {model}, combining system and user prompts")
@@ -318,7 +327,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 }
 
             # Add temperature only if model supports it
-            if model_supports_temperature(model_for_check) and not get_settings().config.custom_reasoning_model:
+            if model_supports_temperature(model_for_check) and not custom_reasoning_model:
                 # get_logger().info(f"Adding temperature with value {temperature} to model {model}.")
                 kwargs["temperature"] = temperature
 
@@ -333,7 +342,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             if model_supports_claude_extended_thinking(model_for_check) and get_settings().config.get("enable_claude_extended_thinking", False):
                 kwargs = self._configure_claude_extended_thinking(model, kwargs)
 
-            if get_settings().litellm.get("enable_callbacks", False):
+            if get_settings().get("LITELLM.ENABLE_CALLBACKS", False):
                 kwargs = self.add_litellm_callbacks(kwargs)
 
             seed = get_settings().config.get("seed", -1)
@@ -362,7 +371,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 "temperature": kwargs.get("temperature", "not_set"),
                 "system_prompt_chars": len(system),
                 "user_prompt_chars": len(user),
-                "combined_prompt": model_is_user_message_only(model_for_check) or get_settings().config.custom_reasoning_model
+                "combined_prompt": model_is_user_message_only(model_for_check) or custom_reasoning_model
             })
             
             # Log full prompts for debugging purposes
@@ -378,46 +387,48 @@ class LiteLLMAIHandler(BaseAiHandler):
             raise
         except Exception as e:
             get_logger().warning(f"[AI] - Unknown error during LLM inference: {e}")
-            raise openai.APIError from e
-        if response is None or len(response["choices"]) == 0:
-            raise openai.APIError
+            raise
+        choices = response.get("choices") if isinstance(response, dict) else getattr(response, "choices", None)
+        if response is None or not choices:
+            raise RuntimeError("LLM returned empty response")
+        first_choice = choices[0]
+        if isinstance(first_choice, dict):
+            resp = first_choice['message']['content']
+            finish_reason = first_choice["finish_reason"]
         else:
-            resp = response["choices"][0]['message']['content']
-            finish_reason = response["choices"][0]["finish_reason"]
-            
-            # Extract token usage information
-            token_usage = None
-            if hasattr(response, 'usage') and response.usage:
-                token_usage = {
-                    'input_tokens': getattr(response.usage, 'prompt_tokens', 0),
-                    'output_tokens': getattr(response.usage, 'completion_tokens', 0)
-                }
-            elif isinstance(response, dict) and 'usage' in response:
-                usage = response['usage']
-                token_usage = {
-                    'input_tokens': usage.get('prompt_tokens', 0),
-                    'output_tokens': usage.get('completion_tokens', 0)
-                }
-            
-            # Enhanced AI response logging - always log at INFO level for debugging
-            get_logger().info(f"[AI] - AI Response ({len(resp)} chars)", artifacts={
-                "ai_response": resp,
-                "finish_reason": finish_reason,
-                "response_chars": len(resp)
-            })
-            
-            if token_usage:
-                get_logger().info(f"[AI] - Token Usage", artifacts={
-                    "model": model,
-                    "input_tokens": token_usage.get('input_tokens', 0),
-                    "output_tokens": token_usage.get('output_tokens', 0),
-                    "total_tokens": token_usage.get('input_tokens', 0) + token_usage.get('output_tokens', 0)
-                })
-            else:
-                get_logger().warning(f"[AI] - No token usage information available from AI model: {model}")
+            resp = first_choice.message.content
+            finish_reason = first_choice.finish_reason
 
-            # Log the full response structure for debugging
-            response_log = self.prepare_logs(response, system, user, resp, finish_reason)
-            get_logger().debug("[AI] - Full AI Response Structure", artifact=response_log)
+        token_usage = None
+        if hasattr(response, 'usage') and response.usage:
+            token_usage = {
+                'input_tokens': getattr(response.usage, 'prompt_tokens', 0),
+                'output_tokens': getattr(response.usage, 'completion_tokens', 0)
+            }
+        elif isinstance(response, dict) and 'usage' in response:
+            usage = response['usage']
+            token_usage = {
+                'input_tokens': usage.get('prompt_tokens', 0),
+                'output_tokens': usage.get('completion_tokens', 0)
+            }
+
+        get_logger().info(f"[AI] - AI Response ({len(resp)} chars)", artifacts={
+            "ai_response": resp,
+            "finish_reason": finish_reason,
+            "response_chars": len(resp)
+        })
+
+        if token_usage:
+            get_logger().info(f"[AI] - Token Usage", artifacts={
+                "model": model,
+                "input_tokens": token_usage.get('input_tokens', 0),
+                "output_tokens": token_usage.get('output_tokens', 0),
+                "total_tokens": token_usage.get('input_tokens', 0) + token_usage.get('output_tokens', 0)
+            })
+        else:
+            get_logger().warning(f"[AI] - No token usage information available from AI model: {model}")
+
+        response_log = self.prepare_logs(response, system, user, resp, finish_reason)
+        get_logger().debug("[AI] - Full AI Response Structure", artifact=response_log)
 
         return resp, finish_reason, token_usage

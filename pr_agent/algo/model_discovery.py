@@ -150,6 +150,44 @@ def _provider_from_litellm_id(model_id: str) -> str:
     return "openai"
 
 
+def _extract_provider_keys(secrets: Dict[str, Any], openai_config: Dict[str, Any]) -> Dict[str, str]:
+    """Return provider -> key for providers that have credentials configured."""
+    keys: Dict[str, str] = {}
+
+    openai_key = (secrets.get("openai") or {}).get("key") or secrets.get("openai_key") or ""
+    anthropic_key = (secrets.get("anthropic") or {}).get("key") or secrets.get("anthropic_key") or ""
+    google_key = (
+        (secrets.get("google_ai_studio") or {}).get("gemini_api_key")
+        or secrets.get("google_key")
+        or ""
+    )
+    openrouter_key = (secrets.get("openrouter") or {}).get("key") or secrets.get("openrouter_key") or ""
+
+    api_type = (openai_config.get("api_type") or openai_config.get("API_TYPE") or "").lower()
+    api_base = openai_config.get("api_base") or openai_config.get("API_BASE") or ""
+
+    if openai_key and api_type == "azure" and api_base:
+        keys["azure"] = openai_key
+    elif openai_key:
+        keys["openai"] = openai_key
+    if anthropic_key:
+        keys["anthropic"] = anthropic_key
+    if google_key:
+        keys["google"] = google_key
+    if openrouter_key:
+        keys["openrouter"] = openrouter_key
+    return keys
+
+
+def _filter_models_for_providers(
+    models: Sequence[DiscoveredModel],
+    allowed_providers: set[str],
+) -> List[DiscoveredModel]:
+    if not allowed_providers:
+        return []
+    return [model for model in models if model.provider in allowed_providers]
+
+
 def _merge_models(live: Sequence[DiscoveredModel], fallback: Sequence[DiscoveredModel]) -> DiscoveryResult:
     by_id: Dict[str, DiscoveredModel] = {}
     for model in live:
@@ -196,31 +234,46 @@ async def _fetch_openai_models(api_key: str, timeout: float = 15.0) -> List[Disc
 
 
 async def _fetch_anthropic_models(api_key: str, timeout: float = 15.0) -> List[DiscoveredModel]:
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.get(
-            "https://api.anthropic.com/v1/models",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-            },
-        )
-        response.raise_for_status()
-        payload = response.json()
-
     models: List[DiscoveredModel] = []
-    for item in payload.get("data", []):
-        model_id = item.get("id", "")
-        if not model_id or is_specialty_model(model_id):
-            continue
-        litellm_id = model_id if model_id.startswith("anthropic/") else f"anthropic/{model_id}"
-        models.append(
-            DiscoveredModel(
-                id=litellm_id,
-                display_name=model_id,
-                provider="anthropic",
-                source="live",
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        after_id: Optional[str] = None
+        while True:
+            params: Dict[str, Any] = {"limit": 1000}
+            if after_id:
+                params["after_id"] = after_id
+            response = await client.get(
+                "https://api.anthropic.com/v1/models",
+                params=params,
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                },
             )
-        )
+            response.raise_for_status()
+            payload = response.json()
+
+            for item in payload.get("data", []):
+                model_id = item.get("id", "")
+                if not model_id or is_specialty_model(model_id):
+                    continue
+                litellm_id = model_id if model_id.startswith("anthropic/") else f"anthropic/{model_id}"
+                models.append(
+                    DiscoveredModel(
+                        id=litellm_id,
+                        display_name=item.get("display_name") or model_id,
+                        provider="anthropic",
+                        source="live",
+                        max_input_tokens=item.get("max_input_tokens")
+                        if isinstance(item.get("max_input_tokens"), int)
+                        else None,
+                    )
+                )
+
+            if not payload.get("has_more"):
+                break
+            after_id = payload.get("last_id")
+            if not after_id:
+                break
     return models
 
 
@@ -326,45 +379,42 @@ async def discover_models_async(
     provider_errors: Dict[str, str] = {}
     provider_status: Dict[str, str] = {}
 
-    tasks: Dict[str, Any] = {}
+    provider_keys = _extract_provider_keys(secrets, openai_config)
+    configured_providers = set(provider_keys.keys())
 
-    openai_key = (secrets.get("openai") or {}).get("key") or secrets.get("openai_key") or ""
-    anthropic_key = (secrets.get("anthropic") or {}).get("key") or secrets.get("anthropic_key") or ""
-    google_key = (
-        (secrets.get("google_ai_studio") or {}).get("gemini_api_key")
-        or secrets.get("google_key")
-        or ""
-    )
-    openrouter_key = (secrets.get("openrouter") or {}).get("key") or secrets.get("openrouter_key") or ""
+    tasks: Dict[str, Any] = {}
 
     api_type = (openai_config.get("api_type") or openai_config.get("API_TYPE") or "").lower()
     api_base = openai_config.get("api_base") or openai_config.get("API_BASE") or ""
     api_version = openai_config.get("api_version") or openai_config.get("API_VERSION") or "2024-02-01"
 
-    if openai_key and api_type == "azure" and api_base:
+    if "azure" in provider_keys:
         provider_status["azure"] = "configured"
-        tasks["azure"] = _fetch_azure_deployments(openai_key, api_base, api_version)
-    elif openai_key:
+        tasks["azure"] = _fetch_azure_deployments(provider_keys["azure"], api_base, api_version)
+    else:
+        provider_status["azure"] = "no_key"
+
+    if "openai" in provider_keys:
         provider_status["openai"] = "configured"
-        tasks["openai"] = _fetch_openai_models(openai_key)
+        tasks["openai"] = _fetch_openai_models(provider_keys["openai"])
     else:
         provider_status["openai"] = "no_key"
 
-    if anthropic_key:
+    if "anthropic" in provider_keys:
         provider_status["anthropic"] = "configured"
-        tasks["anthropic"] = _fetch_anthropic_models(anthropic_key)
+        tasks["anthropic"] = _fetch_anthropic_models(provider_keys["anthropic"])
     else:
         provider_status["anthropic"] = "no_key"
 
-    if google_key:
+    if "google" in provider_keys:
         provider_status["google"] = "configured"
-        tasks["google"] = _fetch_gemini_models(google_key)
+        tasks["google"] = _fetch_gemini_models(provider_keys["google"])
     else:
         provider_status["google"] = "no_key"
 
-    if openrouter_key:
+    if "openrouter" in provider_keys:
         provider_status["openrouter"] = "configured"
-        tasks["openrouter"] = _fetch_openrouter_models(openrouter_key)
+        tasks["openrouter"] = _fetch_openrouter_models(provider_keys["openrouter"])
     else:
         provider_status["openrouter"] = "no_key"
 
@@ -377,7 +427,10 @@ async def discover_models_async(
             else:
                 live_models.extend(result)
 
-    fallback = _litellm_chat_models() if include_litellm_fallback else []
+    fallback: List[DiscoveredModel] = []
+    if include_litellm_fallback and configured_providers:
+        fallback = _filter_models_for_providers(_litellm_chat_models(), configured_providers)
+
     merged = _merge_models(live_models, fallback)
     merged.provider_errors = provider_errors
     merged.provider_status = provider_status

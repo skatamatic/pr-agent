@@ -89,6 +89,51 @@ async def test_chat_completion_adds_temperature_when_supported(
 
 
 @pytest.mark.asyncio
+async def test_chat_completion_propagates_original_exception(monkeypatch, handler_settings):
+    async def fake_acompletion(**kwargs):
+        raise ValueError("invalid model configuration")
+
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+        fake_acompletion,
+    )
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.model_supports_temperature",
+        lambda _model: True,
+    )
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.model_supports_reasoning_effort",
+        lambda _model: False,
+    )
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.model_is_user_message_only",
+        lambda _model: False,
+    )
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.model_supports_claude_extended_thinking",
+        lambda _model: False,
+    )
+
+    handler = LiteLLMAIHandler()
+    with pytest.raises(ValueError, match="invalid model configuration"):
+        await handler.chat_completion(model="gpt-4o", system="system", user="user")
+
+
+@pytest.mark.asyncio
+async def test_prepare_logs_accepts_dict_response(handler_settings):
+    handler = LiteLLMAIHandler()
+    log = handler.prepare_logs(
+        {"choices": [], "usage": {"prompt_tokens": 1}},
+        "system",
+        "user",
+        "ok",
+        "stop",
+    )
+    assert log["output"] == "ok"
+    assert log["system"] == "system"
+
+
+@pytest.mark.asyncio
 async def test_chat_completion_adds_reasoning_effort_when_supported(
     monkeypatch, handler_settings, stub_prepare_logs
 ):

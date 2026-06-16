@@ -62,6 +62,8 @@ export function useAvailableModels() {
     setAllIds(data.allIds || []);
     setProviderErrors(data.providerErrors || {});
     setProviderStatus(data.providerStatus || {});
+    setLoading(false);
+    setError(null);
   }, []);
 
   useEffect(() => {
@@ -75,20 +77,21 @@ export function useAvailableModels() {
   }, [syncFromCache]);
 
   const load = useCallback(async (refresh = false) => {
-    setLoading(true);
+    if (!sharedCache || refresh) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const data = await fetchModels(refresh);
       syncFromCache(data);
     } catch (err) {
       setError(err.message || 'Failed to load models');
-    } finally {
       setLoading(false);
     }
   }, [syncFromCache]);
 
   useEffect(() => {
-    if (!sharedCache && !sharedPromise) {
+    if (!sharedCache) {
       load(false);
     }
   }, [load]);
