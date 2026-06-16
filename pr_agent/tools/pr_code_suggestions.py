@@ -65,14 +65,15 @@ class PRCodeSuggestions:
         )
 
         # limit context specifically for the improve command, which has hard input to parse:
-        if get_settings().pr_code_suggestions.max_context_tokens:
-            MAX_CONTEXT_TOKENS_IMPROVE = get_settings().pr_code_suggestions.max_context_tokens
+        max_context_tokens_improve = get_settings().pr_code_suggestions.get("max_context_tokens", 0)
+        if max_context_tokens_improve:
+            MAX_CONTEXT_TOKENS_IMPROVE = max_context_tokens_improve
             if get_settings().config.max_model_tokens > MAX_CONTEXT_TOKENS_IMPROVE:
                 get_logger().info(f"Setting max_model_tokens to {MAX_CONTEXT_TOKENS_IMPROVE} for PR improve")
                 get_settings().config.max_model_tokens_original = get_settings().config.max_model_tokens
                 get_settings().config.max_model_tokens = MAX_CONTEXT_TOKENS_IMPROVE
 
-        num_code_suggestions = int(get_settings().pr_code_suggestions.num_code_suggestions_per_chunk)
+        num_code_suggestions = int(get_settings().pr_code_suggestions.get("num_code_suggestions_per_chunk", 4))
 
         # Handle both class and instance cases for ai_handler
         if isinstance(ai_handler, type):

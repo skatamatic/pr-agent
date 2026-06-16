@@ -359,26 +359,37 @@ async def run_action():
                                     update_job_status("running")
                                     
                                     # Execute each tool sequentially
-                                    completed_tools = []
+                                    succeeded_tools = []
+                                    failed_tools = []
                                     for i, (tool_name, tool_class) in enumerate(tools_to_run):
                                         try:
                                             get_logger().debug(f"Executing {tool_name} tool ({i+1}/{len(tools_to_run)})")
                                             await tool_class(pr_url).run()
-                                            completed_tools.append(tool_name)
+                                            succeeded_tools.append(tool_name)
                                             get_logger().debug(f"Successfully completed {tool_name} tool")
                                         except Exception as e:
                                             get_logger().error(f"Failed to run {tool_name} tool: {e}")
                                             # Continue with other tools but track the failure
-                                            completed_tools.append(f"{tool_name}(failed)")
-                                    
-                                    # All tools completed (some may have failed individually)
-                                    final_status = "completed"
+                                            failed_tools.append(tool_name)
+
+                                    # Determine the final job status from the actual tool outcomes.
+                                    # If every tool failed, the job genuinely failed -- do not report
+                                    # success (which previously masked failures and left misleading state).
+                                    if failed_tools and not succeeded_tools:
+                                        final_status = "failed"
+                                        error_details = f"All tools failed: {', '.join(failed_tools)}"
+                                    else:
+                                        final_status = "completed"
                                     result_summary = {
                                         "action": action,
-                                        "tools_executed": completed_tools,
-                                        "success": True
+                                        "tools_executed": succeeded_tools,
+                                        "tools_failed": failed_tools,
+                                        "success": not failed_tools,
                                     }
-                                    get_logger().info(f"Azure DevOps Pipeline job {job_id} completed successfully")
+                                    get_logger().info(
+                                        f"Azure DevOps Pipeline job {job_id} finished with status '{final_status}' "
+                                        f"(succeeded={succeeded_tools}, failed={failed_tools})"
+                                    )
                                     
                                 except Exception as e:
                                     # Critical failure that stopped all execution

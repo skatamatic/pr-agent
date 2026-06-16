@@ -20,8 +20,10 @@ _NO_TEMPERATURE_PATTERNS = (
     r"^o1(-|$)",
     r"^o3(-|$)",
     r"^o4(-|$)",
+    r"^gpt-5",
     r"deepseek/deepseek-reasoner",
     r"deepseek-reasoner",
+    r"reasoner",
 )
 _REASONING_PATTERNS = (
     r"^o1(-|$)",
@@ -102,16 +104,20 @@ def get_model_capabilities(model: str) -> Dict[str, bool]:
     supported_params = info.get("supported_openai_params") or []
     supports_reasoning = bool(info.get("supports_reasoning"))
 
+    supports_reasoning_effort = in_static_reasoning or supports_reasoning or _matches_any_pattern(
+        model, _REASONING_PATTERNS
+    )
+
     if supported_params:
         supports_temperature = "temperature" in supported_params
     elif _matches_any_pattern(model, _NO_TEMPERATURE_PATTERNS):
         supports_temperature = False
+    elif supports_reasoning_effort:
+        # Reasoning models (o-series, gpt-5, deepseek-reasoner, etc.) reject a custom
+        # temperature. When we have no explicit param metadata, err on the safe side.
+        supports_temperature = False
     else:
         supports_temperature = True
-
-    supports_reasoning_effort = in_static_reasoning or supports_reasoning or _matches_any_pattern(
-        model, _REASONING_PATTERNS
-    )
 
     user_message_only = (
         in_static_user_only

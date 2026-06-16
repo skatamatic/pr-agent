@@ -96,6 +96,27 @@ class TestGetModelCapabilities:
         caps = get_model_capabilities("gpt-4o")
         assert caps["supports_temperature"] is True
 
+    def test_gpt5_no_temperature_without_litellm_info(self, monkeypatch):
+        monkeypatch.setattr(model_registry, "_litellm_model_info", lambda _m: None)
+        monkeypatch.setattr(
+            model_registry,
+            "get_settings",
+            lambda: type("", (), {"config": type("", (), {"custom_reasoning_model": False})()})(),
+        )
+        caps = get_model_capabilities("gpt-5.3-codex")
+        assert caps["supports_temperature"] is False
+        assert caps["supports_reasoning_effort"] is True
+
+    def test_unknown_reasoner_no_temperature(self, monkeypatch):
+        monkeypatch.setattr(model_registry, "_litellm_model_info", lambda _m: None)
+        monkeypatch.setattr(
+            model_registry,
+            "get_settings",
+            lambda: type("", (), {"config": type("", (), {"custom_reasoning_model": False})()})(),
+        )
+        caps = get_model_capabilities("some-provider/fancy-reasoner")
+        assert caps["supports_temperature"] is False
+
     def test_claude_extended_thinking_heuristic(self, monkeypatch):
         monkeypatch.setattr(model_registry, "_litellm_model_info", lambda _m: None)
         monkeypatch.setattr(

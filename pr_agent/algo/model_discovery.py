@@ -147,6 +147,14 @@ def _provider_from_litellm_id(model_id: str) -> str:
         return "azure"
     if model_id.startswith("openrouter/"):
         return "openrouter"
+    # Some LiteLLM catalog entries are bare model names without a provider prefix
+    # (e.g. "claude-3-5-haiku-latest", "gemini-1.5-pro"). Classify by family so they
+    # land under the correct provider group instead of defaulting to OpenAI.
+    normalized = model_id.lower().split("/")[-1]
+    if "claude" in normalized:
+        return "anthropic"
+    if normalized.startswith("gemini") or normalized.startswith("palm"):
+        return "google"
     return "openai"
 
 
@@ -233,12 +241,23 @@ async def _fetch_openai_models(api_key: str, timeout: float = 15.0) -> List[Disc
     return models
 
 
+_ANTHROPIC_PAGE_SIZE = 100
+_ANTHROPIC_MAX_PAGES = 50
+
+
 async def _fetch_anthropic_models(api_key: str, timeout: float = 15.0) -> List[DiscoveredModel]:
+    """Fetch all Anthropic chat models, walking through every page of results.
+
+    The Anthropic /v1/models endpoint paginates (default 20, max 1000 per page) and
+    returns `has_more`/`last_id` cursors. We page through several pages explicitly so
+    newly released models (e.g. Haiku) are never truncated by a single page.
+    """
     models: List[DiscoveredModel] = []
+    seen_ids: set[str] = set()
     async with httpx.AsyncClient(timeout=timeout) as client:
         after_id: Optional[str] = None
-        while True:
-            params: Dict[str, Any] = {"limit": 1000}
+        for _ in range(_ANTHROPIC_MAX_PAGES):
+            params: Dict[str, Any] = {"limit": _ANTHROPIC_PAGE_SIZE}
             if after_id:
                 params["after_id"] = after_id
             response = await client.get(
@@ -252,10 +271,12 @@ async def _fetch_anthropic_models(api_key: str, timeout: float = 15.0) -> List[D
             response.raise_for_status()
             payload = response.json()
 
-            for item in payload.get("data", []):
+            data = payload.get("data") or []
+            for item in data:
                 model_id = item.get("id", "")
-                if not model_id or is_specialty_model(model_id):
+                if not model_id or model_id in seen_ids or is_specialty_model(model_id):
                     continue
+                seen_ids.add(model_id)
                 litellm_id = model_id if model_id.startswith("anthropic/") else f"anthropic/{model_id}"
                 models.append(
                     DiscoveredModel(
