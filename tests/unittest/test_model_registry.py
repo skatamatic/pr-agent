@@ -117,6 +117,28 @@ class TestGetModelCapabilities:
         caps = get_model_capabilities("some-provider/fancy-reasoner")
         assert caps["supports_temperature"] is False
 
+    def test_claude_not_reasoning_effort_even_if_litellm_says_so(self, monkeypatch):
+        # LiteLLM reports supports_reasoning + reasoning_effort for newer Claude models,
+        # but sending reasoning_effort to Anthropic conflicts with temperature. Claude must
+        # never be flagged as reasoning_effort-capable.
+        monkeypatch.setattr(
+            model_registry,
+            "_litellm_model_info",
+            lambda _m: {
+                "supports_reasoning": True,
+                "supported_openai_params": ["temperature", "reasoning_effort", "max_tokens"],
+            },
+        )
+        monkeypatch.setattr(
+            model_registry,
+            "get_settings",
+            lambda: type("", (), {"config": type("", (), {"custom_reasoning_model": False})()})(),
+        )
+        caps = get_model_capabilities("anthropic/claude-opus-4-8")
+        assert caps["supports_reasoning_effort"] is False
+        # Claude still supports temperature for a normal (non-thinking) call.
+        assert caps["supports_temperature"] is True
+
     def test_claude_extended_thinking_heuristic(self, monkeypatch):
         monkeypatch.setattr(model_registry, "_litellm_model_info", lambda _m: None)
         monkeypatch.setattr(

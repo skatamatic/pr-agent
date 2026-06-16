@@ -104,9 +104,18 @@ def get_model_capabilities(model: str) -> Dict[str, bool]:
     supported_params = info.get("supported_openai_params") or []
     supports_reasoning = bool(info.get("supports_reasoning"))
 
-    supports_reasoning_effort = in_static_reasoning or supports_reasoning or _matches_any_pattern(
-        model, _REASONING_PATTERNS
-    )
+    # `reasoning_effort` is an OpenAI-style parameter. Anthropic/Claude models handle
+    # reasoning through the dedicated extended-thinking path (enable_claude_extended_thinking),
+    # and LiteLLM translates `reasoning_effort` into Anthropic thinking which then rejects a
+    # non-1 temperature -> 400 errors. Never advertise reasoning_effort for Claude models.
+    is_anthropic = model.lower().startswith("anthropic/") or "claude" in normalized.lower()
+
+    if is_anthropic:
+        supports_reasoning_effort = False
+    else:
+        supports_reasoning_effort = in_static_reasoning or supports_reasoning or _matches_any_pattern(
+            model, _REASONING_PATTERNS
+        )
 
     if supported_params:
         supports_temperature = "temperature" in supported_params

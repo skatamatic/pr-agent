@@ -3,6 +3,7 @@ import textwrap
 from unittest.mock import Mock
 
 from pr_agent.algo.utils import PRReviewHeader, convert_to_markdown_v2
+from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_description import insert_br_after_x_chars
 
 """
@@ -46,6 +47,16 @@ Additional aspects:
 
 
 class TestConvertToMarkdown:
+    def setup_method(self):
+        # These tests assert the review table layout without the optional intro line.
+        # Pin enable_intro_text so they stay independent of the shipped configuration default.
+        self._prev_intro = get_settings().get("pr_reviewer.enable_intro_text", None)
+        get_settings().set("pr_reviewer.enable_intro_text", False)
+
+    def teardown_method(self):
+        if self._prev_intro is not None:
+            get_settings().set("pr_reviewer.enable_intro_text", self._prev_intro)
+
     # Tests that the function works correctly with a simple dictionary input
     def test_simple_dictionary_input(self):
         input_data = {'review': {
