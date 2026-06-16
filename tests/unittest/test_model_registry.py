@@ -117,10 +117,9 @@ class TestGetModelCapabilities:
         caps = get_model_capabilities("some-provider/fancy-reasoner")
         assert caps["supports_temperature"] is False
 
-    def test_claude_not_reasoning_effort_even_if_litellm_says_so(self, monkeypatch):
-        # LiteLLM reports supports_reasoning + reasoning_effort for newer Claude models,
-        # but sending reasoning_effort to Anthropic conflicts with temperature. Claude must
-        # never be flagged as reasoning_effort-capable.
+    def test_claude_opus_4_8_uses_adaptive_thinking_and_no_temperature(self, monkeypatch):
+        # LiteLLM reports temperature + reasoning_effort as supported for claude-opus-4-8, but
+        # the model deprecated temperature and requires the native adaptive-thinking API.
         monkeypatch.setattr(
             model_registry,
             "_litellm_model_info",
@@ -135,9 +134,35 @@ class TestGetModelCapabilities:
             lambda: type("", (), {"config": type("", (), {"custom_reasoning_model": False})()})(),
         )
         caps = get_model_capabilities("anthropic/claude-opus-4-8")
-        assert caps["supports_reasoning_effort"] is False
-        # Claude still supports temperature for a normal (non-thinking) call.
+        # Reasoning is expressed via Anthropic adaptive thinking (not the OpenAI param).
+        assert caps["reasoning_style"] == model_registry.REASONING_STYLE_ANTHROPIC_ADAPTIVE
+        assert caps["supports_reasoning_effort"] is True
+        # Adaptive-thinking models reject a custom temperature.
+        assert caps["supports_temperature"] is False
+
+    def test_claude_haiku_supports_temperature_and_no_reasoning(self, monkeypatch):
+        # Haiku-class models support temperature and are not flagged as reasoning models.
+        monkeypatch.setattr(model_registry, "_litellm_model_info", lambda _m: None)
+        monkeypatch.setattr(
+            model_registry,
+            "get_settings",
+            lambda: type("", (), {"config": type("", (), {"custom_reasoning_model": False})()})(),
+        )
+        caps = get_model_capabilities("anthropic/claude-haiku-4-5-20251001")
         assert caps["supports_temperature"] is True
+        assert caps["supports_reasoning_effort"] is False
+        assert caps["reasoning_style"] is None
+
+    def test_claude_extended_thinking_model_uses_budget_style(self, monkeypatch):
+        monkeypatch.setattr(model_registry, "_litellm_model_info", lambda _m: None)
+        monkeypatch.setattr(
+            model_registry,
+            "get_settings",
+            lambda: type("", (), {"config": type("", (), {"custom_reasoning_model": False})()})(),
+        )
+        caps = get_model_capabilities("anthropic/claude-sonnet-4-6-20260205")
+        assert caps["reasoning_style"] == model_registry.REASONING_STYLE_ANTHROPIC_BUDGET
+        assert caps["supports_reasoning_effort"] is True
 
     def test_claude_extended_thinking_heuristic(self, monkeypatch):
         monkeypatch.setattr(model_registry, "_litellm_model_info", lambda _m: None)

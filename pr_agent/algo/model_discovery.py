@@ -64,7 +64,20 @@ class DiscoveredModel:
     max_input_tokens: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        # Annotate with runtime parameter capabilities so the UI can enable/disable controls
+        # (e.g. temperature is deprecated on Anthropic adaptive-thinking models).
+        try:
+            from pr_agent.algo.model_registry import get_model_capabilities
+
+            caps = get_model_capabilities(self.id)
+            data["supports_temperature"] = caps["supports_temperature"]
+            data["supports_reasoning_effort"] = caps["supports_reasoning_effort"]
+            data["reasoning_style"] = caps["reasoning_style"]
+        except Exception:
+            # Capability resolution is best-effort; never break discovery over it.
+            pass
+        return data
 
 
 @dataclass

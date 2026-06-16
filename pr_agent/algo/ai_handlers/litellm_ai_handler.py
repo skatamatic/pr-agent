@@ -1,4 +1,6 @@
 import os
+from typing import Optional
+
 import litellm
 import openai
 import requests
@@ -6,7 +8,10 @@ from litellm import acompletion
 from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
 
 from pr_agent.algo.model_registry import (
+    REASONING_STYLE_ANTHROPIC_ADAPTIVE,
+    REASONING_STYLE_ANTHROPIC_BUDGET,
     model_is_user_message_only,
+    model_reasoning_style,
     model_supports_claude_extended_thinking,
     model_supports_reasoning_effort,
     model_supports_temperature,
@@ -195,18 +200,62 @@ class LiteLLMAIHandler(BaseAiHandler):
         if extended_thinking_max_output_tokens < extended_thinking_budget_tokens:
             raise ValueError(f"extended_thinking_max_output_tokens ({extended_thinking_max_output_tokens}) must be greater than or equal to extended_thinking_budget_tokens ({extended_thinking_budget_tokens})")
 
+        # If reasoning-level mapping already configured adaptive thinking for this model,
+        # don't overwrite it with the enabled/budget shape (which adaptive models reject).
+        if isinstance(kwargs.get("thinking"), dict) and kwargs["thinking"].get("type") == "adaptive":
+            return kwargs
+
         kwargs["thinking"] = {
             "type": "enabled",
             "budget_tokens": extended_thinking_budget_tokens
         }
-        if get_settings().config.verbosity_level >= 2:
+        if get_settings().config.get("verbosity_level", 0) >= 2:
             get_logger().debug(f"Adding max output tokens {extended_thinking_max_output_tokens} to model {model}, extended thinking budget tokens: {extended_thinking_budget_tokens}")
         kwargs["max_tokens"] = extended_thinking_max_output_tokens
 
         # temperature may only be set to 1 when thinking is enabled
-        if get_settings().config.verbosity_level >= 2:
+        if get_settings().config.get("verbosity_level", 0) >= 2:
             get_logger().debug("Temperature may only be set to 1 when thinking is enabled with claude models.")
         kwargs["temperature"] = 1
+
+        return kwargs
+
+    # Approximate thinking budgets (in tokens) for the older Anthropic "enabled" thinking API.
+    _ANTHROPIC_BUDGET_BY_EFFORT = {"low": 2048, "medium": 4096, "high": 8192}
+
+    def _apply_reasoning_level(self, model: str, model_for_check: str, level: str, kwargs: dict) -> dict:
+        """Express the desired reasoning level using the model's native mechanism.
+
+        - OpenAI reasoning models: the `reasoning_effort` parameter.
+        - Anthropic adaptive-thinking models (e.g. claude-opus-4-8): `thinking.type=adaptive`
+          plus `output_config.effort`. These models also deprecate `temperature`.
+        - Anthropic budget-thinking models (e.g. claude-3-7-sonnet): `thinking.type=enabled`
+          with a token budget; `temperature` must be 1 and `max_tokens` must exceed the budget.
+
+        If a model rejects the chosen shape at request time, `_acompletion_with_param_fallback`
+        negotiates the correct one, so this only needs to pick a sensible default.
+        """
+        style = model_reasoning_style(model_for_check)
+
+        if style == REASONING_STYLE_ANTHROPIC_ADAPTIVE:
+            kwargs["thinking"] = {"type": "adaptive"}
+            kwargs["output_config"] = {"effort": level}
+            # Adaptive-thinking models reject a custom temperature.
+            kwargs.pop("temperature", None)
+            get_logger().info(f"Using Anthropic adaptive thinking (effort={level}) for model {model}.")
+        elif style == REASONING_STYLE_ANTHROPIC_BUDGET:
+            budget = self._ANTHROPIC_BUDGET_BY_EFFORT.get(level, 4096)
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            # When thinking is enabled, max_tokens must exceed the budget and temperature must be 1.
+            existing_max = kwargs.get("max_tokens") or 0
+            kwargs["max_tokens"] = max(existing_max, budget + 4096)
+            kwargs["temperature"] = 1
+            get_logger().info(
+                f"Using Anthropic extended thinking (budget_tokens={budget}, effort={level}) for model {model}."
+            )
+        else:
+            kwargs["reasoning_effort"] = level
+            get_logger().info(f"Adding reasoning_effort with value {level} to model {model}.")
 
         return kwargs
 
@@ -271,8 +320,104 @@ class LiteLLMAIHandler(BaseAiHandler):
         """
         return get_settings().get("OPENAI.DEPLOYMENT_ID", None)
 
+    # Optional tuning parameters that are safe to drop and retry without if a provider
+    # rejects them. Some models (e.g. newer Anthropic reasoning models) advertise these
+    # via LiteLLM metadata but reject them at request time.
+    _DROPPABLE_PARAMS = ("temperature", "reasoning_effort", "top_p", "thinking", "seed")
+
+    def _negotiate_thinking_params(self, kwargs: dict, msg: str, negotiated: set) -> Optional[str]:
+        """Repair Anthropic `thinking` parameters based on the provider's rejection message.
+
+        Different Claude models accept different thinking shapes (adaptive vs enabled+budget).
+        Rather than hardcode which model wants which, we react to the API's guidance and switch
+        shapes. Each repair runs at most once (tracked in `negotiated`) to guarantee termination.
+        Returns a human-readable description of the repair, or None if nothing applied.
+        """
+        thinking = kwargs.get("thinking")
+
+        # Model wants adaptive thinking instead of the enabled/budget shape we sent.
+        if "to_adaptive" not in negotiated and (
+            "thinking.type.adaptive" in msg or ("adaptive" in msg and "enabled" in msg)
+        ):
+            negotiated.add("to_adaptive")
+            effort = (kwargs.get("output_config") or {}).get("effort") or "high"
+            kwargs["thinking"] = {"type": "adaptive"}
+            kwargs["output_config"] = {"effort": effort}
+            kwargs.pop("temperature", None)  # adaptive-thinking models deprecate temperature
+            return "switched thinking to adaptive"
+
+        # Model does not support adaptive thinking; fall back to enabled+budget.
+        if "to_budget" not in negotiated and "adaptive thinking is not supported" in msg:
+            negotiated.add("to_budget")
+            budget = self._ANTHROPIC_BUDGET_BY_EFFORT.get(
+                (kwargs.get("output_config") or {}).get("effort"), 4096
+            )
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            kwargs.pop("output_config", None)
+            kwargs["max_tokens"] = max(kwargs.get("max_tokens") or 0, budget + 4096)
+            kwargs["temperature"] = 1
+            return "switched thinking to enabled budget"
+
+        # max_tokens must exceed the thinking budget.
+        if "bump_max" not in negotiated and "budget_tokens" in msg and "max_tokens" in msg:
+            negotiated.add("bump_max")
+            budget = 4096
+            if isinstance(thinking, dict) and isinstance(thinking.get("budget_tokens"), int):
+                budget = thinking["budget_tokens"]
+            kwargs["max_tokens"] = budget + 4096
+            return "increased max_tokens above thinking budget"
+
+        return None
+
+    async def _acompletion_with_param_fallback(self, kwargs: dict):
+        """Call litellm.acompletion, adapting the request when a provider rejects parameters.
+
+        Two layers of resilience:
+        1. Negotiate Anthropic `thinking` shape (adaptive <-> enabled/budget, max_tokens) based
+           on the rejection message, so reasoning still happens on the right API.
+        2. Otherwise drop the specific optional parameter the provider complained about and
+           retry, instead of failing the whole operation.
+        """
+        attempt_kwargs = dict(kwargs)
+        dropped = []
+        negotiated: set = set()
+        while True:
+            try:
+                return await acompletion(**attempt_kwargs)
+            except (openai.BadRequestError, litellm.BadRequestError) as e:
+                msg = str(e).lower()
+
+                repair = self._negotiate_thinking_params(attempt_kwargs, msg, negotiated)
+                if repair:
+                    get_logger().warning(
+                        f"Adjusting request for model {attempt_kwargs.get('model')}: {repair}."
+                    )
+                    continue
+
+                to_drop = next(
+                    (p for p in self._DROPPABLE_PARAMS if p in attempt_kwargs and p in msg),
+                    None,
+                )
+                # reasoning_effort is translated to Anthropic "thinking"; the rejection
+                # message references thinking/reasoning rather than the param we sent.
+                if to_drop is None and "reasoning_effort" in attempt_kwargs and (
+                    "thinking" in msg or "reasoning" in msg
+                ):
+                    to_drop = "reasoning_effort"
+                if to_drop is None:
+                    raise
+                attempt_kwargs.pop(to_drop, None)
+                if to_drop == "thinking":
+                    attempt_kwargs.pop("output_config", None)
+                dropped.append(to_drop)
+                get_logger().warning(
+                    f"Provider rejected parameter '{to_drop}' for model "
+                    f"{attempt_kwargs.get('model')}; retrying without it (dropped so far: {dropped})."
+                )
+
     @retry(
-        retry=retry_if_exception_type(openai.APIError) & retry_if_not_exception_type(openai.RateLimitError),
+        retry=retry_if_exception_type(openai.APIError)
+        & retry_if_not_exception_type((openai.RateLimitError, openai.BadRequestError)),
         stop=stop_after_attempt(OPENAI_RETRIES),
     )
     async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
@@ -331,12 +476,14 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # get_logger().info(f"Adding temperature with value {temperature} to model {model}.")
                 kwargs["temperature"] = temperature
 
-            # Add reasoning_effort if model supports it
+            # Add a reasoning level if the model supports it. The level is expressed using
+            # the provider-native mechanism (OpenAI `reasoning_effort` vs Anthropic `thinking`).
             if model_supports_reasoning_effort(model_for_check):
                 supported_reasoning_efforts = [ReasoningEffort.HIGH.value, ReasoningEffort.MEDIUM.value, ReasoningEffort.LOW.value]
-                reasoning_effort = get_settings().config.reasoning_effort if (get_settings().config.reasoning_effort in supported_reasoning_efforts) else ReasoningEffort.MEDIUM.value
-                get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
-                kwargs["reasoning_effort"] = reasoning_effort
+                reasoning_effort = get_settings().config.get("reasoning_effort", ReasoningEffort.MEDIUM.value)
+                if reasoning_effort not in supported_reasoning_efforts:
+                    reasoning_effort = ReasoningEffort.MEDIUM.value
+                kwargs = self._apply_reasoning_level(model, model_for_check, reasoning_effort, kwargs)
 
             # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
             if model_supports_claude_extended_thinking(model_for_check) and get_settings().config.get("enable_claude_extended_thinking", False):
@@ -378,7 +525,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             get_logger().info(f"[AI] - System Prompt ({len(system)} chars)", artifacts={"system_prompt": system})
             get_logger().info(f"[AI] - User Prompt ({len(user)} chars)", artifacts={"user_prompt": user})
 
-            response = await acompletion(**kwargs)
+            response = await self._acompletion_with_param_fallback(kwargs)
         except openai.RateLimitError as e:
             get_logger().error(f"[AI] - Rate limit error during LLM inference: {e}")
             raise

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useContext, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useContext, useRef, useMemo } from 'react';
 import { 
   Settings, 
   Save, 
@@ -26,7 +26,8 @@ import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
 import ModelCombobox from './ModelCombobox';
 import ModelMultiCombobox from './ModelMultiCombobox';
-import { invalidateAvailableModelsCache } from '../hooks/useAvailableModels';
+import { invalidateAvailableModelsCache, useAvailableModels } from '../hooks/useAvailableModels';
+import { buildModelCapabilityMap, getModelCapability, capabilityLockMessage } from '../utils/modelCapabilities';
 
 /** Zip an array of File objects (e.g. from a folder picker) into a single ZIP File for bulk upload. */
 async function zipFolderFiles(files) {
@@ -58,6 +59,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
   const [modelTestTarget, setModelTestTarget] = useState('');
 
   const [errors, setErrors] = useState({});
+  const { providers: availableProviders } = useAvailableModels();
+  const capabilityMap = useMemo(() => buildModelCapabilityMap(availableProviders), [availableProviders]);
   const [animatingCheckbox, setAnimatingCheckbox] = useState(null);
   const [dismissedInfo, setDismissedInfo] = useState(() => {
     return localStorage.getItem('dismissedConfigInfo') === 'true';
@@ -1318,15 +1321,26 @@ const ConfigEditor = ({ navigationTarget = null }) => {
             <SectionHeader title="Reasoning & Performance" icon={Zap}>
           <div className="space-y-6 pt-4">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {(() => {
+                const reasoningLocked = getModelCapability(capabilityMap, config.config?.model, 'supports_reasoning_effort') === false;
+                const reasoningLockMsg = capabilityLockMessage('supports_reasoning_effort', config.config?.model);
+                return (
               <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                   Reasoning Effort
-                  <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal">Higher effort = better quality, slower response</span>
+                  {reasoningLocked && (
+                    <span title={reasoningLockMsg} className="inline-flex items-center text-amber-500 dark:text-amber-400 cursor-help">
+                      <Info className="h-3.5 w-3.5" />
+                    </span>
+                  )}
+                  <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal w-full">
+                    {reasoningLocked ? reasoningLockMsg : 'Higher effort = better quality, slower response'}
+                  </span>
                 </label>
                 <select
                   value={config.config?.reasoning_effort || 'high'}
                   onChange={(e) => updateConfig('config.reasoning_effort', e.target.value)}
-                      disabled={!editing}
+                      disabled={!editing || reasoningLocked}
                       className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <option value="low">Low - Fast responses</option>
@@ -1334,6 +1348,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   <option value="high">High - Best quality</option>
                 </select>
               </div>
+                );
+              })()}
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
@@ -1354,10 +1370,21 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 )}
               </div>
 
+              {(() => {
+                const tempLocked = getModelCapability(capabilityMap, config.config?.model, 'supports_temperature') === false;
+                const tempLockMsg = capabilityLockMessage('supports_temperature', config.config?.model);
+                return (
               <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                   Temperature
-                  <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal">0 = deterministic, 2 = very creative</span>
+                  {tempLocked && (
+                    <span title={tempLockMsg} className="inline-flex items-center text-amber-500 dark:text-amber-400 cursor-help">
+                      <Info className="h-3.5 w-3.5" />
+                    </span>
+                  )}
+                  <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal w-full">
+                    {tempLocked ? tempLockMsg : '0 = deterministic, 2 = very creative'}
+                  </span>
                 </label>
                 <input
                   type="number"
@@ -1366,13 +1393,15 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   min="0"
                   max="2"
                   step="0.1"
-                      disabled={!editing}
+                      disabled={!editing || tempLocked}
                       className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
                 {errors['config.temperature'] && (
                   <p className="text-sm text-red-600 dark:text-red-400 mt-1">{errors['config.temperature']}</p>
                 )}
               </div>
+                );
+              })()}
             </div>
           </div>
         </SectionHeader>

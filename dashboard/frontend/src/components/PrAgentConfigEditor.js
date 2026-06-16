@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext, useRef } from 'react';
+import React, { useState, useEffect, useContext, useRef, useMemo } from 'react';
 import { 
   Settings, 
   Save, 
@@ -22,6 +22,8 @@ import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
 import ModelCombobox from './ModelCombobox';
 import ModelMultiCombobox from './ModelMultiCombobox';
+import { useAvailableModels } from '../hooks/useAvailableModels';
+import { buildModelCapabilityMap, getModelCapability, capabilityLockMessage } from '../utils/modelCapabilities';
 
 const PrAgentConfigEditor = ({ 
   repositoryId, 
@@ -40,6 +42,8 @@ const PrAgentConfigEditor = ({
   const [hasExistingConfig, setHasExistingConfig] = useState(false);
   const fetchConfigsRef = useRef(null);
   const { showSuccess, showError } = useContext(ToastContext);
+  const { providers: availableProviders } = useAvailableModels();
+  const capabilityMap = useMemo(() => buildModelCapabilityMap(availableProviders), [availableProviders]);
 
   const configSections = {
     models: {
@@ -49,9 +53,9 @@ const PrAgentConfigEditor = ({
         { key: 'config.model', label: 'Primary Model', type: 'model', description: 'Main AI model for most operations' },
         { key: 'config.model_reasoning', label: 'Reasoning Model', type: 'model', description: 'AI model for complex reasoning tasks' },
         { key: 'config.model_weak', label: 'Weak Model', type: 'model', description: 'Lightweight model for simple tasks (used for PR descriptions)' },
-        { key: 'config.temperature', label: 'Temperature', type: 'number', min: 0, max: 2, step: 0.1, description: 'Creativity level (0 = focused, 2 = creative)' },
+        { key: 'config.temperature', label: 'Temperature', type: 'number', min: 0, max: 2, step: 0.1, description: 'Creativity level (0 = focused, 2 = creative)', requiresCapability: 'supports_temperature' },
         { key: 'config.max_model_tokens', label: 'Max Model Tokens', type: 'number', min: 1000, max: 200000, description: 'Maximum tokens per request' },
-        { key: 'config.reasoning_effort', label: 'Reasoning Effort', type: 'select', options: { effort: ['low', 'medium', 'high'] }, description: 'Reasoning intensity for complex tasks' }
+        { key: 'config.reasoning_effort', label: 'Reasoning Effort', type: 'select', options: { effort: ['low', 'medium', 'high'] }, description: 'Reasoning intensity for complex tasks', requiresCapability: 'supports_reasoning_effort' }
       ]
     },
     context: {
@@ -356,9 +360,23 @@ const PrAgentConfigEditor = ({
   const renderField = (field) => {
     const currentValue = getCurrentValue(field.key);
     const isFieldOverridden = isOverridden(field.key);
-    
+
+    // Determine whether this parameter is unsupported by the active primary model.
+    const activeModel = getCurrentValue('config.model');
+    let isLocked = false;
+    let lockMessage = '';
+    if (field.requiresCapability && activeModel) {
+      const supported = getModelCapability(capabilityMap, activeModel, field.requiresCapability);
+      if (supported === false) {
+        isLocked = true;
+        lockMessage = capabilityLockMessage(field.requiresCapability, activeModel);
+      }
+    }
+
     const fieldClasses = `w-full rounded-lg px-3 py-2 transition-all duration-200 ${
-      isFieldOverridden
+      isLocked
+        ? 'bg-gray-100 dark:bg-gray-800/60 border border-gray-300 dark:border-gray-700 text-gray-400 dark:text-gray-500 cursor-not-allowed'
+        : isFieldOverridden
         ? 'bg-blue-50 dark:bg-gray-700 border-2 border-blue-300 dark:border-blue-500/50 focus:border-blue-500 dark:focus:border-blue-400 text-gray-900 dark:text-gray-100'
         : 'bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 focus:border-gray-500 dark:focus:border-gray-400 text-gray-900 dark:text-gray-100'
     } focus:outline-none focus:ring-0`;
@@ -403,6 +421,7 @@ const PrAgentConfigEditor = ({
           <select
             value={currentValue || ''}
             onChange={(e) => updateOverride(field.key, e.target.value)}
+            disabled={isLocked}
             className={fieldClasses}
           >
             <option value="">
@@ -494,6 +513,7 @@ const PrAgentConfigEditor = ({
             min={field.min}
             max={field.max}
             step={field.step}
+            disabled={isLocked}
             placeholder="Use global default"
             className={fieldClasses}
           />
@@ -539,14 +559,21 @@ const PrAgentConfigEditor = ({
     return (
       <div key={field.key} className={`space-y-2 ${isFieldOverridden ? 'relative p-4 bg-blue-50/50 dark:bg-blue-900/5 rounded-lg border border-blue-200/50 dark:border-blue-800/30' : ''}`}>
         <div className="flex items-center justify-between">
-          <label className={`block text-sm font-medium transition-colors ${
-            isFieldOverridden 
-              ? 'text-blue-800 dark:text-blue-200 font-semibold' 
+          <label className={`flex items-center gap-1.5 text-sm font-medium transition-colors ${
+            isLocked
+              ? 'text-gray-400 dark:text-gray-500'
+              : isFieldOverridden
+              ? 'text-blue-800 dark:text-blue-200 font-semibold'
               : 'text-gray-700 dark:text-gray-300'
           }`}>
             {field.label}
+            {isLocked && (
+              <span title={lockMessage} className="inline-flex items-center text-amber-500 dark:text-amber-400 cursor-help">
+                <Info className="h-3.5 w-3.5" />
+              </span>
+            )}
           </label>
-          {isFieldOverridden && (
+          {!isLocked && isFieldOverridden && (
             <div className="flex items-center space-x-2">
               <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200">
                 Overridden
@@ -568,7 +595,11 @@ const PrAgentConfigEditor = ({
         </div>
         
         <div className="text-xs">
-          <p className="text-gray-500 dark:text-gray-400">{field.description}</p>
+          {isLocked ? (
+            <p className="text-amber-600 dark:text-amber-400">{lockMessage}</p>
+          ) : (
+            <p className="text-gray-500 dark:text-gray-400">{field.description}</p>
+          )}
         </div>
       </div>
     );

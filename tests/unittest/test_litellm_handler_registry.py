@@ -17,7 +17,7 @@ class FakeConfig:
     ai_timeout = 60
 
     def get(self, key, default=None):
-        return default
+        return getattr(self, key, default)
 
 
 class FakeSettings:
