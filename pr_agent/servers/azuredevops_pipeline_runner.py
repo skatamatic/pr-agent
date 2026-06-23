@@ -181,10 +181,17 @@ async def run_action():
 
     try:
         get_logger().info("Applying repo settings")
-        apply_repo_settings(pr_url)
+        repo_settings = apply_repo_settings(pr_url)
         get_logger().info(f"enable_custom_labels: {get_settings().config.enable_custom_labels}")
     except Exception as e:
         get_logger().info(f"azure devops pipeline: failed to apply repo settings: {e}")
+        repo_settings = None
+
+    try:
+        from pr_agent.algo.repository_automation import apply_dashboard_repository_automation
+        apply_dashboard_repository_automation(pr_url, repo_settings)
+    except Exception as e:
+        get_logger().debug(f"Failed to apply dashboard repository automation: {e}")
 
     # Re-assert per-run auth context after repo settings are applied.
     # Repo settings may include [azure_devops] or [config] overrides;

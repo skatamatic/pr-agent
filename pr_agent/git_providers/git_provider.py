@@ -113,6 +113,14 @@ class GitProvider(ABC):
     def get_pr_branch(self):
         pass
 
+    def get_pr_target_branch(self) -> str:
+        """Merge target branch for the current PR, if available."""
+        return ""
+
+    def get_repo_default_branch(self) -> str:
+        """Repository default branch (e.g. main or master), if known."""
+        return ""
+
     @abstractmethod
     def get_user_id(self):
         pass

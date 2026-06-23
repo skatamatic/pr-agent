@@ -502,6 +502,16 @@ class GitLabProvider(GitProvider):
     def get_pr_branch(self):
         return self.mr.source_branch
 
+    def get_pr_target_branch(self) -> str:
+        return self.mr.target_branch or ""
+
+    def get_repo_default_branch(self) -> str:
+        try:
+            return self.gl.projects.get(self.id_project).default_branch or ""
+        except Exception as e:
+            get_logger().debug(f"Failed to get repo default branch: {e}")
+            return ""
+
     def get_pr_owner_id(self) -> str | None:
         if not self.gitlab_url or 'gitlab.com' in self.gitlab_url:
             if not self.id_project:
@@ -518,12 +528,11 @@ class GitLabProvider(GitProvider):
         return self.mr.notes.list(get_all=True)[::-1]
 
     def get_repo_settings(self):
-        try:
-            main_branch = self.gl.projects.get(self.id_project).default_branch
-            contents = self.gl.projects.get(self.id_project).files.get(file_path='.pr_agent.toml', ref=main_branch).decode()
-            return contents
-        except Exception:
+        from pr_agent.algo.utils import fetch_repo_file_content
+        content = fetch_repo_file_content(self, ".pr_agent.toml")
+        if not content:
             return ""
+        return content.encode("utf-8")
 
     def get_workspace_name(self):
         return self.id_project.split('/')[0]

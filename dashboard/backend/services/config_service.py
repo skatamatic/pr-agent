@@ -273,7 +273,11 @@ class ConfigService:
                 "verbosity_level": 2,
                 "ai_timeout": 180,
                 "publish_output": True,
-                "enable_auto_approval": False
+                "enable_auto_approval": False,
+                "use_repo_settings_file": True,
+                "use_wiki_settings_file": True,
+                "use_global_settings_file": True,
+                "repo_settings_branch": "",
             },
             "pr_reviewer": {
                 "enabled": True,
@@ -282,7 +286,19 @@ class ConfigService:
             },
             "pr_description": {
                 "enabled": True,
-                "publish_description": True
+                "publish_description": True,
+                "publish_description_as_comment": False,
+            },
+            "azure_devops_config": {
+                "auto_describe": True,
+                "auto_review": True,
+                "auto_improve": True,
+                "enable_output": True,
+            },
+            "github_action_config": {
+                "auto_describe": True,
+                "auto_review": True,
+                "auto_improve": True,
             },
             "pr_code_suggestions": {
                 "enabled": True,
@@ -294,15 +310,6 @@ class ConfigService:
                 "default_mode": "Minified",
                 "timeout": 180,
                 "url": ""
-            },
-            "enabled_actions": {
-                "pr_reviewer": True,
-                "pr_description": True,
-                "pr_code_suggestions": True,
-                "pr_questions": True,
-                "pr_test": False,
-                "pr_add_docs": False,
-                "pr_update_changelog": False
             },
             "api_keys": {
                 "openai": "",
@@ -317,7 +324,7 @@ class ConfigService:
                 "confidence_threshold": "medium"
             },
             "pr_filters": {
-                "skip_if_description_exists": True,
+                "skip_if_description_exists": False,
                 "terminate_on_no_bots": True,
                 "max_lines_changed": 1000
             }
@@ -502,6 +509,7 @@ class ConfigService:
                     "enabled_actions",
                     "dashboard",
                     "azure_devops_config",
+                    "github_action_config",
                     "best_practices",
                     "auto_best_practices",
                     "github",

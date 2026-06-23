@@ -1364,85 +1364,89 @@ def set_file_languages(diff_files) -> List[FilePatchInfo]:
 
     return diff_files
 
-def get_best_practices_content(git_provider, branch="main") -> str:
+def _dedupe_branch_names(branches) -> list:
+    seen = set()
+    result = []
+    for branch in branches:
+        name = (branch or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        result.append(name)
+    return result
+
+
+def resolve_repo_file_branches(git_provider, extra_branch: str = "") -> list:
+    """Return branch names to search for repo-level config files.
+
+    Order:
+    1. config.repo_settings_branch (if set) or explicit extra_branch
+    2. PR source branch
+    3. PR target / merge branch
+    4. Repository default branch (provider-specific)
+    5. main, master, develop
+    """
+    from pr_agent.config_loader import get_settings
+
+    branches = []
+
+    configured = (get_settings().config.get("repo_settings_branch") or "").strip()
+    if configured:
+        branches.append(configured)
+    if extra_branch and extra_branch.strip() and extra_branch.strip() not in branches:
+        branches.append(extra_branch.strip())
+
+    for getter_name in ("get_pr_branch", "get_pr_target_branch", "get_repo_default_branch"):
+        getter = getattr(git_provider, getter_name, None)
+        if not callable(getter):
+            continue
+        try:
+            branch_name = getter()
+            if branch_name:
+                branches.append(branch_name)
+        except Exception as e:
+            get_logger().debug(f"Could not resolve branch via {getter_name}: {e}")
+
+    branches.extend(["main", "master", "develop"])
+    return _dedupe_branch_names(branches)
+
+
+def fetch_repo_file_content(git_provider, file_path: str, extra_branch: str = "") -> str:
+    """Load a repo-root file by trying resolve_repo_file_branches() in order."""
+    branches = resolve_repo_file_branches(git_provider, extra_branch=extra_branch)
+    for branch_name in branches:
+        try:
+            content = git_provider.get_pr_file_content(file_path, branch_name)
+            if content and str(content).strip():
+                get_logger().info(f"Found {file_path} on branch {branch_name}")
+                return str(content).strip()
+        except Exception as e:
+            get_logger().debug(f"Could not load {file_path} from branch {branch_name}: {e}")
+    get_logger().debug(f"{file_path} not found in repository (branches tried: {branches})")
+    return ""
+
+
+def get_best_practices_content(git_provider, branch: str = "") -> str:
     """
     Load best_practices.md file from the repository root if it exists.
-    
-    Args:
-        git_provider: The git provider instance
-        branch: Branch to fetch from (defaults to "main")
-        
-    Returns:
-        str: Content of best_practices.md file, or empty string if not found
+
+    Branch resolution: see resolve_repo_file_branches().
     """
     try:
-        # Try to get the best practices file from the repo root
-        # Use provided branch or try common default branches
-        branches_to_try = [branch, "main", "master", "develop"]
-        
-        # Try to get PR branch if available (only works if git provider has PR context)
-        try:
-            if hasattr(git_provider, 'get_pr_branch'):
-                pr_branch = git_provider.get_pr_branch()
-                if pr_branch:
-                    branches_to_try.insert(0, pr_branch)
-        except Exception as pr_branch_e:
-            get_logger().debug(f"Could not get PR branch (no PR context): {pr_branch_e}")
-        
-        for branch_name in branches_to_try:
-            try:
-                best_practices_content = git_provider.get_pr_file_content("best_practices.md", branch_name)
-                if best_practices_content and best_practices_content.strip():
-                    get_logger().info(f"Found best_practices.md file in repository root on branch {branch_name}")
-                    return best_practices_content.strip()
-            except Exception as branch_e:
-                get_logger().debug(f"Could not load best_practices.md from branch {branch_name}: {branch_e}")
-                continue
-        
-        get_logger().debug("best_practices.md file not found in any branch")
-        return ""
+        return fetch_repo_file_content(git_provider, "best_practices.md", extra_branch=branch)
     except Exception as e:
         get_logger().debug(f"Could not load best_practices.md from repository root: {e}")
         return ""
 
 
-def get_pr_agent_config_content(git_provider, branch="main") -> str:
+def get_pr_agent_config_content(git_provider, branch: str = "") -> str:
     """
     Load .pr_agent.toml file from the repository root if it exists.
-    
-    Args:
-        git_provider: The git provider instance
-        branch: Branch to fetch from (defaults to "main")
-        
-    Returns:
-        str: Content of .pr_agent.toml file, or empty string if not found
+
+    Branch resolution: see resolve_repo_file_branches().
     """
     try:
-        # Try to get the PR-Agent config file from the repo root
-        # Use provided branch or try common default branches
-        branches_to_try = [branch, "main", "master", "develop"]
-        
-        # Try to get PR branch if available (only works if git provider has PR context)
-        try:
-            if hasattr(git_provider, 'get_pr_branch'):
-                pr_branch = git_provider.get_pr_branch()
-                if pr_branch:
-                    branches_to_try.insert(0, pr_branch)
-        except Exception as pr_branch_e:
-            get_logger().debug(f"Could not get PR branch (no PR context): {pr_branch_e}")
-        
-        for branch_name in branches_to_try:
-            try:
-                pr_agent_config_content = git_provider.get_pr_file_content(".pr_agent.toml", branch_name)
-                if pr_agent_config_content and pr_agent_config_content.strip():
-                    get_logger().info(f"Found .pr_agent.toml file in repository root on branch {branch_name}")
-                    return pr_agent_config_content.strip()
-            except Exception as branch_e:
-                get_logger().debug(f"Could not load .pr_agent.toml from branch {branch_name}: {branch_e}")
-                continue
-        
-        get_logger().debug(".pr_agent.toml file not found in any branch")
-        return ""
+        return fetch_repo_file_content(git_provider, ".pr_agent.toml", extra_branch=branch)
     except Exception as e:
         get_logger().debug(f"Could not load .pr_agent.toml from repository root: {e}")
         return ""

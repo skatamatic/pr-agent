@@ -17,6 +17,7 @@ import { ToastProvider, ToastContext } from './contexts/ToastContext';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import apiService from './services/api';
 import webSocketService from './services/websocket';
+import { createPollingFailureTracker, isPageHidden } from './utils/pollingGuard';
 
 function AppContent() {
   const { isAuthenticated, loading: authLoading } = useAuth();
@@ -77,6 +78,13 @@ function Dashboard() {
   const fetchDataRef = useRef(null);
   const navigateToJobWithHighlightRef = useRef(null);
   const navigateToOperationWithHighlightRef = useRef(null);
+  const pollingFailuresRef = useRef(createPollingFailureTracker());
+  const healthCheckRef = useRef(null);
+  const connectionStateRef = useRef(connectionState);
+
+  useEffect(() => {
+    connectionStateRef.current = connectionState;
+  }, [connectionState]);
 
   const { handleSystemError, handleSystemRestore, clearErrorState } = useContext(ToastContext);
 
@@ -228,18 +236,27 @@ function Dashboard() {
 
   // Smart data fetching with error handling
   const fetchData = async (showLoadingState = false) => {
+    if (isPageHidden() && !showLoadingState) {
+      return;
+    }
+
     if (showLoadingState) {
       setLoading(true);
     }
+
+    const failures = pollingFailuresRef.current;
 
     try {
       let operationsRes, logsRes;
       
       try {
         operationsRes = await apiService.getOperations({ limit: 100 });
+        failures.recordSuccess('operations');
       } catch (error) {
         console.error('Operations API Error:', error);
-        handleSystemError(error, 'operations');
+        if (failures.shouldReportFailure('operations', error)) {
+          handleSystemError(error, 'operations');
+        }
         operationsRes = { data: { data: { operations: [], total: 0 } } };
       }
       
@@ -253,9 +270,12 @@ function Dashboard() {
         } else {
           logsRes = await apiService.getLogs({ limit: 10000 });
         }
+        failures.recordSuccess('logs');
       } catch (error) {
         console.error('Logs API Error:', error);
-        handleSystemError(error, 'logs');
+        if (failures.shouldReportFailure('logs', error)) {
+          handleSystemError(error, 'logs');
+        }
         logsRes = { data: { data: { logs: [], total: 0 } } };
       }
 
@@ -297,9 +317,8 @@ function Dashboard() {
       clearErrorState('system_database');
 
     } catch (error) {
-      
-      // Only show error on rising edge (first failure)
-      if (connectionState.api === 'connected') {
+      // Only show error on rising edge after repeated visible failures
+      if (pollingFailuresRef.current.shouldReportFailure('api', error)) {
         handleSystemError(error, 'API');
       }
       
@@ -338,26 +357,36 @@ function Dashboard() {
 
   // Periodic data refresh (every 30 seconds as backup to WebSocket)
   useEffect(() => {
-    const interval = setInterval(() => {
-      // Only poll if WebSocket is not connected
-      if (connectionState.websocket !== 'connected') {
+    const poll = () => {
+      if (isPageHidden()) return;
+      if (connectionStateRef.current.websocket !== 'connected') {
         fetchDataRef.current?.(false);
       }
-    }, 30000);
+    };
 
+    const interval = setInterval(poll, 30000);
     return () => clearInterval(interval);
-  }, [connectionState.websocket]); // Re-establish interval when connection state changes
+  }, []);
 
   // Health check monitoring
   useEffect(() => {
+    const failures = pollingFailuresRef.current;
+
     const healthCheck = async () => {
+      if (isPageHidden()) return;
+
       try {
         const health = await apiService.getSystemHealth();
+        const healthData = health.data || health;
+        failures.recordSuccess('health');
         
         // Update context service status
-        const contextServiceStatus = health.services?.context_service?.status || 'unknown';
-        const newContextServiceState = contextServiceStatus === 'healthy' ? 'connected' : 
-                                     contextServiceStatus === 'disabled' ? 'disabled' : 'error';
+        const contextServiceStatus = healthData.context_service?.status || 'unknown';
+        const newContextServiceState =
+          contextServiceStatus === 'disabled' ? 'disabled'
+          : contextServiceStatus === 'connected' || contextServiceStatus === 'healthy' ? 'connected'
+          : contextServiceStatus === 'warning' ? 'connected'
+          : 'error';
         
         setConnectionState(prev => {
           const previousContextState = prev.contextService;
@@ -378,19 +407,37 @@ function Dashboard() {
         });
 
       } catch (error) {
-        // Health check failure - only report if connection was previously good
-        if (connectionState.api === 'connected') {
+        if (failures.shouldReportFailure('health', error)) {
           handleSystemError(error, 'Health Check');
         }
       }
     };
 
-    // Run health check every 30 seconds
-    const healthInterval = setInterval(healthCheck, 30000);
-    healthCheck(); // Run immediately
+    healthCheckRef.current = healthCheck;
 
-    return () => clearInterval(healthInterval);
-  }, [connectionState.api, handleSystemError, handleSystemRestore]); // Removed contextService dependency to prevent re-runs
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        failures.markVisible();
+        healthCheck();
+        if (connectionStateRef.current.websocket !== 'connected') {
+          fetchDataRef.current?.(false);
+        }
+      } else {
+        failures.markHidden();
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    // Run health check every 30 seconds while the tab is visible
+    const healthInterval = setInterval(healthCheck, 30000);
+    healthCheck();
+
+    return () => {
+      clearInterval(healthInterval);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [handleSystemError, handleSystemRestore]);
 
   const mainTabs = [
     { id: 'overview', name: 'Overview', icon: Activity },

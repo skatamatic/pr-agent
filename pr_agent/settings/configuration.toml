@@ -21,6 +21,9 @@ log_level="DEBUG"
 # Configurations
 use_wiki_settings_file=true
 use_repo_settings_file=true
+# Optional: force repo config files (.pr_agent.toml, best_practices.md) to be loaded from this branch.
+# When empty, branches are tried in order: PR source branch, PR target branch, repo default, then main/master.
+repo_settings_branch=""
 use_global_settings_file=true
 disable_auto_feedback = false
 ai_timeout=120 # 2minutes
@@ -93,6 +96,7 @@ enable_intro_text=true
 enable_help_text=false # Determines whether to include help text in the PR review. Enabled by default.
 
 [pr_description] # /describe #
+publish_description = true
 publish_labels=false
 add_original_user_description=true
 generate_ai_title=false

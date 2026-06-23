@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
+import Modal from './Modal';
 
 const GitHubActionConfigEditor = ({ repoId, repoData, onClose, onSave }) => {
   const [loading, setLoading] = useState(true);
@@ -239,20 +240,19 @@ const GitHubActionConfigEditor = ({ repoId, repoData, onClose, onSave }) => {
 
   if (loading) {
     return (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-4xl mx-4 max-h-[90vh] overflow-y-auto">
+      <Modal isOpen onClose={onClose} maxWidth="max-w-4xl" ariaLabel="Loading GitHub Action configuration">
+        <div className="p-6">
           <div className="flex items-center justify-center py-8">
             <RefreshCw className="h-6 w-6 text-blue-600 dark:text-blue-400 animate-spin mr-3" />
             <span className="text-gray-600 dark:text-gray-400">Loading GitHub Action configuration...</span>
           </div>
         </div>
-      </div>
+      </Modal>
     );
   }
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-lg w-full max-w-6xl mx-4 max-h-[90vh] overflow-y-auto">
+    <Modal isOpen onClose={onClose} maxWidth="max-w-6xl" ariaLabel="GitHub Action Configuration">
         {/* Header */}
         <div className="sticky top-0 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-6 py-4 z-10">
           <div className="flex items-center justify-between">
@@ -401,8 +401,7 @@ const GitHubActionConfigEditor = ({ repoId, repoData, onClose, onSave }) => {
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 

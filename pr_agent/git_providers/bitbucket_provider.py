@@ -78,16 +78,11 @@ class BitbucketProvider(GitProvider):
         self.bitbucket_pull_request_api_url = self.pr._BitbucketBase__data["links"]['self']['href']
 
     def get_repo_settings(self):
-        try:
-            url = (f"https://api.bitbucket.org/2.0/repositories/{self.workspace_slug}/{self.repo_slug}/src/"
-                   f"{self.pr.destination_branch}/.pr_agent.toml")
-            response = requests.request("GET", url, headers=self.headers)
-            if response.status_code == 404:  # not found
-                return ""
-            contents = response.text.encode('utf-8')
-            return contents
-        except Exception:
+        from pr_agent.algo.utils import fetch_repo_file_content
+        content = fetch_repo_file_content(self, ".pr_agent.toml")
+        if not content:
             return ""
+        return content.encode("utf-8")
 
     def get_git_repo_url(self, pr_url: str=None) -> str: #bitbucket does not support issue url, so ignore param
         try:
@@ -488,6 +483,9 @@ class BitbucketProvider(GitProvider):
 
     def get_pr_branch(self):
         return self.pr.source_branch
+
+    def get_pr_target_branch(self) -> str:
+        return self.pr.destination_branch or ""
 
     # This function attempts to get the default branch of the repository. As a fallback, uses the PR destination branch.
     # Note: Must be running from a PR context.

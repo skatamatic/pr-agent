@@ -2470,6 +2470,18 @@ class DashboardApplication:
         async def get_repository_names(active_only: bool = True, db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
             names = await self.repository_service.get_repository_names(db, active_only)
             return APIResponse(data=names, message=f"Found {len(names)} repository names")
+
+        @self.app.get("/api/repositories/automation-settings")
+        async def get_repository_automation_settings(
+            name: str,
+            db: Session = Depends(get_db),
+            _: None = Depends(require_auth_or_api_key),
+        ):
+            """Return per-repository automation flags for PR-Agent runners."""
+            automation = await self.repository_service.get_automation_settings_by_name(db, name)
+            if not automation:
+                raise HTTPException(status_code=404, detail="Repository not found")
+            return APIResponse(data=automation, message="Repository automation settings retrieved")
         
         @self.app.get("/api/repositories/health")
         async def get_repositories_health(db: Session = Depends(get_db), current_user: UserDB = Depends(require_auth)):
@@ -7237,7 +7249,7 @@ This file can override any setting from the global PR-Agent configuration, inclu
         if not getattr(repo, "azure_pat", None):
             return ""
 
-        branches_to_try = branches or ["main", "master", "develop"]
+        branches_to_try = branches or []
         try:
             parsed = self.azure_pipeline_config_service._parse_azure_repo_url(repo.url or "")
             if not parsed.get("success"):
@@ -7251,10 +7263,34 @@ This file can override any setting from the global PR-Agent configuration, inclu
                 return ""
 
             headers = self._azure_auth_headers(repo.azure_pat or "")
+
+            default_branch = ""
+            repo_meta_url = (
+                f"https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{repository}"
+                f"?api-version=7.1"
+            )
+            meta_resp = requests.get(repo_meta_url, headers=headers, timeout=20)
+            if meta_resp.status_code == 200:
+                default_branch = (
+                    (meta_resp.json() or {}).get("defaultBranch") or ""
+                ).replace("refs/heads/", "").strip()
+
+            branch_candidates: List[str] = []
+            if default_branch:
+                branch_candidates.append(default_branch)
+            branch_candidates.extend(branches_to_try)
+            branch_candidates.extend(["main", "master", "develop"])
+
+            unique_branches: List[str] = []
+            for branch in branch_candidates:
+                name = (branch or "").strip()
+                if name and name not in unique_branches:
+                    unique_branches.append(name)
+
             base_url = f"https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{repository}/items"
             normalized_path = file_path if file_path.startswith("/") else f"/{file_path}"
 
-            for branch in branches_to_try:
+            for branch in unique_branches:
                 params = {
                     "path": normalized_path,
                     "includeContent": "true",

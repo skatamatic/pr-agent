@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { X, Clock, Target, AlertCircle, TrendingUp, BarChart3, FileText, Activity, Key, ChevronLeft, ChevronRight } from 'lucide-react';
 import { formatInsightsTime } from '../utils/timeUtils';
 import apiService from '../services/api';
+import Modal from './Modal';
 
 const OperationInsights = ({ operationId, onClose }) => {
   const [insights, setInsights] = useState(null);
@@ -1373,70 +1374,69 @@ const OperationInsights = ({ operationId, onClose }) => {
 
   if (loading) {
     return (
-      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[9999]">
-        <div className="bg-white dark:bg-gray-800 rounded-xl p-8 shadow-2xl">
+      <Modal isOpen onClose={onClose} ariaLabel="Loading AI insights">
+        <div className="p-8">
           <div className="flex items-center gap-3">
             <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
-            <span className="text-gray-600 dark:text-gray-400 font-medium">Loading insights...</span>
+            <span className="text-gray-600 dark:text-gray-300 font-medium">Loading insights...</span>
           </div>
         </div>
-      </div>
+      </Modal>
     );
   }
 
   if (error) {
     return (
-      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[9999]">
-        <div className="bg-white dark:bg-gray-800 rounded-xl p-8 max-w-md shadow-2xl">
+      <Modal isOpen onClose={onClose} maxWidth="max-w-md" ariaLabel="Failed to load AI insights">
+        <div className="p-8">
           <div className="flex items-center gap-3 text-red-600 dark:text-red-400 mb-4">
             <AlertCircle className="w-6 h-6" />
             <span className="font-semibold">Failed to Load Insights</span>
           </div>
-          <p className="text-gray-600 dark:text-gray-400 mb-6">{error}</p>
+          <p className="text-gray-600 dark:text-gray-300 mb-6">{error}</p>
           <div className="flex gap-3">
             <button
               onClick={fetchInsights}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+              className="btn-modal-primary"
             >
               Retry
             </button>
             <button
               onClick={onClose}
-              className="px-4 py-2 bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-400 dark:hover:bg-gray-500 font-medium transition-colors"
+              className="btn-modal-secondary"
             >
               Close
             </button>
           </div>
         </div>
-      </div>
+      </Modal>
     );
   }
 
   if (!insights || Object.keys(insights).length === 0) {
     return (
-      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[9999]">
-        <div className="bg-white dark:bg-gray-800 rounded-xl p-8 max-w-md text-center shadow-2xl">
-          <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+      <Modal isOpen onClose={onClose} maxWidth="max-w-md" ariaLabel="No AI insights available">
+        <div className="p-8 text-center">
+          <FileText className="w-12 h-12 text-gray-400 dark:text-gray-500 mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">No Insights Available</h3>
-          <p className="text-gray-600 dark:text-gray-400 mb-6">
+          <p className="text-gray-600 dark:text-gray-300 mb-6">
             This operation doesn't have any AI insights data yet.
           </p>
           <button
             onClick={onClose}
-            className="px-4 py-2 bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-400 dark:hover:bg-gray-500 font-medium transition-colors"
+            className="btn-modal-secondary"
           >
             Close
           </button>
         </div>
-      </div>
+      </Modal>
     );
   }
 
   const availableTabs = Object.keys(insights);
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
-      <div className="bg-white dark:bg-gray-900 rounded-xl w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl relative z-[10000]">
+    <Modal isOpen onClose={onClose} maxWidth="max-w-6xl" panelClassName="max-h-[90vh] overflow-hidden flex flex-col" ariaLabel="AI Insights">
         {/* Enhanced Header */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
           <div>
@@ -1491,8 +1491,7 @@ const OperationInsights = ({ operationId, onClose }) => {
           {activeTab === 'dev_time_analysis' && renderDevTimeInsights(insights.dev_time_analysis)}
           {activeTab === 'self_reflection' && renderSelfReflectionInsights(insights.self_reflection)}
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 

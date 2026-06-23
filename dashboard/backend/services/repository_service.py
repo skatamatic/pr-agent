@@ -171,6 +171,25 @@ class RepositoryService:
             logger.error(f"Error deleting repository {repo_id}: {e}")
             raise Exception(f"Failed to delete repository: {str(e)}")
     
+    async def get_automation_settings_by_name(self, db: Session, repository_name: str) -> Optional[Dict[str, bool]]:
+        """Return automation flags for a repository matched by dashboard name."""
+        try:
+            repo = (
+                db.query(RepositoryDB)
+                .filter(RepositoryDB.name == repository_name, RepositoryDB.is_active == True)
+                .first()
+            )
+            if not repo:
+                return None
+            return {
+                "auto_describe": bool(repo.auto_describe),
+                "auto_review": bool(repo.auto_review),
+                "auto_improve": bool(repo.auto_improve),
+            }
+        except Exception as e:
+            logger.error(f"Error fetching automation settings for {repository_name}: {e}")
+            return None
+    
     async def get_repository_names(self, db: Session, active_only: bool = True) -> List[str]:
         """Get list of repository names for filtering"""
         try:

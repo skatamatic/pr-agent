@@ -39,6 +39,7 @@ import { formatTimestamp } from '../utils/timeUtils';
 import GitHubActionConfigEditor from './GitHubActionConfigEditor';
 import AzurePipelineConfigEditor from './AzurePipelineConfigEditor';
 import SearchableSelect from './SearchableSelect';
+import Modal from './Modal';
 
 export const getAzureRepoKey = (repo) => String(repo?.id || repo?.url || repo?.display_name || '');
 
@@ -3676,17 +3677,26 @@ const RepositoryManager = () => {
                             <input type="checkbox" checked={formData.monitor_issues} onChange={(e) => setFormData({ ...formData, monitor_issues: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
                             <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Monitor Issues</span>
                           </label>
-                          <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
-                            <input type="checkbox" checked={formData.auto_review} onChange={(e) => setFormData({ ...formData, auto_review: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
-                            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto Review</span>
+                          <label className="flex items-start p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                            <input type="checkbox" checked={formData.auto_review} onChange={(e) => setFormData({ ...formData, auto_review: e.target.checked })} className="mr-3 mt-1 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                            <span>
+                              <span className="text-sm font-medium text-gray-700 dark:text-gray-300 block">Auto Review</span>
+                              <span className="text-xs text-gray-500 dark:text-gray-400">Per-repo override applied at runtime when dashboard integration is enabled.</span>
+                            </span>
                           </label>
-                          <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
-                            <input type="checkbox" checked={formData.auto_describe} onChange={(e) => setFormData({ ...formData, auto_describe: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
-                            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto Describe</span>
+                          <label className="flex items-start p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                            <input type="checkbox" checked={formData.auto_describe} onChange={(e) => setFormData({ ...formData, auto_describe: e.target.checked })} className="mr-3 mt-1 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                            <span>
+                              <span className="text-sm font-medium text-gray-700 dark:text-gray-300 block">Auto Describe</span>
+                              <span className="text-xs text-gray-500 dark:text-gray-400">Runs /describe for this repo unless pipeline env vars or .pr_agent.toml override it.</span>
+                            </span>
                           </label>
-                          <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
-                            <input type="checkbox" checked={formData.auto_improve} onChange={(e) => setFormData({ ...formData, auto_improve: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
-                            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto Improve</span>
+                          <label className="flex items-start p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                            <input type="checkbox" checked={formData.auto_improve} onChange={(e) => setFormData({ ...formData, auto_improve: e.target.checked })} className="mr-3 mt-1 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                            <span>
+                              <span className="text-sm font-medium text-gray-700 dark:text-gray-300 block">Auto Improve</span>
+                              <span className="text-xs text-gray-500 dark:text-gray-400">Per-repo override applied at runtime when dashboard integration is enabled.</span>
+                            </span>
                           </label>
                         </div>
                       </div>
@@ -3738,17 +3748,26 @@ const RepositoryManager = () => {
                       <input type="checkbox" checked={formData.monitor_issues} onChange={(e) => setFormData({ ...formData, monitor_issues: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
                       <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Monitor Issues</span>
                     </label>
-                    <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
-                      <input type="checkbox" checked={formData.auto_review} onChange={(e) => setFormData({ ...formData, auto_review: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
-                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto Review</span>
+                    <label className="flex items-start p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                      <input type="checkbox" checked={formData.auto_review} onChange={(e) => setFormData({ ...formData, auto_review: e.target.checked })} className="mr-3 mt-1 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                      <span>
+                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300 block">Auto Review</span>
+                        <span className="text-xs text-gray-500 dark:text-gray-400">Per-repo override applied at runtime when dashboard integration is enabled.</span>
+                      </span>
                     </label>
-                    <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
-                      <input type="checkbox" checked={formData.auto_describe} onChange={(e) => setFormData({ ...formData, auto_describe: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
-                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto Describe</span>
+                    <label className="flex items-start p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                      <input type="checkbox" checked={formData.auto_describe} onChange={(e) => setFormData({ ...formData, auto_describe: e.target.checked })} className="mr-3 mt-1 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                      <span>
+                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300 block">Auto Describe</span>
+                        <span className="text-xs text-gray-500 dark:text-gray-400">Runs /describe for this repo unless pipeline env vars or .pr_agent.toml override it.</span>
+                      </span>
                     </label>
-                    <label className="flex items-center p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
-                      <input type="checkbox" checked={formData.auto_improve} onChange={(e) => setFormData({ ...formData, auto_improve: e.target.checked })} className="mr-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
-                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto Improve</span>
+                    <label className="flex items-start p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors cursor-pointer">
+                      <input type="checkbox" checked={formData.auto_improve} onChange={(e) => setFormData({ ...formData, auto_improve: e.target.checked })} className="mr-3 mt-1 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                      <span>
+                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300 block">Auto Improve</span>
+                        <span className="text-xs text-gray-500 dark:text-gray-400">Per-repo override applied at runtime when dashboard integration is enabled.</span>
+                      </span>
                     </label>
                   </div>
                   <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200 dark:border-gray-700 mt-6">
@@ -6794,153 +6813,174 @@ const RepositoryManager = () => {
       )}
 
       {repoCleanupConfirmModal.show && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-2xl rounded-xl bg-white dark:bg-gray-900 shadow-2xl border border-gray-200 dark:border-gray-700">
-            <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Delete Repository</h3>
-              <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">
-                This removes the repository from the dashboard and cleans up linked automation artifacts.
-              </p>
+      <Modal
+        open
+        onClose={() => setRepoCleanupConfirmModal({ show: false, loading: false, repo: null, preview: null, error: null })}
+        maxWidth="max-w-2xl"
+      >
+        <Modal.Header
+          title="Delete Repository"
+          subtitle="This removes the repository from the dashboard and cleans up linked automation artifacts."
+        />
+        <Modal.Body className="space-y-4">
+          {repoCleanupConfirmModal.loading ? (
+            <div className="flex items-center text-sm text-gray-600 dark:text-gray-300">
+              <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+              Loading cleanup impact preview...
             </div>
-            <div className="px-6 py-5 space-y-4">
-              {repoCleanupConfirmModal.loading ? (
-                <div className="flex items-center text-sm text-gray-600 dark:text-gray-300">
-                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                  Loading cleanup impact preview...
+          ) : (
+            <>
+              <div className="text-sm">
+                Repository: <span className="font-medium text-gray-900 dark:text-white">{repoCleanupConfirmModal.repo?.name}</span>
+              </div>
+              {repoCleanupConfirmModal.preview?.cleanup_scope && (
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                  <div className="modal-stat-tile">Checks: {repoCleanupConfirmModal.preview.cleanup_scope.azure_checks ?? 0}</div>
+                  <div className="modal-stat-tile">Operations: {repoCleanupConfirmModal.preview.cleanup_scope.operations ?? 0}</div>
+                  <div className="modal-stat-tile">Jobs: {repoCleanupConfirmModal.preview.cleanup_scope.jobs ?? 0}</div>
+                  <div className="modal-stat-tile">Logs: {repoCleanupConfirmModal.preview.cleanup_scope.logs ?? 0}</div>
+                  <div className="modal-stat-tile">Notification Events: {repoCleanupConfirmModal.preview.cleanup_scope.notification_events ?? 0}</div>
                 </div>
-              ) : (
-                <>
-                  <div className="text-sm text-gray-700 dark:text-gray-300">
-                    Repository: <span className="font-medium">{repoCleanupConfirmModal.repo?.name}</span>
-                  </div>
-                  {repoCleanupConfirmModal.preview?.cleanup_scope && (
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
-                      <div className="rounded border border-gray-200 dark:border-gray-700 p-2">Checks: {repoCleanupConfirmModal.preview.cleanup_scope.azure_checks ?? 0}</div>
-                      <div className="rounded border border-gray-200 dark:border-gray-700 p-2">Operations: {repoCleanupConfirmModal.preview.cleanup_scope.operations ?? 0}</div>
-                      <div className="rounded border border-gray-200 dark:border-gray-700 p-2">Jobs: {repoCleanupConfirmModal.preview.cleanup_scope.jobs ?? 0}</div>
-                      <div className="rounded border border-gray-200 dark:border-gray-700 p-2">Logs: {repoCleanupConfirmModal.preview.cleanup_scope.logs ?? 0}</div>
-                      <div className="rounded border border-gray-200 dark:border-gray-700 p-2">Notification Events: {repoCleanupConfirmModal.preview.cleanup_scope.notification_events ?? 0}</div>
-                    </div>
-                  )}
-                  <ul className="text-sm text-gray-700 dark:text-gray-300 space-y-1">
-                    <li>- Deletes this dashboard repository entry (not the target source repository).</li>
-                    {repoCleanupConfirmModal.repo?.provider === 'azure_devops' && (
-                      <li>
-                        {repoCleanupConfirmModal.preview?.azure_cleanup_available
-                          ? '- Removes Azure PR-Agent check/policy entries for this repository.'
-                          : '- Azure PR-Agent checks will not be removed (missing or invalid Azure credentials).'}
-                      </li>
-                    )}
-                    <li>- Cleans repository-scoped metrics/history and recalculates aggregates.</li>
-                  </ul>
-                  {repoCleanupConfirmModal.preview?.azure_policy_warning && (
-                    <div className="rounded-md bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 p-3 text-sm text-yellow-800 dark:text-yellow-300">
-                      {repoCleanupConfirmModal.preview.azure_policy_warning}
-                    </div>
-                  )}
-                </>
               )}
-            </div>
-            <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => setRepoCleanupConfirmModal({ show: false, loading: false, repo: null, preview: null, error: null })}
-                className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={confirmRepositoryCleanupDelete}
-                disabled={repoCleanupConfirmModal.loading}
-                className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                Delete and Cleanup
-              </button>
-            </div>
-          </div>
-        </div>
+              <ul className="text-sm space-y-1">
+                <li>- Deletes this dashboard repository entry (not the target source repository).</li>
+                {repoCleanupConfirmModal.repo?.provider === 'azure_devops' && (
+                  <li>
+                    {repoCleanupConfirmModal.preview?.azure_cleanup_available
+                      ? '- Removes Azure PR-Agent check/policy entries for this repository.'
+                      : '- Azure PR-Agent checks will not be removed (missing or invalid Azure credentials).'}
+                  </li>
+                )}
+                <li>- Cleans repository-scoped metrics/history and recalculates aggregates.</li>
+              </ul>
+              {repoCleanupConfirmModal.preview?.azure_policy_warning && (
+                <div className="rounded-md bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 p-3 text-sm text-yellow-800 dark:text-yellow-300">
+                  {repoCleanupConfirmModal.preview.azure_policy_warning}
+                </div>
+              )}
+            </>
+          )}
+        </Modal.Body>
+        <Modal.Footer>
+          <button
+            type="button"
+            onClick={() => setRepoCleanupConfirmModal({ show: false, loading: false, repo: null, preview: null, error: null })}
+            className="btn-modal-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={confirmRepositoryCleanupDelete}
+            disabled={repoCleanupConfirmModal.loading}
+            className="btn-modal-danger"
+          >
+            Delete and Cleanup
+          </button>
+        </Modal.Footer>
+      </Modal>
       )}
 
       {repoActionModal.show && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-2xl rounded-xl bg-white dark:bg-gray-900 shadow-2xl border border-gray-200 dark:border-gray-700">
-            <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{repoActionModal.title}</h3>
-              <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">{repoActionModal.subtitle}</p>
+      <Modal
+        open
+        onClose={() => {
+          if (repoActionModal.running) return;
+          clearRepoActionPollTimeout();
+          setRepoActionModal({
+            show: false,
+            running: false,
+            operationType: '',
+            operationId: '',
+            repoId: null,
+            title: '',
+            subtitle: '',
+            status: '',
+            steps: [],
+            message: '',
+            error: null,
+          });
+        }}
+        closeOnBackdrop={!repoActionModal.running}
+        maxWidth="max-w-2xl"
+      >
+        <Modal.Header title={repoActionModal.title} subtitle={repoActionModal.subtitle} />
+        <Modal.Body className="space-y-3">
+          {(repoActionModal.message || repoActionModal.error) && (
+            <div className={`text-sm rounded-md p-3 border ${
+              repoActionModal.error
+                ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'
+                : 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300'
+            }`}>
+              {repoActionModal.error || repoActionModal.message}
             </div>
-            <div className="px-6 py-5 space-y-3">
-              {(repoActionModal.message || repoActionModal.error) && (
-                <div className={`text-sm rounded-md p-3 border ${
-                  repoActionModal.error
-                    ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'
-                    : 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300'
-                }`}>
-                  {repoActionModal.error || repoActionModal.message}
-                </div>
-              )}
-              {Array.isArray(repoActionModal.steps) && repoActionModal.steps.length > 0 && (
-                <div className="space-y-2">
-                  {repoActionModal.steps.map((step) => {
-                    const status = step.status || 'pending';
-                    return (
-                      <div key={step.id} className="flex items-start gap-3 rounded-md border border-gray-200 dark:border-gray-700 p-3">
-                        <div className="mt-0.5">
-                          {status === 'completed' ? (
-                            <CheckCircle className="h-4 w-4 text-green-600" />
-                          ) : status === 'error' ? (
-                            <AlertCircle className="h-4 w-4 text-red-600" />
-                          ) : status === 'skipped' ? (
-                            <Info className="h-4 w-4 text-gray-500" />
-                          ) : status === 'running' ? (
-                            <RefreshCw className="h-4 w-4 text-blue-600 animate-spin" />
-                          ) : (
-                            <Clock className="h-4 w-4 text-gray-400" />
-                          )}
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium text-gray-900 dark:text-white">{step.label || step.id}</div>
-                          {step.detail && <div className="text-xs text-gray-600 dark:text-gray-300 mt-0.5">{step.detail}</div>}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+          )}
+          {Array.isArray(repoActionModal.steps) && repoActionModal.steps.length > 0 && (
+            <div className="space-y-2">
+              {repoActionModal.steps.map((step) => {
+                const status = step.status || 'pending';
+                return (
+                  <div key={step.id} className="flex items-start gap-3 rounded-md border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-800/80 p-3">
+                    <div className="mt-0.5">
+                      {status === 'completed' ? (
+                        <CheckCircle className="h-4 w-4 text-green-600 dark:text-green-400" />
+                      ) : status === 'error' ? (
+                        <AlertCircle className="h-4 w-4 text-red-600 dark:text-red-400" />
+                      ) : status === 'skipped' ? (
+                        <Info className="h-4 w-4 text-gray-500 dark:text-gray-400" />
+                      ) : status === 'running' ? (
+                        <RefreshCw className="h-4 w-4 text-blue-600 dark:text-blue-400 animate-spin" />
+                      ) : (
+                        <Clock className="h-4 w-4 text-gray-400 dark:text-gray-500" />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-gray-900 dark:text-white">{step.label || step.id}</div>
+                      {step.detail && <div className="text-xs text-gray-600 dark:text-gray-300 mt-0.5">{step.detail}</div>}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-            <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-end">
-              <button
-                type="button"
-                disabled={repoActionModal.running}
-                onClick={() => {
-                  clearRepoActionPollTimeout();
-                  setRepoActionModal({
-                    show: false,
-                    running: false,
-                    operationType: '',
-                    operationId: '',
-                    repoId: null,
-                    title: '',
-                    subtitle: '',
-                    status: '',
-                    steps: [],
-                    message: '',
-                    error: null,
-                  });
-                }}
-                className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                {repoActionModal.running ? 'Running...' : 'Close'}
-              </button>
-            </div>
-          </div>
-        </div>
+          )}
+        </Modal.Body>
+        <Modal.Footer>
+          <button
+            type="button"
+            disabled={repoActionModal.running}
+            onClick={() => {
+              clearRepoActionPollTimeout();
+              setRepoActionModal({
+                show: false,
+                running: false,
+                operationType: '',
+                operationId: '',
+                repoId: null,
+                title: '',
+                subtitle: '',
+                status: '',
+                steps: [],
+                message: '',
+                error: null,
+              });
+            }}
+            className="btn-modal-secondary"
+          >
+            {repoActionModal.running ? 'Running...' : 'Close'}
+          </button>
+        </Modal.Footer>
+      </Modal>
       )}
 
       {/* Effective Configuration Modal */}
       {effectiveConfigModal.show && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden">
+      <Modal
+        open
+        onClose={() => setEffectiveConfigModal(prev => ({ ...prev, show: false }))}
+        maxWidth="max-w-6xl"
+        panelClassName="max-h-[90vh] overflow-hidden flex flex-col"
+        ariaLabel="Effective Configuration"
+      >
             {/* Modal Header */}
             <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-purple-50 to-indigo-50 dark:from-purple-900/20 dark:to-indigo-900/20">
               <div className="flex items-center">
@@ -7117,13 +7157,12 @@ const RepositoryManager = () => {
             <div className="flex justify-end p-6 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
               <button
                 onClick={() => setEffectiveConfigModal(prev => ({ ...prev, show: false }))}
-                className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                className="btn-modal-secondary bg-white dark:bg-gray-800"
               >
                 Close
               </button>
             </div>
-          </div>
-        </div>
+      </Modal>
       )}
     </div>
   );

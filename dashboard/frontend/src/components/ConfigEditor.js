@@ -19,7 +19,8 @@ import {
   Check,
   RefreshCw,
   FolderOpen,
-  Shield
+  Shield,
+  GitBranch
 } from 'lucide-react';
 import JSZip from 'jszip';
 import api from '../services/api';
@@ -109,10 +110,12 @@ const ConfigEditor = ({ navigationTarget = null }) => {
       if (path.startsWith('csharp_code_context_service.')) return 'context';
       if (path.startsWith('pr_reviewer.')) return 'pr-reviewer';
       if (path.startsWith('pr_description.')) return 'pr-description';
+      if (path.startsWith('azure_devops_config.') || path.startsWith('github_action_config.')) return 'pr-description';
       if (path.startsWith('pr_code_suggestions.')) return 'pr-code-suggestions';
       if (path.startsWith('github.')) return 'github';
       if (path.startsWith('dashboard.')) return 'dashboard';
       if (path.startsWith('pr_dev_time_estimation.')) return 'time-estimation';
+      if (path.startsWith('pr_filters.skip_if_description_exists')) return 'pr-description';
       if (path.startsWith('pr_filters.')) return 'pr-filters';
       if (path.startsWith('best_practices.') || path.startsWith('auto_best_practices.')) return 'advanced';
       if (
@@ -223,16 +226,30 @@ const ConfigEditor = ({ navigationTarget = null }) => {
       
       // Transform the PR-Agent config structure to match our UI expectations
       const transformedConfig = {
-        // Main config section (native PR-Agent shape)
+        // Main config section — preserve all keys from file, apply UI defaults for missing values
         config: {
-          model: configData.config?.model || 'anthropic/claude-sonnet-4-6-20260205',
-          model_reasoning: configData.config?.model_reasoning || configData.config?.model || 'anthropic/claude-opus-4-6-20260205',
-          model_weak: configData.config?.model_weak || 'gpt-5.3-codex-spark',
-          fallback_models: configData.config?.fallback_models || ['gpt-5.3-codex-spark'],
-          custom_model_max_tokens: configData.config?.custom_model_max_tokens ?? -1,
-          reasoning_effort: configData.config?.reasoning_effort || 'high',
-          max_model_tokens: configData.config?.max_model_tokens || 94000,
-          temperature: configData.config?.temperature || 0.2,
+          model: 'anthropic/claude-sonnet-4-6-20260205',
+          model_reasoning: 'anthropic/claude-opus-4-6-20260205',
+          model_weak: 'gpt-5.3-codex-spark',
+          fallback_models: ['gpt-5.3-codex-spark'],
+          custom_model_max_tokens: -1,
+          reasoning_effort: 'high',
+          max_model_tokens: 94000,
+          temperature: 0.2,
+          verbosity_level: 2,
+          ai_timeout: 180,
+          publish_output: true,
+          publish_output_progress: true,
+          enable_auto_approval: false,
+          use_repo_settings_file: true,
+          use_wiki_settings_file: true,
+          use_global_settings_file: true,
+          repo_settings_branch: '',
+          log_level: 'DEBUG',
+          response_language: 'en-US',
+          git_provider: 'github',
+          disable_auto_feedback: false,
+          ...(configData.config || {}),
         },
         
         // Context service
@@ -260,8 +277,23 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           extra_instructions: configData.pr_description?.extra_instructions || '',
           publish_labels: configData.pr_description?.publish_labels || false,
           generate_ai_title: configData.pr_description?.generate_ai_title || false,
-          enable_large_pr_handling: configData.pr_description?.enable_large_pr_handling || true
+          enable_large_pr_handling: configData.pr_description?.enable_large_pr_handling || true,
+          publish_description_as_comment: configData.pr_description?.publish_description_as_comment || false,
+          publish_description: configData.pr_description?.publish_description !== false,
           // Note: PR descriptions use ModelType.WEAK (model_weak setting), no tool-specific model override
+        },
+
+        azure_devops_config: {
+          auto_describe: configData.azure_devops_config?.auto_describe !== false,
+          auto_review: configData.azure_devops_config?.auto_review !== false,
+          auto_improve: configData.azure_devops_config?.auto_improve !== false,
+          enable_output: configData.azure_devops_config?.enable_output !== false,
+        },
+
+        github_action_config: {
+          auto_describe: configData.github_action_config?.auto_describe !== false,
+          auto_review: configData.github_action_config?.auto_review !== false,
+          auto_improve: configData.github_action_config?.auto_improve !== false,
         },
         
         // PR Code Suggestions settings
@@ -331,7 +363,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
         
         // PR Filters settings
         pr_filters: {
-          skip_if_description_exists: configData.pr_filters?.skip_if_description_exists !== false,
+          skip_if_description_exists: configData.pr_filters?.skip_if_description_exists === true,
           terminate_on_no_bots: configData.pr_filters?.terminate_on_no_bots !== false,
           max_lines_changed: configData.pr_filters?.max_lines_changed || 1000,
           skip_if_review_suggestions_exist: configData.pr_filters?.skip_if_review_suggestions_exist || false
@@ -359,6 +391,19 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           reasoning_effort: 'high',
           max_model_tokens: 94000,
           temperature: 0.2,
+          verbosity_level: 2,
+          ai_timeout: 180,
+          publish_output: true,
+          publish_output_progress: true,
+          enable_auto_approval: false,
+          use_repo_settings_file: true,
+          use_wiki_settings_file: true,
+          use_global_settings_file: true,
+          repo_settings_branch: '',
+          log_level: 'DEBUG',
+          response_language: 'en-US',
+          git_provider: 'github',
+          disable_auto_feedback: false,
         },
         csharp_code_context_service: {
           enabled: true,
@@ -375,7 +420,20 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           extra_instructions: '',
           publish_labels: false,
           generate_ai_title: false,
-          enable_large_pr_handling: true
+          enable_large_pr_handling: true,
+          publish_description_as_comment: false,
+          publish_description: true,
+        },
+        azure_devops_config: {
+          auto_describe: true,
+          auto_review: true,
+          auto_improve: true,
+          enable_output: true,
+        },
+        github_action_config: {
+          auto_describe: true,
+          auto_review: true,
+          auto_improve: true,
         },
         pr_code_suggestions: {
           extra_instructions: '',
@@ -420,7 +478,7 @@ const ConfigEditor = ({ navigationTarget = null }) => {
           confidence_threshold: 'medium'
         },
         pr_filters: {
-          skip_if_description_exists: true,
+          skip_if_description_exists: false,
           terminate_on_no_bots: true,
           max_lines_changed: 1000,
           skip_if_review_suggestions_exist: false
@@ -1648,11 +1706,127 @@ const ConfigEditor = ({ navigationTarget = null }) => {
             <SectionHeader title="PR Description Settings" icon={FileText}>
               <div className="space-y-6 pt-4">
                 <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-4">
-                  <div className="flex items-center">
-                    <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2" />
-                    <span className="text-blue-800 dark:text-blue-200 text-sm">
-                      Control how PR-Agent generates and formats pull request descriptions, including titles, labels, and handling of large PRs.
-                    </span>
+                  <div className="flex items-start">
+                    <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2 mt-0.5 flex-shrink-0" />
+                    <div className="text-blue-800 dark:text-blue-200 text-sm space-y-2">
+                      <p>
+                        Control whether PR descriptions are generated automatically and published to the pull request.
+                        Per-repository overrides in Repository Manager apply at runtime when dashboard integration is enabled.
+                      </p>
+                      <p>
+                        Pipeline or workflow environment variables (for example <code className="bg-blue-100 dark:bg-blue-900/40 px-1 rounded">AZURE_DEVOPS_CONFIG.AUTO_DESCRIBE</code>)
+                        override these AI Config values when set in YAML.
+                      </p>
+                      <p>
+                        GitHub App deployments use <button type="button" onClick={() => setActiveTab('github')} className="underline font-medium hover:text-blue-900 dark:hover:text-blue-100">GitHub → Default PR Commands</button> instead of the GitHub Actions auto-generate toggle.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                  <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Enable &amp; publish</h4>
+
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      id="auto-describe-azure"
+                      checked={config.azure_devops_config?.auto_describe !== false}
+                      onChange={(e) => updateConfig('azure_devops_config.auto_describe', e.target.checked)}
+                      disabled={!editing}
+                      className={getCheckboxClasses(config.azure_devops_config?.auto_describe !== false, !editing)}
+                    />
+                    <label htmlFor="auto-describe-azure" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Auto-generate on new PR (Azure DevOps)
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Runs /describe when the Azure DevOps pipeline is triggered for a pull request.
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      id="auto-describe-github"
+                      checked={config.github_action_config?.auto_describe !== false}
+                      onChange={(e) => updateConfig('github_action_config.auto_describe', e.target.checked)}
+                      disabled={!editing}
+                      className={getCheckboxClasses(config.github_action_config?.auto_describe !== false, !editing)}
+                    />
+                    <label htmlFor="auto-describe-github" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Auto-generate on new PR (GitHub Actions)
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Runs /describe when GitHub Actions processes a new pull request.
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      id="publish-description-output"
+                      checked={config.config?.publish_output !== false}
+                      onChange={(e) => updateConfig('config.publish_output', e.target.checked)}
+                      disabled={!editing}
+                      className={getCheckboxClasses(config.config?.publish_output !== false, !editing)}
+                    />
+                    <label htmlFor="publish-description-output" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Publish generated description to PR
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Required for descriptions to appear on the pull request. Also controls review and improve output.
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      id="publish-description-as-comment"
+                      checked={config.pr_description?.publish_description_as_comment || false}
+                      onChange={(e) => updateConfig('pr_description.publish_description_as_comment', e.target.checked)}
+                      disabled={!editing}
+                      className={getCheckboxClasses(config.pr_description?.publish_description_as_comment || false, !editing)}
+                    />
+                    <label htmlFor="publish-description-as-comment" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Publish description as a comment
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Posts the generated description as a PR comment instead of updating the PR description field.
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      id="publish-description-enabled"
+                      checked={config.pr_description?.publish_description !== false}
+                      onChange={(e) => updateConfig('pr_description.publish_description', e.target.checked)}
+                      disabled={!editing}
+                      className={getCheckboxClasses(config.pr_description?.publish_description !== false, !editing)}
+                    />
+                    <label htmlFor="publish-description-enabled" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Enable PR description publishing
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        Describe-specific publish gate. Requires &quot;Publish generated description to PR&quot; above.
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      id="skip-if-description-exists-pr-tab"
+                      checked={config.pr_filters?.skip_if_description_exists || false}
+                      onChange={(e) => updateConfig('pr_filters.skip_if_description_exists', e.target.checked)}
+                      disabled={!editing}
+                      className={getCheckboxClasses(config.pr_filters?.skip_if_description_exists || false, !editing)}
+                    />
+                    <label htmlFor="skip-if-description-exists-pr-tab" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Skip if PR already has a description
+                      <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                        When enabled, /describe will not run if the PR body already contains text (including templates).
+                      </span>
+                    </label>
                   </div>
                 </div>
 
@@ -2294,12 +2468,81 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   </div>
                 </div>
 
+            <div className="border-t border-gray-200 dark:border-gray-700 pt-6">
+              <h4 className="text-md font-medium text-gray-900 dark:text-white mb-4 flex items-center">
+                <GitBranch className="h-4 w-4 mr-2" />
+                Repository Settings Files
+              </h4>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+                Control how PR-Agent loads <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">.pr_agent.toml</code> and <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">best_practices.md</code> from repositories.
+              </p>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Repo Settings Branch
+                    <span className="text-xs text-gray-500 dark:text-gray-400 block font-normal mt-1">
+                      Force config files to load from this branch. Leave empty to auto-detect: PR source → PR target → repo default → main/master.
+                    </span>
+                  </label>
+                  <input
+                    type="text"
+                    value={config?.config?.repo_settings_branch || ''}
+                    onChange={(e) => updateConfig('config.repo_settings_branch', e.target.value)}
+                    placeholder="e.g. master (empty = auto)"
+                    disabled={!editing}
+                    className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                </div>
+                <div className="space-y-3">
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      id="use-repo-settings-file"
+                      checked={config?.config?.use_repo_settings_file !== false}
+                      onChange={(e) => updateConfig('config.use_repo_settings_file', e.target.checked)}
+                      disabled={!editing}
+                      className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <label htmlFor="use-repo-settings-file" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Use repository .pr_agent.toml
+                    </label>
+                  </div>
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      id="use-wiki-settings-file"
+                      checked={config?.config?.use_wiki_settings_file !== false}
+                      onChange={(e) => updateConfig('config.use_wiki_settings_file', e.target.checked)}
+                      disabled={!editing}
+                      className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <label htmlFor="use-wiki-settings-file" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Use wiki settings file
+                    </label>
+                  </div>
+                  <div className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      id="use-global-settings-file"
+                      checked={config?.config?.use_global_settings_file !== false}
+                      onChange={(e) => updateConfig('config.use_global_settings_file', e.target.checked)}
+                      disabled={!editing}
+                      className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <label htmlFor="use-global-settings-file" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Use global settings file
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Verbosity Level</label>
                 <select
-                  value={config.verbosity_level || 2}
-                  onChange={(e) => updateConfig('verbosity_level', parseInt(e.target.value))}
+                  value={config?.config?.verbosity_level ?? 2}
+                  onChange={(e) => updateConfig('config.verbosity_level', parseInt(e.target.value))}
                       disabled={!editing}
                       className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
@@ -2313,8 +2556,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">AI Timeout (seconds)</label>
                 <input
                   type="number"
-                  value={config.ai_timeout || 180}
-                  onChange={(e) => updateConfig('ai_timeout', parseInt(e.target.value))}
+                  value={config?.config?.ai_timeout ?? 180}
+                  onChange={(e) => updateConfig('config.ai_timeout', parseInt(e.target.value))}
                   min="30"
                   max="600"
                       disabled={!editing}
@@ -2327,14 +2570,14 @@ const ConfigEditor = ({ navigationTarget = null }) => {
               <div className="flex items-center space-x-3">
                 <input
                   type="checkbox"
-                  id="publish-output"
-                  checked={config.publish_output || false}
-                  onChange={(e) => updateConfig('publish_output', e.target.checked)}
+                  id="publish-output-progress"
+                  checked={config?.config?.publish_output_progress !== false}
+                  onChange={(e) => updateConfig('config.publish_output_progress', e.target.checked)}
                       disabled={!editing}
                       className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
-                <label htmlFor="publish-output" className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Publish Output
+                <label htmlFor="publish-output-progress" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Publish Output Progress
                 </label>
               </div>
 
@@ -2342,8 +2585,8 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                 <input
                   type="checkbox"
                   id="enable-auto-approval"
-                  checked={config.enable_auto_approval || false}
-                  onChange={(e) => updateConfig('enable_auto_approval', e.target.checked)}
+                  checked={config?.config?.enable_auto_approval || false}
+                  onChange={(e) => updateConfig('config.enable_auto_approval', e.target.checked)}
                       disabled={!editing}
                       className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
@@ -2351,6 +2594,26 @@ const ConfigEditor = ({ navigationTarget = null }) => {
                   Enable Auto Approval (Premium)
                 </label>
               </div>
+
+              <div className="flex items-center space-x-3">
+                <input
+                  type="checkbox"
+                  id="disable-auto-feedback"
+                  checked={config?.config?.disable_auto_feedback || false}
+                  onChange={(e) => updateConfig('config.disable_auto_feedback', e.target.checked)}
+                      disabled={!editing}
+                      className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 dark:border-gray-600 rounded dark:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+                <label htmlFor="disable-auto-feedback" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Disable Auto Feedback
+                </label>
+              </div>
+            </div>
+
+            <div className="bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-md p-4">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Additional <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">[config]</code> keys set in configuration.toml are preserved on save even if they are not shown here. Upload configuration.toml directly to edit rarely used options.
+              </p>
             </div>
           </div>
         </SectionHeader>

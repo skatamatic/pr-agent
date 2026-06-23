@@ -58,14 +58,10 @@ stages:
       displayName: 'Checkout repository for PR analysis'
 
     # ----------------------------------------------------------------
-    # 2. Define the dotted env‑vars (AUTO_* flags) that YAML can't hold
+    # 2. AUTO_* flags come from AI Config (configuration.toml) or
+    #    Repository Manager per-repo settings via dashboard integration.
+    #    Do not hardcode them here — pipeline env vars override TOML.
     # ----------------------------------------------------------------
-    - powershell: |
-        Write-Host '##vso[task.setvariable variable=AZURE_DEVOPS_CONFIG.AUTO_IMPROVE]true'
-        Write-Host '##vso[task.setvariable variable=AZURE_DEVOPS_CONFIG.AUTO_REVIEW]true'
-        Write-Host '##vso[task.setvariable variable=AZURE_DEVOPS_CONFIG.AUTO_DESCRIBE]true'
-        Write-Host '##vso[task.setvariable variable=AZURE_DEVOPS_CONFIG.ENABLE_OUTPUT]true'
-      displayName: 'Set AZDO dotted config vars'
 
     # ----------------------------------------------------------------
     # 3. Launch the agent

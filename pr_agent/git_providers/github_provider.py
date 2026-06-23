@@ -705,6 +705,23 @@ class GithubProvider(GitProvider):
     def get_pr_branch(self):
         return self.pr.head.ref
 
+    def get_pr_target_branch(self) -> str:
+        return self.pr.base.ref
+
+    def get_repo_default_branch(self) -> str:
+        try:
+            return self._get_repo().default_branch or ""
+        except Exception as e:
+            get_logger().debug(f"Failed to get repo default branch: {e}")
+            return ""
+
+    def get_repo_settings(self):
+        from pr_agent.algo.utils import fetch_repo_file_content
+        content = fetch_repo_file_content(self, ".pr_agent.toml")
+        if not content:
+            return ""
+        return content.encode("utf-8")
+
     def get_pr_owner_id(self) -> str | None:
         if not self.repo:
             return None
@@ -733,16 +750,6 @@ class GithubProvider(GitProvider):
 
     def get_issue_comments(self):
         return self.pr.get_issue_comments()
-
-    def get_repo_settings(self):
-        try:
-            # contents = self.repo_obj.get_contents(".pr_agent.toml", ref=self.pr.head.sha).decoded_content
-
-            # more logical to take 'pr_agent.toml' from the default branch
-            contents = self.repo_obj.get_contents(".pr_agent.toml").decoded_content
-            return contents
-        except Exception:
-            return ""
 
     def get_workspace_name(self):
         return self.repo.split('/')[0]

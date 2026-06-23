@@ -13,6 +13,7 @@ import {
   GitBranch
 } from 'lucide-react';
 import api from '../services/api';
+import Modal from './Modal';
 import { ToastContext } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
 
@@ -305,9 +306,8 @@ const DataCleanup = () => {
 
         {/* Confirmation Dialog */}
         {showConfirmation && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full mx-4">
-              <div className="p-6">
+        <Modal open onClose={() => setShowConfirmation(false)} maxWidth="max-w-md" ariaLabel="Confirmation Required">
+            <div className="p-6">
                 <div className="flex items-center mb-4">
                   <div className="flex-shrink-0">
                     <Shield className="h-6 w-6 text-red-600 dark:text-red-400" />
@@ -375,14 +375,14 @@ const DataCleanup = () => {
                 <div className="flex justify-end space-x-3">
                   <button
                     onClick={() => setShowConfirmation(false)}
-                    className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
+                    className="btn-modal-secondary"
                   >
                     Cancel
                   </button>
                   <button
                     onClick={handleExecuteCleanup}
                     disabled={!canExecute || executing}
-                    className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="btn-modal-danger"
                   >
                     {executing ? (
                       <>
@@ -395,14 +395,17 @@ const DataCleanup = () => {
                   </button>
                 </div>
               </div>
-            </div>
-          </div>
+        </Modal>
         )}
 
         {/* Cleanup Preview Modal */}
         {showPreviewModal && cleanupPreview && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+        <Modal
+          open
+          onClose={() => setShowPreviewModal(false)}
+          maxWidth="max-w-4xl"
+          ariaLabel="Cleanup Impact Preview"
+        >
               <div className="p-6">
                 <div className="flex items-center justify-between mb-6">
                   <div className="flex items-center">
@@ -433,7 +436,7 @@ const DataCleanup = () => {
                       <Database className="h-4 w-4 mr-2 text-gray-600 dark:text-gray-400" />
                       Before Cleanup
                     </h4>
-                    <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4">
+                    <div className="modal-summary-panel">
                       <div className="space-y-3">
                         <div className="flex justify-between items-center">
                           <span className="text-gray-600 dark:text-gray-400">Operations:</span>
@@ -469,7 +472,7 @@ const DataCleanup = () => {
                       <Database className="h-4 w-4 mr-2 text-gray-600 dark:text-gray-400" />
                       After Cleanup
                     </h4>
-                    <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4">
+                    <div className="modal-summary-panel">
                       <div className="space-y-3">
                         <div className="flex justify-between items-center">
                           <span className="text-gray-600 dark:text-gray-400">Operations:</span>
@@ -540,7 +543,7 @@ const DataCleanup = () => {
                 <div className="flex justify-end space-x-3">
                   <button
                     onClick={() => setShowPreviewModal(false)}
-                    className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
+                    className="btn-modal-secondary"
                   >
                     Cancel
                   </button>
@@ -549,15 +552,14 @@ const DataCleanup = () => {
                       setShowPreviewModal(false);
                       setShowConfirmation(true);
                     }}
-                    className="inline-flex items-center px-6 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
+                    className="inline-flex items-center btn-modal-danger"
                   >
                     <Trash2 className="h-4 w-4 mr-2" />
                     Proceed with Cleanup
                   </button>
                 </div>
               </div>
-            </div>
-          </div>
+        </Modal>
         )}
       </div>
     </div>

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Eye, EyeOff, Lock, AlertCircle, CheckCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import Modal from './Modal';
 
 const ChangePasswordModal = ({ isOpen, onClose }) => {
   const [currentPassword, setCurrentPassword] = useState('');
@@ -71,9 +72,8 @@ const ChangePasswordModal = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-lg max-w-md w-full">
-        <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
+    <Modal isOpen={isOpen} onClose={handleClose} maxWidth="max-w-md" ariaLabel="Change Password">
+      <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
           <div className="flex items-center space-x-3">
             <Lock className="h-6 w-6 text-blue-600 dark:text-blue-400" />
             <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
@@ -223,8 +223,7 @@ const ChangePasswordModal = ({ isOpen, onClose }) => {
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
   );
 };
 

@@ -15,6 +15,7 @@ import json
 import os
 from typing import Dict, Any, Optional, List
 from datetime import datetime
+from urllib.parse import quote
 
 try:
     import aiohttp
@@ -309,6 +310,16 @@ class DashboardClient:
         batch_data = {'logs': logs}
         response = await self._make_request('POST', '/logs/batch', batch_data)
         return response is not None
+
+    async def get_repository_automation_settings(self, repository_name: str) -> Optional[Dict[str, Any]]:
+        """Fetch per-repository automation flags from the dashboard."""
+        if not self._enabled or not repository_name:
+            return None
+        encoded_name = quote(repository_name, safe="")
+        return await self._make_request(
+            'GET',
+            f'/api/repositories/automation-settings?name={encoded_name}',
+        )
     
     async def close(self):
         """Close the client session"""

@@ -1,6 +1,7 @@
 import copy
 import os
 import tempfile
+from typing import Any, Dict, Optional
 
 from dynaconf import Dynaconf
 from starlette_context import context
@@ -18,9 +19,10 @@ def _get_config_bool(key: str, default: bool) -> bool:
     return bool(value)
 
 
-def apply_repo_settings(pr_url):
+def apply_repo_settings(pr_url) -> Optional[Dict[str, Any]]:
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
     git_provider = get_git_provider_with_context(pr_url)
+    applied_settings: Optional[Dict[str, Any]] = None
     if _get_config_bool("use_repo_settings_file", True):
         repo_settings_file = None
         try:
@@ -51,6 +53,7 @@ def apply_repo_settings(pr_url):
                         get_settings().unset(section)
                         get_settings().set(section, section_dict, merge=False)
                     get_logger().info(f"Applying repo settings:\n{new_settings.as_dict()}")
+                    applied_settings = new_settings.as_dict()
                 except Exception as e:
                     get_logger().warning(f"Failed to apply repo {category} settings, error: {str(e)}")
                     error_local = {'error': str(e), 'settings': repo_settings, 'category': category}
@@ -69,6 +72,8 @@ def apply_repo_settings(pr_url):
     # enable switching models with a short definition
     if get_settings().config.model.lower() == 'claude-3-5-sonnet':
         set_claude_model()
+
+    return applied_settings
 
 
 def handle_configurations_errors(config_errors, git_provider):

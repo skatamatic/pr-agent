@@ -79,7 +79,7 @@ const apiService = {
   executeCleanup: (data) => api.post('/api/admin/cleanup/execute', data),
   
   // Operations (legacy support)
-  getOperations: (params = {}) => api.get('/api/operations', { params }),
+  getOperations: (params = {}) => api.get('/api/operations', { params, timeout: 30000 }),
   getOperation: (id) => api.get(`/api/operations/${id}`),
   
   // Logs (enhanced with job/operation filtering)
@@ -87,10 +87,10 @@ const apiService = {
   getLogsByJob: (jobId) => api.get(`/api/logs/job/${jobId}`),
   getLogsByOperation: (operationId) => api.get(`/api/logs/operation/${operationId}`),
   
-  // System Health & Status
-  getSystemHealth: () => api.get('/api/health'),
-  getSystemStatus: () => api.get('/api/status'),
-  getRealtimeStatus: () => api.get('/api/status/realtime'),
+  // System Health & Status (longer timeout — these run on a poll cadence and may lag when the tab is backgrounded)
+  getSystemHealth: () => api.get('/api/health', { timeout: 30000 }),
+  getSystemStatus: () => api.get('/api/status', { timeout: 30000 }),
+  getRealtimeStatus: () => api.get('/api/status/realtime', { timeout: 30000 }),
   
   // Individual Health Checks (for async monitoring)
   getHealthCheck: (service) => {

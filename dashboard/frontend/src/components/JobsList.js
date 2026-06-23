@@ -27,6 +27,7 @@ import api from '../services/api';
 import { ToastContext } from '../contexts/ToastContext';
 import ViewHeader from './ViewHeader';
 import OperationInsights from './OperationInsights';
+import Modal from './Modal';
 import { formatDevTime, formatTimestamp as formatTimestampUtil } from '../utils/timeUtils';
 
 const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOperationId }) => {
@@ -1090,8 +1091,12 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
 
       {/* Job Deletion Confirmation Dialog */}
       {showDeleteDialog && jobToDelete && deletionPreview && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-2xl w-full mx-4">
+      <Modal
+        open
+        onClose={cancelDeleteJob}
+        maxWidth="max-w-2xl"
+        ariaLabel="Delete Job and Related Data"
+      >
             <div className="p-6">
               <div className="flex items-center mb-6">
                 <div className="flex-shrink-0">
@@ -1108,24 +1113,24 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
               </div>
 
               {/* Job Summary */}
-              <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 mb-6">
+              <div className="modal-summary-panel mb-6">
                 <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-3">Job Details:</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <span className="text-gray-600 dark:text-gray-400">Job ID:</span>
-                    <span className="ml-2 font-mono text-gray-900 dark:text-white">{jobToDelete.job_id}</span>
+                    <span className="modal-summary-label">Job ID:</span>
+                    <span className="ml-2 font-mono modal-summary-value">{jobToDelete.job_id}</span>
                   </div>
                   <div>
-                    <span className="text-gray-600 dark:text-gray-400">Type:</span>
-                    <span className="ml-2 font-medium text-gray-900 dark:text-white">{jobToDelete.job_type}</span>
+                    <span className="modal-summary-label">Type:</span>
+                    <span className="ml-2 modal-summary-value">{jobToDelete.job_type}</span>
                   </div>
                   <div>
-                    <span className="text-gray-600 dark:text-gray-400">Status:</span>
-                    <span className="ml-2 font-medium text-gray-900 dark:text-white">{jobToDelete.status}</span>
+                    <span className="modal-summary-label">Status:</span>
+                    <span className="ml-2 modal-summary-value">{jobToDelete.status}</span>
                   </div>
                   <div>
-                    <span className="text-gray-600 dark:text-gray-400">Repository:</span>
-                    <span className="ml-2 font-medium text-gray-900 dark:text-white">
+                    <span className="modal-summary-label">Repository:</span>
+                    <span className="ml-2 modal-summary-value">
                       {deletionPreview.repository || 'Unknown'}
                     </span>
                   </div>
@@ -1187,20 +1192,19 @@ const JobsList = ({ onShowLogs, refreshTrigger, highlightedJobId, highlightedOpe
               <div className="flex justify-end space-x-3">
                 <button
                   onClick={cancelDeleteJob}
-                  className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
+                  className="btn-modal-secondary"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={confirmDeleteJob}
-                  className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-md transition-colors"
+                  className="btn-modal-danger"
                 >
                   Delete Job & Data
                 </button>
               </div>
             </div>
-          </div>
-        </div>
+      </Modal>
       )}
     </div>
   );

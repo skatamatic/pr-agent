@@ -102,9 +102,15 @@ async def run_action():
     try:
         get_logger().info("Applying repo settings")
         pr_url = event_payload.get("pull_request", {}).get("html_url")
+        repo_settings = None
         if pr_url:
-            apply_repo_settings(pr_url)
+            repo_settings = apply_repo_settings(pr_url)
             get_logger().info(f"enable_custom_labels: {get_settings().config.enable_custom_labels}")
+            try:
+                from pr_agent.algo.repository_automation import apply_dashboard_repository_automation
+                apply_dashboard_repository_automation(pr_url, repo_settings)
+            except Exception as automation_error:
+                get_logger().debug(f"Failed to apply dashboard repository automation: {automation_error}")
     except Exception as e:
         get_logger().info(f"github action: failed to apply repo settings: {e}")
 

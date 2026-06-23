@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import api from '../services/api';
 import ViewHeader from './ViewHeader';
+import Modal from './Modal';
 import { formatTimestamp } from '../utils/timeUtils';
 
 const Notifications = () => {
@@ -412,8 +413,7 @@ const Notifications = () => {
 
       {/* Configuration Form Modal */}
       {showAddForm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 dark:bg-black dark:bg-opacity-70 flex items-center justify-center z-[9999] p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto border border-gray-200 dark:border-gray-700">
+      <Modal open onClose={resetForm} maxWidth="max-w-2xl" ariaLabel="Add Notification Configuration">
             <div className="p-6">
               <div className="flex justify-between items-center mb-6">
                 <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
@@ -715,8 +715,7 @@ const Notifications = () => {
                 </div>
               </form>
             </div>
-          </div>
-        </div>
+      </Modal>
       )}
 
       {/* Content Tabs */}

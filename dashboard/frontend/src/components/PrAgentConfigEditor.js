@@ -24,6 +24,7 @@ import ModelCombobox from './ModelCombobox';
 import ModelMultiCombobox from './ModelMultiCombobox';
 import { useAvailableModels } from '../hooks/useAvailableModels';
 import { buildModelCapabilityMap, getModelCapability, capabilityLockMessage } from '../utils/modelCapabilities';
+import Modal from './Modal';
 
 const PrAgentConfigEditor = ({ 
   repositoryId, 
@@ -44,6 +45,29 @@ const PrAgentConfigEditor = ({
   const { showSuccess, showError } = useContext(ToastContext);
   const { providers: availableProviders } = useAvailableModels();
   const capabilityMap = useMemo(() => buildModelCapabilityMap(availableProviders), [availableProviders]);
+
+  const BOOLEAN_OPT_OUT_DEFAULT_KEYS = new Set([
+    'azure_devops_config.auto_describe',
+    'azure_devops_config.auto_review',
+    'azure_devops_config.auto_improve',
+    'github_action_config.auto_describe',
+    'github_action_config.auto_review',
+    'github_action_config.auto_improve',
+    'config.publish_output',
+    'config.publish_output_progress',
+    'config.use_repo_settings_file',
+    'config.use_wiki_settings_file',
+    'config.use_global_settings_file',
+    'pr_description.publish_description',
+    'pr_description.enable_large_pr_handling',
+  ]);
+
+  const isBooleanEnabled = (fieldKey, value) => {
+    if (BOOLEAN_OPT_OUT_DEFAULT_KEYS.has(fieldKey)) {
+      return value !== false;
+    }
+    return Boolean(value);
+  };
 
   const configSections = {
     models: {
@@ -97,6 +121,12 @@ const PrAgentConfigEditor = ({
       title: 'PR Description',
       icon: FileText,
       fields: [
+        { key: 'azure_devops_config.auto_describe', label: 'Auto-generate on new PR (Azure DevOps)', type: 'boolean', description: 'Run /describe automatically when a pipeline is triggered for a new PR' },
+        { key: 'github_action_config.auto_describe', label: 'Auto-generate on new PR (GitHub Actions)', type: 'boolean', description: 'Run /describe automatically when GitHub Actions processes a new PR' },
+        { key: 'config.publish_output', label: 'Publish to PR', type: 'boolean', description: 'Write generated description to the pull request (required for descriptions to appear)' },
+        { key: 'pr_description.publish_description', label: 'Enable description publishing', type: 'boolean', description: 'Describe-specific publish gate (also requires Publish to PR)' },
+        { key: 'pr_description.publish_description_as_comment', label: 'Publish as comment', type: 'boolean', description: 'Post description as a PR comment instead of updating the PR description field' },
+        { key: 'pr_filters.skip_if_description_exists', label: 'Skip if description exists', type: 'boolean', description: 'Skip /describe when the PR body already contains text' },
         { key: 'pr_description.publish_labels', label: 'Publish Labels', type: 'boolean', description: 'Automatically publish PR labels' },
         { key: 'pr_description.generate_ai_title', label: 'Generate AI Title', type: 'boolean', description: 'Generate PR title using AI' },
         { key: 'pr_description.enable_large_pr_handling', label: 'Large PR Handling', type: 'boolean', description: 'Special handling for large PRs' },
@@ -126,8 +156,17 @@ const PrAgentConfigEditor = ({
       fields: [
         { key: 'config.fallback_models', label: 'Fallback Models', type: 'multiselect', description: 'Fallback models when primary fails' },
         { key: 'config.custom_model_max_tokens', label: 'Custom Model Max Tokens', type: 'number', min: -1, max: 2000000, description: 'Token limit for unknown models (-1 = auto)' },
-        { key: 'config.use_repo_settings_file', label: 'Use Repo Settings File', type: 'boolean', description: 'Use repository-specific settings file' },
-        { key: 'config.verbosity_level', label: 'Verbosity Level', type: 'select', options: { level: [0, 1, 2] }, description: 'Logging verbosity level' }
+        { key: 'config.repo_settings_branch', label: 'Repo Settings Branch', type: 'text', placeholder: 'e.g. master (empty = auto)', description: 'Branch to load .pr_agent.toml and best_practices.md from. Empty uses PR source → target → default → main/master.' },
+        { key: 'config.use_repo_settings_file', label: 'Use Repo Settings File', type: 'boolean', description: 'Use repository-specific .pr_agent.toml settings file' },
+        { key: 'config.use_wiki_settings_file', label: 'Use Wiki Settings File', type: 'boolean', description: 'Use wiki-based settings file when available' },
+        { key: 'config.use_global_settings_file', label: 'Use Global Settings File', type: 'boolean', description: 'Use organization-wide global settings file' },
+        { key: 'config.verbosity_level', label: 'Verbosity Level', type: 'select', options: { level: [0, 1, 2] }, description: 'Logging verbosity level' },
+        { key: 'config.ai_timeout', label: 'AI Timeout (seconds)', type: 'number', min: 30, max: 600, description: 'Timeout for AI model requests' },
+        { key: 'config.publish_output_progress', label: 'Publish Output Progress', type: 'boolean', description: 'Publish progress updates during long operations' },
+        { key: 'config.enable_auto_approval', label: 'Enable Auto Approval', type: 'boolean', description: 'Enable auto-approval of PRs under certain conditions' },
+        { key: 'config.log_level', label: 'Log Level', type: 'select', options: { level: ['DEBUG', 'INFO', 'WARNING', 'ERROR'] }, description: 'Application log level' },
+        { key: 'config.response_language', label: 'Response Language', type: 'text', placeholder: 'en-US', description: 'Locale for PR responses (ISO 3166/639, e.g. en-US)' },
+        { key: 'config.git_provider', label: 'Git Provider', type: 'select', options: { provider: ['github', 'gitlab', 'bitbucket', 'azure', 'gitea'] }, description: 'Default git provider for CLI mode' }
       ]
     },
     dashboard: {
@@ -143,7 +182,6 @@ const PrAgentConfigEditor = ({
       title: 'PR Filters',
       icon: Shield,
       fields: [
-        { key: 'pr_filters.skip_if_description_exists', label: 'Skip if description exists', type: 'boolean', description: 'Skip description generation if PR already has text' },
         { key: 'pr_filters.terminate_on_no_bots', label: 'Terminate on [no_bots]', type: 'boolean', description: 'Terminate entire job if [no_bots] found in PR description' },
         { key: 'pr_filters.max_lines_changed', label: 'Max lines changed', type: 'number', min: 0, max: 100000, description: 'Skip PRs exceeding this many lines changed (0 = disabled)' },
         { key: 'pr_filters.skip_if_review_suggestions_exist', label: 'Skip ALL tools if PR-Agent has processed PR', type: 'boolean', description: 'Skip ALL tools if PR-Agent has already processed this PR (detects "PR Reviewer Guide 🔍" header)' }
@@ -360,6 +398,7 @@ const PrAgentConfigEditor = ({
   const renderField = (field) => {
     const currentValue = getCurrentValue(field.key);
     const isFieldOverridden = isOverridden(field.key);
+    const booleanEnabled = field.type === 'boolean' ? isBooleanEnabled(field.key, currentValue) : Boolean(currentValue);
 
     // Determine whether this parameter is unsupported by the active primary model.
     const activeModel = getCurrentValue('config.model');
@@ -466,6 +505,12 @@ const PrAgentConfigEditor = ({
                   <option key={level} value={level}>Level {level}</option>
                 ));
               }
+
+              if (field.options.provider) {
+                return field.options.provider.map(provider => (
+                  <option key={provider} value={provider}>{provider}</option>
+                ));
+              }
               
               return null;
             })()}
@@ -478,9 +523,9 @@ const PrAgentConfigEditor = ({
           <div className="flex items-center space-x-3">
             <button
               type="button"
-              onClick={() => updateOverride(field.key, !currentValue)}
+              onClick={() => updateOverride(field.key, booleanEnabled ? false : true)}
               className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-offset-2 ${
-                currentValue 
+                booleanEnabled
                   ? isFieldOverridden 
                     ? 'bg-blue-600 dark:bg-blue-500 focus:ring-blue-500' 
                     : 'bg-green-600 dark:bg-green-500 focus:ring-green-500'
@@ -493,12 +538,12 @@ const PrAgentConfigEditor = ({
             >
               <span
                 className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                  currentValue ? 'translate-x-5' : 'translate-x-0'
+                  booleanEnabled ? 'translate-x-5' : 'translate-x-0'
                 }`}
               />
             </button>
             <span className={`text-sm ${isFieldOverridden ? 'font-medium text-blue-700 dark:text-blue-300' : 'text-gray-700 dark:text-gray-300'}`}>
-              {currentValue ? 'Enabled' : 'Disabled'}
+              {booleanEnabled ? 'Enabled' : 'Disabled'}
             </span>
           </div>
         );
@@ -608,8 +653,7 @@ const PrAgentConfigEditor = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white dark:bg-gray-900 rounded-xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+    <Modal isOpen={isOpen} onClose={cancelEdit} maxWidth="max-w-6xl" panelClassName="max-h-[90vh] overflow-hidden flex flex-col" ariaLabel={`PR-Agent Config: ${repositoryName}`}>
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
           <div className="flex items-center space-x-3">
@@ -736,8 +780,7 @@ const PrAgentConfigEditor = ({
             </div>
           </div>
         )}
-      </div>
-    </div>
+    </Modal>
   );
 };
 

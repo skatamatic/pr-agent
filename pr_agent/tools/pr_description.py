@@ -42,6 +42,16 @@ except ImportError:
     get_logger().debug("Dashboard integration not available for PR Description tool")
 
 
+def should_publish_pr_description() -> bool:
+    """Return True when generated PR descriptions should be written to the PR."""
+    if not get_settings().config.publish_output:
+        return False
+    publish_description = get_settings().pr_description.get("publish_description", True)
+    if isinstance(publish_description, str):
+        return publish_description.strip().lower() not in {"false", "0", "no", "off"}
+    return publish_description is not False
+
+
 class PRDescription:
     def __init__(self, pr_url: str, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -296,7 +306,7 @@ class PRDescription:
             if get_settings().get('config', {}).get('output_relevant_configurations', False):
                 pr_body += show_relevant_configurations(relevant_section='pr_description')
 
-            if get_settings().config.publish_output:
+            if should_publish_pr_description():
 
                 # publish labels
                 if get_settings().pr_description.publish_labels and pr_labels and self.git_provider.is_supported("get_labels"):
@@ -334,7 +344,7 @@ class PRDescription:
                 self.git_provider.remove_initial_comment()
                 return pr_body
             else:
-                get_logger().info('PR description, but not published since publish_output is False.')
+                get_logger().info('PR description generated, but not published (publish_output or publish_description disabled).')
                 get_settings().data = {"artifact": pr_body}
                 return pr_body
         except Exception as e:
@@ -946,7 +956,7 @@ class PRDescription:
         try:
             get_logger().info("[Publishing] - Publishing PR description result...")
             
-            if not get_settings().config.publish_output:
+            if not should_publish_pr_description():
                 get_logger().info("[Publishing] - Output publishing disabled, storing as data artifact")
                 get_settings().data = {"artifact": result['body']}
                 return

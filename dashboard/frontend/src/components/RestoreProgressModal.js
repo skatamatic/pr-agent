@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import Modal from './Modal';
 
 const RestoreProgressModal = ({ isOpen, onClose, filename, websocketService }) => {
   const [message, setMessage] = useState('Starting restore...');
@@ -63,9 +64,8 @@ const RestoreProgressModal = ({ isOpen, onClose, filename, websocketService }) =
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4">
-        <div className="text-center">
+    <Modal isOpen onClose={handleCloseModal} maxWidth="max-w-md" closeOnBackdrop={isCompleted || isError} ariaLabel="Restoring Database">
+      <div className="p-6 text-center">
           <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">
             {isCompleted ? (isError ? 'Restore Failed' : 'Restore Complete') : 'Restoring Database'}
           </h3>
@@ -102,9 +102,8 @@ const RestoreProgressModal = ({ isOpen, onClose, filename, websocketService }) =
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
             </div>
           )}
-        </div>
       </div>
-    </div>
+    </Modal>
   );
 };
 

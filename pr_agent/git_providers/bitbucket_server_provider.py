@@ -85,17 +85,13 @@ class BitbucketServerProvider(GitProvider):
         return (prefix, suffix)
 
     def get_repo_settings(self):
-        try:
-            content = self.bitbucket_client.get_content_of_file(self.workspace_slug, self.repo_slug, ".pr_agent.toml", self.get_pr_branch())
-
-            return content
-        except Exception as e:
-            if isinstance(e, HTTPError):
-                if e.response.status_code == 404:  # not found
-                    return ""
-
-            get_logger().error(f"Failed to load .pr_agent.toml file, error: {e}")
+        from pr_agent.algo.utils import fetch_repo_file_content
+        content = fetch_repo_file_content(self, ".pr_agent.toml")
+        if not content:
             return ""
+        if isinstance(content, bytes):
+            return content
+        return content.encode("utf-8")
 
     def get_pr_id(self):
         return self.pr_num
@@ -396,6 +392,22 @@ class BitbucketServerProvider(GitProvider):
 
     def get_pr_branch(self):
         return self.pr.fromRef['displayId']
+
+    def get_pr_target_branch(self) -> str:
+        try:
+            return self.pr.toRef['displayId']
+        except Exception:
+            return ""
+
+    def get_repo_default_branch(self) -> str:
+        try:
+            default_branch_dict = self.bitbucket_client.get_default_branch(
+                self.workspace_slug, self.repo_slug
+            )
+            return default_branch_dict.get('displayId', '') or ""
+        except Exception as e:
+            get_logger().debug(f"Failed to get repo default branch: {e}")
+            return ""
 
     def get_pr_owner_id(self) -> str | None:
         return self.workspace_slug

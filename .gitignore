@@ -37,3 +37,8 @@ terraform/gcp/*.tfstate.*
 # Local scratch/debug artifacts
 frontend_debug_console.js
 deployment-review.md
+
+# Confluence publish state (site-specific page IDs)
+docs/suite/.confluence-publish.json
+docs/suite/confluence.publish.toml
+docs/suite/confluence.publish.env

@@ -1,0 +1,101 @@
+# Confluence publish config for docs/suite
+# Copy to confluence.publish.toml and fill in api_token (file is gitignored).
+#
+# Windows quick publish (repo root): .\docs\suite\publish.ps1 [--probe]
+# Optional env overrides: copy confluence.publish.env.example → confluence.publish.env
+
+[confluence]
+domain = "mdtissues.atlassian.net"
+email = "you@company.com"
+api_token = ""  # https://id.atlassian.com/manage-profile/security/api-tokens
+space_key = "MDTS"
+# Parent page one level above the suite landing page (Development Topics)
+parent_page_id = "4620319"
+# Existing suite root; omit on first create, then set after manual page or first publish
+root_page_id = "5347967000"
+
+[publish]
+source = "docs/suite"
+root_page_rel = "README.md"
+mermaid_strategy = "png"
+mermaid_macro_key = "mermaid-cloud"
+github_repo = "https://github.com/skatamatic/pr-agent"
+github_ref = "develop"
+link_inline_paths = true
+github_verify_paths = true
+skip_files = [
+  # Optional WIP drafts (promote to how-to/ or technical/ when ready):
+  "workflows/README.md",
+  "workflows/adding-an-azure-repository.md",
+  "workflows/cleanup-and-retention.md",
+  "workflows/configuration-and-overrides.md",
+  "workflows/maintenance-and-diagnostics.md",
+]
+
+[publish.section_order]
+overview = 0
+how-to = 1
+technical = 2
+assets = 99
+
+[publish.path_migrations]
+"overview/deployment-on-gcp.md" = "technical/deployment/README.md"
+"technical/deployment-on-gcp.md" = "technical/deployment/README.md"
+"how-to/adding-an-azure-repository.md" = "how-to/onboarding/README.md"
+"how-to/maintenance-and-diagnostics.md" = "how-to/maintenance/README.md"
+"technical/pr-agent-internals.md" = "technical/internals/README.md"
+"technical/azure-pr-end-to-end-architecture.md" = "technical/azure-architecture/README.md"
+"technical/azure-architecture/pipeline-triggers-and-skips.md" = "technical/azure-architecture/README.md"
+"overview/value-and-rollout.md" = "overview/what-is-this-project.md"
+
+[publish.gcp_deployment]
+project_id = "nex-ai-fracgpt-dev"
+region = "us-central1"
+backend_service = "pr-agent-dash-dev-backend"
+frontend_service = "pr-agent-dash-dev-frontend"
+cloud_sql_instance = "pr-agent-dash-dev-sql"
+documents_bucket = "nex-ai-fracgpt-dev-pr-agent-dash-dev-config"
+artifact_registry_repo = "pr-agent-dash-dev-repo"
+secret_family = "pr-agent-dash-dev"
+
+[publish.page_titles]
+"README.md" = "AI Code Reviews - PR-Agent"
+"overview/README.md" = "PR-Agent overview"
+"overview/what-is-this-project.md" = "What is this project?"
+"overview/using-ai-code-reviews.md" = "Using AI code reviews"
+"how-to/README.md" = "How-to guides"
+"how-to/onboarding/README.md" = "Adding an Azure DevOps repository"
+"how-to/onboarding/wizard-steps.md" = "Onboarding: Wizard steps"
+"how-to/maintenance/README.md" = "Maintenance and diagnostics"
+"how-to/maintenance/monitoring-and-logs.md" = "Maintenance: Monitoring and logs"
+"how-to/maintenance/troubleshooting.md" = "Maintenance: Troubleshooting"
+"how-to/cleanup-and-retention.md" = "Cleanup and retention"
+"how-to/configuration-and-overrides.md" = "Configuration and overrides"
+"how-to/configuring-pr-filters.md" = "Configuring PR filters"
+"how-to/choosing-and-configuring-ai-models.md" = "Choosing and configuring AI models"
+"how-to/reading-metrics-and-roi.md" = "Reading metrics and ROI"
+"technical/README.md" = "Technical reference"
+"technical/deployment/README.md" = "Deployment on Google Cloud"
+"technical/deployment/topology-and-services.md" = "GCP: Topology and services"
+"technical/deployment/terraform-and-images.md" = "GCP: Terraform and deploy scripts"
+"technical/deployment/config-cloud-run-and-ops.md" = "GCP: Config and operations"
+"technical/azure-architecture/README.md" = "Azure PR architecture"
+"technical/internals/README.md" = "PR-Agent internals"
+"technical/internals/code-context-and-estimation.md" = "Internals: Code context and estimation"
+"technical/internals/config-ai-and-filters.md" = "Internals: Config, AI, and filters"
+"technical/environment-variables.md" = "Environment variables"
+"technical/toml-configuration-system.md" = "TOML configuration"
+"technical/self-hosted-runners.md" = "Self-hosted runners"
+"technical/dashboard-api/README.md" = "Dashboard API"
+"technical/dashboard-api/auth.md" = "Dashboard API: Auth"
+"technical/dashboard-api/health-and-status.md" = "Dashboard API: Health and status"
+"technical/dashboard-api/jobs-and-operations.md" = "Dashboard API: Jobs and operations"
+"technical/dashboard-api/logs.md" = "Dashboard API: Logs"
+"technical/dashboard-api/configuration.md" = "Dashboard API: Configuration"
+"technical/dashboard-api/repositories.md" = "Dashboard API: Repositories"
+"technical/dashboard-api/runners.md" = "Dashboard API: Runners"
+"technical/dashboard-api/notifications.md" = "Dashboard API: Notifications"
+"technical/dashboard-api/metrics.md" = "Dashboard API: Metrics"
+"technical/dashboard-api/admin-and-cron.md" = "Dashboard API: Admin and cron"
+"technical/dashboard-api/websocket.md" = "Dashboard API: WebSocket"
+"assets/README.md" = "Screenshot assets"

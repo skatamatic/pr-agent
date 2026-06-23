@@ -350,20 +350,11 @@ class AzureDevopsProvider(GitProvider):
         self.pr = self._get_pr()
 
     def get_repo_settings(self):
-        try:
-            contents = self.azure_devops_client.get_item_content(
-                repository_id=self.repo_slug,
-                project=self.workspace_slug,
-                download=False,
-                include_content_metadata=False,
-                include_content=True,
-                path=".pr_agent.toml",
-            )
-            return list(contents)[0]
-        except Exception as e:
-            if get_settings().config.verbosity_level >= 2:
-                get_logger().debug(f"Failed to get repo settings, error: {e}")
+        from pr_agent.algo.utils import fetch_repo_file_content
+        content = fetch_repo_file_content(self, ".pr_agent.toml")
+        if not content:
             return ""
+        return content.encode("utf-8")
 
     def get_files(self):
         files = []
@@ -755,10 +746,32 @@ class AzureDevopsProvider(GitProvider):
                 return source_branch
             else:
                 get_logger().warning("PR info or source_ref_name is None")
-                return "main"  # fallback
+                return ""
         except Exception as e:
             get_logger().error(f"Failed to get PR branch: {e}")
-            return "main"  # fallback
+            return ""
+
+    def get_pr_target_branch(self) -> str:
+        try:
+            pr_info = self.azure_devops_client.get_pull_request_by_id(
+                project=self.workspace_slug, pull_request_id=self.pr_num
+            )
+            if pr_info and pr_info.target_ref_name:
+                return pr_info.target_ref_name.split("/")[-1]
+        except Exception as e:
+            get_logger().debug(f"Failed to get PR target branch: {e}")
+        return ""
+
+    def get_repo_default_branch(self) -> str:
+        try:
+            repo = self.azure_devops_client.get_repository(
+                repository_id=self.repo_slug, project=self.workspace_slug
+            )
+            if repo and repo.default_branch:
+                return repo.default_branch.replace("refs/heads/", "")
+        except Exception as e:
+            get_logger().debug(f"Failed to get repo default branch: {e}")
+        return ""
 
     def get_user_id(self):
         return 0
@@ -918,11 +931,9 @@ class AzureDevopsProvider(GitProvider):
                 )
                 branch_ref = pr_info.source_ref_name
             else:
-                # Construct the branch reference (Azure DevOps expects refs/heads/branch_name format)
-                if not branch.startswith("refs/"):
-                    branch_ref = f"refs/heads/{branch}"
-                else:
-                    branch_ref = branch
+                # Azure DevOps branch version expects the branch name, not refs/heads/...
+                branch_name = branch.split("/")[-1] if branch.startswith("refs/") else branch
+                branch_ref = branch_name
             
             # Create version descriptor for the branch
             version_descriptor = GitVersionDescriptor(
